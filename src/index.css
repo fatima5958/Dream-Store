@@ -1,0 +1,614 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500;1,600&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Serif+Display:ital@0;1&family=Fraunces:ital,opsz,wght@0,9..144,600..800;1,9..144,600&family=Fredoka:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  /* Typography System:
+     - Brand Wordmark & Display: Fraunces / Fredoka / DM Serif Display
+     - Body, Navigation, Buttons, Forms & Dashboards: DM Sans / Plus Jakarta Sans */
+  --font-wordmark: "Fraunces", "DM Serif Display", Georgia, serif;
+  --font-serif-display: "Fraunces", "Cormorant Garamond", Georgia, serif;
+  --font-candy-display: "Fredoka", "Plus Jakarta Sans", "DM Sans", sans-serif;
+  --font-sans-body: "DM Sans", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* DreamStore Candyland — Dreamy 3D Creator World Palette Tokens */
+  --color-ds-bg: #FFF2DF;
+  --color-ds-cream: #FFF2DF;
+  --color-ds-pearl: #FFFDF8;
+  --color-ds-pink: #F58CB7;
+  --color-ds-rose: #F58CB7;
+  --color-ds-rose-deep: #D46593;
+  --color-ds-lavender: #BBA0EA;
+  --color-ds-lilac: #BBA0EA;
+  --color-ds-peach: #FFD47B;
+  --color-ds-butter: #FFD47B;
+  --color-ds-mint: #AFE0BE;
+  --color-ds-plum: #50352F;
+  --color-ds-cocoa: #50352F;
+  --color-ds-mauve: #7A5A52;
+  --color-ds-border: #F2DEC4;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-size: 16px;
+    overflow-x: hidden;
+  }
+
+  body {
+    background-color: #FFF2DF;
+    color: #50352F;
+    font-family: var(--font-sans-body);
+    font-size: 1rem;
+    line-height: 1.6;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  button,
+  input,
+  select,
+  textarea,
+  label {
+    font-family: var(--font-sans-body);
+  }
+}
+
+/* ============================================================================
+   TYPOGRAPHY TOKENS (Charming, Bold, Highly Readable Candyland Scale)
+   ============================================================================ */
+
+.font-wordmark {
+  font-family: var(--font-candy-display);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.font-candy {
+  font-family: var(--font-candy-display);
+}
+
+/* Hero Headline (Bold, charming, sculpted readability) */
+.ds-hero-title {
+  font-family: var(--font-candy-display);
+  font-size: clamp(2rem, 3.2vw + 0.55rem, 3.15rem);
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  color: #50352F;
+}
+
+/* Editorial Section Headings */
+.ds-editorial-title {
+  font-family: var(--font-candy-display);
+  font-size: clamp(1.95rem, 3vw + 0.65rem, 2.95rem);
+  line-height: 1.14;
+  letter-spacing: -0.015em;
+  font-weight: 700;
+  color: #50352F;
+}
+
+/* Dashboard & Functional Page Title */
+.ds-page-title {
+  font-family: var(--font-sans-body);
+  font-size: clamp(1.375rem, 2vw + 0.5rem, 1.875rem);
+  line-height: 1.24;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+
+/* Functional Section Title */
+.ds-section-title {
+  font-family: var(--font-sans-body);
+  font-size: clamp(1.125rem, 1.2vw + 0.5rem, 1.375rem);
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  font-weight: 700;
+}
+
+/* Card Title */
+.ds-card-title {
+  font-family: var(--font-candy-display);
+  font-size: clamp(1.125rem, 0.5vw + 0.95rem, 1.3rem);
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+/* Subtitle / Lead Paragraph */
+.ds-subtitle {
+  font-family: var(--font-sans-body);
+  font-size: clamp(1.02rem, 0.5vw + 0.9rem, 1.175rem);
+  line-height: 1.62;
+  font-weight: 500;
+}
+
+/* Standard Body Copy */
+.ds-body {
+  font-family: var(--font-sans-body);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  font-weight: 400;
+}
+
+/* Readable Helper / Caption Text */
+.ds-helper {
+  font-family: var(--font-sans-body);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: #7A5A52;
+}
+
+/* Form Field Label */
+.ds-label {
+  font-family: var(--font-sans-body);
+  font-size: 0.875rem;
+  line-height: 1.4;
+  font-weight: 700;
+  color: #50352F;
+}
+
+/* Tactile Creamy Form Input */
+.candy-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 0.75rem 1rem;
+  border-radius: 1rem;
+  background-color: #FFFDF8;
+  border: 2px solid #F0DEC6;
+  color: #50352F;
+  font-size: 1rem;
+  line-height: 1.5;
+  font-weight: 600;
+  box-shadow:
+    inset 0 2px 4px rgba(226, 198, 166, 0.25),
+    0 2px 0 rgba(255, 255, 255, 0.9);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.candy-input::placeholder {
+  color: #9A7B72;
+  font-weight: 500;
+}
+
+.candy-input:focus {
+  outline: none;
+  border-color: #F58CB7;
+  box-shadow:
+    inset 0 2px 4px rgba(245, 140, 183, 0.14),
+    0 0 0 3px rgba(245, 140, 183, 0.22);
+}
+
+.candy-btn-cream {
+  background-color: #FFFDF8;
+  color: #50352F;
+  border: 2px solid #F0DEC6;
+  box-shadow:
+    inset 0 3px 5px rgba(255, 255, 255, 0.96),
+    inset 0 -3px 5px rgba(224, 197, 166, 0.3),
+    0 6px 14px -4px rgba(80, 53, 47, 0.1),
+    0 4px 0 0 #E5CEB1;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 180ms ease;
+}
+
+.candy-btn-cream:hover {
+  transform: translateY(-1.5px);
+  border-color: #F58CB7;
+}
+
+.candy-btn-cream:active {
+  transform: translateY(2px);
+}
+
+/* ============================================================================
+   CANDYLAND 3D CLAYMORPHISM SYSTEM (Solid Pastel Surfaces + Realistic Lighting)
+   ============================================================================ */
+
+/* Warm White Clay Card */
+.ds-card-3d,
+.candy-card-white {
+  background-color: #FFFDF8;
+  border: 2px solid #F3E2CB;
+  box-shadow:
+    inset 0 4px 6px rgba(255, 255, 255, 0.95),
+    inset 0 -5px 8px rgba(226, 198, 166, 0.32),
+    0 14px 28px -8px rgba(80, 53, 47, 0.12),
+    0 5px 0 0 #EBD5B8;
+}
+
+/* Candy Pink Clay Surface (#F58CB7) */
+.candy-card-pink {
+  background-color: #F58CB7;
+  border: 2px solid #F9B4D0;
+  box-shadow:
+    inset 0 5px 8px rgba(255, 255, 255, 0.62),
+    inset 0 -6px 10px rgba(186, 68, 118, 0.35),
+    0 16px 30px -10px rgba(212, 90, 142, 0.38),
+    0 6px 0 0 #D66795;
+}
+
+/* Soft Lilac Clay Surface (#BBA0EA) */
+.candy-card-lilac {
+  background-color: #BBA0EA;
+  border: 2px solid #D5C3F5;
+  box-shadow:
+    inset 0 5px 8px rgba(255, 255, 255, 0.62),
+    inset 0 -6px 10px rgba(114, 82, 173, 0.34),
+    0 16px 30px -10px rgba(139, 106, 199, 0.35),
+    0 6px 0 0 #9677CC;
+}
+
+/* Mint Green Clay Surface (#AFE0BE) */
+.candy-card-mint {
+  background-color: #AFE0BE;
+  border: 2px solid #CBEED6;
+  box-shadow:
+    inset 0 5px 8px rgba(255, 255, 255, 0.68),
+    inset 0 -6px 10px rgba(78, 148, 102, 0.3),
+    0 16px 30px -10px rgba(96, 168, 120, 0.32),
+    0 6px 0 0 #82BF96;
+}
+
+/* Butter Yellow Clay Surface (#FFD47B) */
+.candy-card-butter {
+  background-color: #FFD47B;
+  border: 2px solid #FFE4A8;
+  box-shadow:
+    inset 0 5px 8px rgba(255, 255, 255, 0.72),
+    inset 0 -6px 10px rgba(196, 138, 34, 0.3),
+    0 16px 30px -10px rgba(214, 158, 52, 0.32),
+    0 6px 0 0 #E0AE48;
+}
+
+/* Deep Cocoa Clay Surface (#50352F) */
+.candy-card-cocoa {
+  background-color: #50352F;
+  border: 2px solid #6E4B43;
+  box-shadow:
+    inset 0 4px 7px rgba(255, 255, 255, 0.18),
+    inset 0 -6px 10px rgba(32, 19, 16, 0.55),
+    0 18px 34px -10px rgba(80, 53, 47, 0.36),
+    0 6px 0 0 #38231E;
+}
+
+/* Recessed Warm White Inner Bed inside Candy Cards */
+.candy-inner-bed {
+  background-color: #FFFDF8;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow:
+    inset 0 3px 5px rgba(255, 255, 255, 0.95),
+    inset 0 -3px 6px rgba(235, 215, 190, 0.35),
+    0 6px 14px -4px rgba(80, 53, 47, 0.1);
+}
+
+/* Raised 3D Clay Icon Containers */
+.ds-icon-3d,
+.clay-icon-pink {
+  background-color: #F58CB7;
+  color: #50352F;
+  border: 2px solid #FAD0E2;
+  box-shadow:
+    inset 0 3px 5px rgba(255, 255, 255, 0.72),
+    inset 0 -4px 6px rgba(181, 63, 113, 0.38),
+    0 8px 16px -4px rgba(214, 103, 149, 0.38),
+    0 4px 0 0 #D66795;
+}
+
+.ds-icon-3d-lavender,
+.clay-icon-lilac {
+  background-color: #BBA0EA;
+  color: #50352F;
+  border: 2px solid #DFD2F8;
+  box-shadow:
+    inset 0 3px 5px rgba(255, 255, 255, 0.72),
+    inset 0 -4px 6px rgba(110, 77, 171, 0.36),
+    0 8px 16px -4px rgba(150, 119, 204, 0.36),
+    0 4px 0 0 #9677CC;
+}
+
+.ds-icon-3d-peach,
+.clay-icon-butter {
+  background-color: #FFD47B;
+  color: #50352F;
+  border: 2px solid #FFECB8;
+  box-shadow:
+    inset 0 3px 5px rgba(255, 255, 255, 0.78),
+    inset 0 -4px 6px rgba(191, 134, 30, 0.34),
+    0 8px 16px -4px rgba(224, 174, 72, 0.36),
+    0 4px 0 0 #E0AE48;
+}
+
+.ds-icon-3d-mint,
+.clay-icon-mint {
+  background-color: #AFE0BE;
+  color: #50352F;
+  border: 2px solid #D9F3E1;
+  box-shadow:
+    inset 0 3px 5px rgba(255, 255, 255, 0.78),
+    inset 0 -4px 6px rgba(74, 143, 98, 0.32),
+    0 8px 16px -4px rgba(130, 191, 150, 0.34),
+    0 4px 0 0 #82BF96;
+}
+
+/* Tactile Raised 3D Candy-Pink Primary Button (#F58CB7) */
+.ds-btn-3d-primary,
+.candy-btn-pink {
+  background-color: #F58CB7;
+  color: #50352F;
+  border: 2px solid #FAD0E2;
+  box-shadow:
+    inset 0 4px 6px rgba(255, 255, 255, 0.72),
+    inset 0 -4px 6px rgba(186, 68, 118, 0.32),
+    0 10px 20px -6px rgba(214, 103, 149, 0.48),
+    0 5px 0 0 #D1608F;
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 200ms ease;
+}
+
+.ds-btn-3d-primary:hover,
+.candy-btn-pink:hover {
+  background-color: #F798BF;
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 4px 7px rgba(255, 255, 255, 0.8),
+    inset 0 -4px 6px rgba(186, 68, 118, 0.34),
+    0 14px 24px -6px rgba(214, 103, 149, 0.54),
+    0 7px 0 0 #D1608F;
+}
+
+.ds-btn-3d-primary:active,
+.candy-btn-pink:active {
+  transform: translateY(3px);
+  box-shadow:
+    inset 0 3px 5px rgba(255, 255, 255, 0.6),
+    0 4px 10px -4px rgba(214, 103, 149, 0.4),
+    0 2px 0 0 #D1608F;
+}
+
+/* Tactile Raised 3D Warm White Secondary Button (#FFFDF8) */
+.ds-btn-3d-secondary,
+.candy-btn-white {
+  background-color: #FFFDF8;
+  color: #50352F;
+  border: 2px solid #F0DEC6;
+  box-shadow:
+    inset 0 4px 6px rgba(255, 255, 255, 0.96),
+    inset 0 -4px 6px rgba(224, 197, 166, 0.34),
+    0 8px 18px -6px rgba(80, 53, 47, 0.12),
+    0 5px 0 0 #E5CEB1;
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 200ms ease;
+}
+
+.ds-btn-3d-secondary:hover,
+.candy-btn-white:hover {
+  transform: translateY(-2px);
+  border-color: #F58CB7;
+  box-shadow:
+    inset 0 4px 6px rgba(255, 255, 255, 1),
+    inset 0 -4px 6px rgba(245, 140, 183, 0.22),
+    0 12px 22px -6px rgba(80, 53, 47, 0.16),
+    0 7px 0 0 #E5CEB1;
+}
+
+.ds-btn-3d-secondary:active,
+.candy-btn-white:active {
+  transform: translateY(3px);
+  box-shadow:
+    inset 0 3px 5px rgba(255, 255, 255, 0.9),
+    0 4px 10px -4px rgba(80, 53, 47, 0.12),
+    0 2px 0 0 #E5CEB1;
+}
+
+/* Butter Yellow Clay Button (#FFD47B) */
+.candy-btn-butter {
+  background-color: #FFD47B;
+  color: #50352F;
+  border: 2px solid #FFECB8;
+  box-shadow:
+    inset 0 4px 6px rgba(255, 255, 255, 0.78),
+    inset 0 -4px 6px rgba(196, 138, 34, 0.32),
+    0 10px 20px -6px rgba(224, 174, 72, 0.44),
+    0 5px 0 0 #DFA93E;
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.candy-btn-butter:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 4px 7px rgba(255, 255, 255, 0.85),
+    0 14px 24px -6px rgba(224, 174, 72, 0.5),
+    0 7px 0 0 #DFA93E;
+}
+
+/* Mint Clay Button (#AFE0BE) */
+.candy-btn-mint {
+  background-color: #AFE0BE;
+  color: #50352F;
+  border: 2px solid #D9F3E1;
+  box-shadow:
+    inset 0 4px 6px rgba(255, 255, 255, 0.78),
+    inset 0 -4px 6px rgba(78, 148, 102, 0.3),
+    0 10px 20px -6px rgba(130, 191, 150, 0.4),
+    0 5px 0 0 #7EBB92;
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Raised 3D Pill Badge */
+.ds-pill-3d {
+  background-color: #FFFDF8;
+  border: 2px solid #F58CB7;
+  box-shadow:
+    inset 0 2px 4px rgba(255, 255, 255, 0.96),
+    inset 0 -2px 4px rgba(245, 140, 183, 0.22),
+    0 6px 14px -4px rgba(80, 53, 47, 0.1),
+    0 3px 0 0 #F2C6D8;
+}
+
+/* ============================================================================
+   SUBTLE, PREMIUM MOTION (180ms–260ms, Respects prefers-reduced-motion)
+   ============================================================================ */
+
+.ds-card-interactive {
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 220ms ease;
+}
+
+.ds-card-interactive:hover {
+  transform: translateY(-4px);
+}
+
+.ds-btn-interactive {
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 180ms ease;
+}
+
+.ds-btn-interactive:hover {
+  transform: translateY(-1.5px);
+}
+
+.ds-btn-interactive:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+@keyframes ds-float-slow {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-7px) rotate(1.5deg);
+  }
+}
+
+.animate-candy-float {
+  animation: ds-float-slow 4.5s ease-in-out infinite;
+}
+
+@keyframes ds-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-ds-reveal {
+  animation: ds-reveal 240ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes ds-sparkle-once {
+  0% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.01);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-ds-sparkle-once {
+  animation: ds-sparkle-once 320ms cubic-bezier(0.22, 1, 0.36, 1) 1 forwards;
+}
+
+@keyframes ds-check-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-candy-check {
+  animation: ds-check-pop 240ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes ds-cart-pop {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.22);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-candy-cart-pop {
+  animation: ds-cart-pop 260ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+@keyframes ds-order-complete-slide-down {
+  0% {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-order-completed-slide-down {
+  animation: ds-order-complete-slide-down 360ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .ds-card-interactive:hover,
+  .ds-btn-interactive:hover,
+  .ds-btn-3d-primary:hover,
+  .ds-btn-3d-secondary:hover,
+  .candy-btn-pink:hover,
+  .candy-btn-white:hover,
+  .candy-btn-butter:hover,
+  .candy-btn-mint:hover {
+    transform: none !important;
+  }
+}
+
+

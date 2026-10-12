@@ -1,0 +1,8 @@
+{
+  "name": "DreamStore",
+  "description": "Create a beautiful digital storefront, upload your products, and start selling with an intuitive visual store builder and dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

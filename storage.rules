@@ -1,0 +1,100 @@
+rules_version = '2';
+
+// ============================================================================
+// DREAMSTORE — ZERO-TRUST FIREBASE STORAGE SECURITY RULES
+// Project: dulcet-trees-qk6n5
+// Storage Bucket: dulcet-trees-qk6n5.firebasestorage.app
+// Paired Firestore DB: ai-studio-dreamstore-fac8084d-6f5b-423c-9b66-3ce72d622890
+// ============================================================================
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Strict Single Super Admin UID — NO email fallback, NO custom claim trust
+    function isSuperAdmin() {
+      return isVerified() && request.auth.uid == 'V2Yxrm20XFWYscGUtHcBN8E9wA62';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidImageUpload() {
+      return request.resource != null &&
+             request.resource.size > 0 &&
+             request.resource.size <= 5 * 1024 * 1024 &&
+             request.resource.contentType.matches('image/(png|jpeg|webp|gif|svg\\+xml)');
+    }
+
+    function isValidDeliverableUpload() {
+      return request.resource != null &&
+             request.resource.size > 0 &&
+             request.resource.size <= 50 * 1024 * 1024 &&
+             request.resource.contentType.matches('(application/pdf|application/zip|text/plain|application/epub\\+zip|image/png|image/jpeg)');
+    }
+
+    // 1. Public Storefront Branding Assets (Logos, Covers, Product Thumbnails)
+    // Scoped strictly to seller's own UID namespace: /stores/{ownerId}/public/{fileName}
+    match /stores/{ownerId}/public/{fileName} {
+      allow get: if isValidId(ownerId) && fileName.size() <= 255;
+      allow list: if false;
+      allow create, update: if isVerified() &&
+                               isValidId(ownerId) &&
+                               fileName.size() <= 255 &&
+                               (request.auth.uid == ownerId || isSuperAdmin()) &&
+                               isValidImageUpload();
+      allow delete: if isVerified() &&
+                       isValidId(ownerId) &&
+                       (request.auth.uid == ownerId || isSuperAdmin());
+    }
+
+    // 2. Private Digital Product Deliverables
+    // NEVER publicly readable; buyers must pass through server-verified /api/delivery/verify-download
+    match /deliverables/{ownerId}/{productId}/{fileName} {
+      allow get: if isVerified() &&
+                    isValidId(ownerId) &&
+                    isValidId(productId) &&
+                    (request.auth.uid == ownerId || isSuperAdmin());
+      allow list: if false;
+      allow create, update: if isVerified() &&
+                               isValidId(ownerId) &&
+                               isValidId(productId) &&
+                               fileName.size() <= 255 &&
+                               (request.auth.uid == ownerId || isSuperAdmin()) &&
+                               isValidDeliverableUpload();
+      allow delete: if isVerified() &&
+                       isValidId(ownerId) &&
+                       isValidId(productId) &&
+                       (request.auth.uid == ownerId || isSuperAdmin());
+    }
+
+    // 3. Private Commission Payment Proof Receipts
+    // Strictly isolated to the submitting seller and verified Super Admin
+    match /commission_proofs/{sellerId}/{invoiceId}/{fileName} {
+      allow get: if isVerified() &&
+                    isValidId(sellerId) &&
+                    isValidId(invoiceId) &&
+                    (request.auth.uid == sellerId || isSuperAdmin());
+      allow list: if false;
+      allow create, update: if isVerified() &&
+                               isValidId(sellerId) &&
+                               isValidId(invoiceId) &&
+                               fileName.size() <= 255 &&
+                               (request.auth.uid == sellerId || isSuperAdmin()) &&
+                               isValidImageUpload();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Global Default-Deny Safety Net
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

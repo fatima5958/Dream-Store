@@ -1,0 +1,1305 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidSlug(slug) {
+      return slug is string && slug.size() >= 2 && slug.size() <= 80 && slug.matches('^[a-zA-Z0-9_\\-\\.]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    // Strictly UID-backed Super Admin check (Restricted exclusively to configured SUPER_ADMIN_UID; never email or arbitrary role claim)
+    function isAdmin() {
+      return isVerifiedUser() &&
+        request.auth.uid == 'V2Yxrm20XFWYscGUtHcBN8E9wA62';
+    }
+
+    // Validation Blueprint: Store
+    function isValidStore(data) {
+      return data.keys().hasAll([
+        'ownerId', 'storeSlug', 'storeName', 'ownerName', 'announcementText',
+        'heroHeadingLine1', 'heroHeadingLine2', 'heroSubheading', 'heroButtonText',
+        'heroImage', 'logoUrl', 'theme', 'currency', 'exchangeRatePkr',
+        'status', 'plan', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId', 'storeSlug', 'storeName', 'ownerName', 'instagramHandle',
+        'sellerCountry', 'productType', 'announcementText',
+        'heroHeadingLine1', 'heroHeadingLine2', 'heroSubheading', 'heroButtonText',
+        'heroImage', 'logoUrl', 'theme', 'customAccentColor', 'currency', 'exchangeRatePkr',
+        'status', 'plan', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.ownerId) &&
+      isValidSlug(data.storeSlug) &&
+      data.storeName is string && data.storeName.size() >= 1 && data.storeName.size() <= 100 &&
+      data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 100 &&
+      (!('instagramHandle' in data) || (data.instagramHandle is string && data.instagramHandle.size() <= 100)) &&
+      (!('sellerCountry' in data) || (data.sellerCountry is string && data.sellerCountry.size() <= 80)) &&
+      (!('productType' in data) || (data.productType is string && data.productType.size() <= 100)) &&
+      (!('customAccentColor' in data) || (data.customAccentColor is string && data.customAccentColor.size() <= 20)) &&
+      data.announcementText is string && data.announcementText.size() >= 1 && data.announcementText.size() <= 240 &&
+      data.heroHeadingLine1 is string && data.heroHeadingLine1.size() >= 1 && data.heroHeadingLine1.size() <= 120 &&
+      data.heroHeadingLine2 is string && data.heroHeadingLine2.size() >= 1 && data.heroHeadingLine2.size() <= 120 &&
+      data.heroSubheading is string && data.heroSubheading.size() >= 1 && data.heroSubheading.size() <= 500 &&
+      data.heroButtonText is string && data.heroButtonText.size() >= 1 && data.heroButtonText.size() <= 60 &&
+      data.heroImage is string && data.heroImage.size() <= 500000 &&
+      data.logoUrl is string && data.logoUrl.size() <= 500000 &&
+      data.theme in [
+        'blush-bloom', 'lavender-cloud', 'vanilla-studio',
+        'midnight-muse', 'peach-petal', 'clean-canvas',
+        'blush-princess', 'lavender-dreams', 'vanilla-bloom',
+        'rose-garden', 'midnight-fairy', 'minimal-muse',
+        'blush-rose', 'warm-cream', 'petal-peach', 'rosewood'
+      ] &&
+      data.currency in ['USD', 'PKR', 'INR', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD'] &&
+      data.exchangeRatePkr is number && data.exchangeRatePkr >= 1 && data.exchangeRatePkr <= 10000 &&
+      data.status in ['Active', 'Pending', 'Suspended'] &&
+      data.plan in ['Free', 'Pro', 'Basic'] &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: SellerSettings (PII & Payoneer Isolated)
+    function isValidSellerSettings(data) {
+      return data.keys().hasAll([
+        'ownerId', 'email', 'jazzCashMerchantId', 'jazzCashEnabled',
+        'easypaisaStoreId', 'easypaisaEnabled', 'upiId', 'paymentLinkUrl',
+        'stripeAccountId', 'stripeEnabled', 'bankTransferInstructions', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId', 'email', 'jazzCashMerchantId', 'jazzCashEnabled',
+        'easypaisaStoreId', 'easypaisaEnabled', 'upiId', 'paymentLinkUrl',
+        'payoneerEmail', 'payoneerAccountId', 'payoneerPaymentLinkUrl',
+        'payoneerReceivingDetails', 'payoneerReceivingEmail',
+        'payoneerRequestLink', 'payoneerReceivingAccountDetails', 'payoneerEnabled',
+        'whatsappNotificationNumber', 'whatsappNotificationsEnabled',
+        'stripeAccountId', 'stripeEnabled', 'bankTransferInstructions', 'updatedAt'
+      ]) &&
+      isValidId(data.ownerId) &&
+      data.ownerId == request.auth.uid &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+      data.jazzCashMerchantId is string && data.jazzCashMerchantId.size() <= 120 &&
+      data.jazzCashEnabled is bool &&
+      data.easypaisaStoreId is string && data.easypaisaStoreId.size() <= 120 &&
+      data.easypaisaEnabled is bool &&
+      data.upiId is string && data.upiId.size() <= 120 &&
+      data.paymentLinkUrl is string && data.paymentLinkUrl.size() <= 300 &&
+      (!('payoneerEmail' in data) || (data.payoneerEmail is string && data.payoneerEmail.size() <= 254)) &&
+      (!('payoneerAccountId' in data) || (data.payoneerAccountId is string && data.payoneerAccountId.size() <= 120)) &&
+      (!('payoneerPaymentLinkUrl' in data) || (data.payoneerPaymentLinkUrl is string && data.payoneerPaymentLinkUrl.size() <= 300)) &&
+      (!('payoneerReceivingDetails' in data) || (data.payoneerReceivingDetails is string && data.payoneerReceivingDetails.size() <= 600)) &&
+      (!('payoneerReceivingEmail' in data) || (data.payoneerReceivingEmail is string && data.payoneerReceivingEmail.size() <= 254)) &&
+      (!('payoneerRequestLink' in data) || (data.payoneerRequestLink is string && data.payoneerRequestLink.size() <= 300)) &&
+      (!('payoneerReceivingAccountDetails' in data) || (data.payoneerReceivingAccountDetails is string && data.payoneerReceivingAccountDetails.size() <= 600)) &&
+      (!('payoneerEnabled' in data) || (data.payoneerEnabled is bool)) &&
+      (!('whatsappNotificationNumber' in data) || (data.whatsappNotificationNumber is string && data.whatsappNotificationNumber.size() <= 40)) &&
+      (!('whatsappNotificationsEnabled' in data) || (data.whatsappNotificationsEnabled is bool)) &&
+      data.stripeAccountId is string && data.stripeAccountId.size() <= 120 &&
+      data.stripeEnabled is bool &&
+      data.bankTransferInstructions is string && data.bankTransferInstructions.size() <= 1000 &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: UserProfile (Role Onboarding — Blocks Super Admin Self-Assignment)
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+        'uid', 'role', 'displayName', 'email', 'onboardingCompleted', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'role', 'displayName', 'email', 'onboardingCompleted', 'storeId', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.uid) &&
+      (data.role in ['buyer', 'seller'] || (isAdmin() && data.role == 'super_admin')) &&
+      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+      data.onboardingCompleted is bool &&
+      (!('storeId' in data) || isValidId(data.storeId)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: Product
+    function isValidProduct(data) {
+      return data.keys().hasAll([
+        'storeId', 'ownerId', 'title', 'category', 'subtitle', 'description',
+        'priceUsd', 'pricePkr', 'isFree', 'published', 'status', 'image',
+        'fileName', 'fileType', 'fileSizeLabel', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'storeId', 'ownerId', 'title', 'category', 'subtitle', 'description',
+        'priceUsd', 'pricePkr', 'isFree', 'published', 'status', 'image',
+        'fileName', 'fileType', 'fileSizeLabel', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.storeId) &&
+      isValidId(data.ownerId) &&
+      data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+      data.category in ['Ebooks', 'Workbooks', 'Planners', 'Templates', 'Bundles'] &&
+      data.subtitle is string && data.subtitle.size() >= 1 && data.subtitle.size() <= 300 &&
+      data.description is string && data.description.size() >= 1 && data.description.size() <= 3000 &&
+      data.priceUsd is number && data.priceUsd >= 0 && data.priceUsd <= 100000 &&
+      data.pricePkr is number && data.pricePkr >= 0 && data.pricePkr <= 25000000 &&
+      data.isFree is bool &&
+      ((data.isFree == true && data.priceUsd == 0 && data.pricePkr == 0) || (data.isFree == false && data.priceUsd > 0 && data.pricePkr > 0)) &&
+      data.published is bool &&
+      data.status in ['Available', 'Coming Soon', 'Draft'] &&
+      data.image is string && data.image.size() >= 1 && data.image.size() <= 500000 &&
+      data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255 &&
+      data.fileType is string && data.fileType.size() >= 1 && data.fileType.size() <= 100 &&
+      data.fileSizeLabel is string && data.fileSizeLabel.size() >= 1 && data.fileSizeLabel.size() <= 60 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: ProductDeliverable
+    function isValidDeliverable(data) {
+      return data.keys().hasAll([
+        'productId', 'ownerId', 'fileName', 'fileMimeType', 'fileDataUrl', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'productId', 'ownerId', 'fileName', 'fileMimeType', 'fileDataUrl', 'updatedAt'
+      ]) &&
+      isValidId(data.productId) &&
+      isValidId(data.ownerId) &&
+      data.ownerId == request.auth.uid &&
+      data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255 &&
+      data.fileMimeType is string && data.fileMimeType.size() >= 1 && data.fileMimeType.size() <= 120 &&
+      data.fileDataUrl is string && data.fileDataUrl.size() >= 1 && data.fileDataUrl.size() <= 800000 &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: ProductEntitlement
+    function isValidEntitlement(data) {
+      return data.keys().hasAll([
+        'productId', 'buyerId', 'sellerId', 'orderId', 'status', 'expiresAtMs', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'productId', 'buyerId', 'sellerId', 'orderId', 'status', 'expiresAtMs', 'updatedAt'
+      ]) &&
+      isValidId(data.productId) &&
+      isValidId(data.buyerId) &&
+      isValidId(data.sellerId) &&
+      isValidId(data.orderId) &&
+      data.status in ['Active', 'Revoked'] &&
+      data.expiresAtMs is number && data.expiresAtMs >= 0 &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: Order
+    function isValidOrder(data) {
+      return data.keys().hasAll([
+        'orderNumber', 'storeId', 'sellerId', 'buyerId', 'primaryProductId',
+        'customerName', 'customerEmail', 'currency', 'subtotal', 'totalAmount',
+        'paymentMethod', 'paymentStatus', 'paymentReference', 'itemTitlesSummary',
+        'itemCount', 'downloadToken', 'downloadCount', 'maxDownloads',
+        'expiresAtMs', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'orderNumber', 'storeId', 'sellerId', 'buyerId', 'primaryProductId',
+        'customerName', 'customerEmail', 'currency', 'subtotal', 'totalAmount',
+        'paymentMethod', 'paymentStatus', 'paymentReference', 'itemTitlesSummary',
+        'itemCount', 'downloadToken', 'downloadCount', 'maxDownloads',
+        'expiresAtMs', 'createdAt', 'updatedAt'
+      ]) &&
+      data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 40 &&
+      isValidId(data.storeId) &&
+      isValidId(data.sellerId) &&
+      isValidId(data.buyerId) &&
+      isValidId(data.primaryProductId) &&
+      data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
+      data.customerEmail is string && data.customerEmail.size() >= 3 && data.customerEmail.size() <= 254 &&
+      data.currency in ['USD', 'PKR', 'INR', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD'] &&
+      data.subtotal is number && data.subtotal >= 0 && data.subtotal <= 50000000 &&
+      data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 50000000 &&
+      data.subtotal == data.totalAmount &&
+      data.paymentMethod in ['free_instant', 'jazzcash', 'easypaisa', 'upi_india', 'razorpay_inr', 'stripe_card', 'manual_bank', 'payoneer'] &&
+      data.paymentStatus in ['Pending', 'Paid', 'Failed', 'Refunded'] &&
+      data.paymentReference is string && data.paymentReference.size() >= 1 && data.paymentReference.size() <= 200 &&
+      data.itemTitlesSummary is string && data.itemTitlesSummary.size() >= 1 && data.itemTitlesSummary.size() <= 1000 &&
+      data.itemCount is number && data.itemCount >= 1 && data.itemCount <= 50 &&
+      data.downloadToken is string && data.downloadToken.size() >= 8 && data.downloadToken.size() <= 128 &&
+      data.downloadCount is number && data.downloadCount >= 0 && data.downloadCount <= 1000 &&
+      data.maxDownloads is number && data.maxDownloads >= 1 && data.maxDownloads <= 100 &&
+      data.expiresAtMs is number && data.expiresAtMs >= 0 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: CustomerRecord (Seller-Isolated Customer Order Info)
+    function isValidCustomerRecord(data) {
+      return data.keys().hasAll([
+        'customerId', 'storeId', 'sellerId', 'buyerId', 'customerName',
+        'customerEmail', 'orderCount', 'totalSpentMinor', 'currency',
+        'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'customerId', 'storeId', 'sellerId', 'buyerId', 'customerName',
+        'customerEmail', 'orderCount', 'totalSpentMinor', 'currency',
+        'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.customerId) &&
+      isValidId(data.storeId) &&
+      isValidId(data.sellerId) &&
+      isValidId(data.buyerId) &&
+      data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
+      data.customerEmail is string && data.customerEmail.size() >= 3 && data.customerEmail.size() <= 254 &&
+      data.orderCount is number && data.orderCount >= 1 && data.orderCount <= 100000 &&
+      data.totalSpentMinor is number && data.totalSpentMinor >= 0 && data.totalSpentMinor <= 5000000000 &&
+      data.currency in ['USD', 'PKR', 'INR', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD'] &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: AnalyticsRecord (Seller-Isolated Analytics)
+    function isValidAnalyticsRecord(data) {
+      return data.keys().hasAll([
+        'analyticsId', 'storeId', 'sellerId', 'currency',
+        'verifiedSalesCount', 'grossRevenueMinor', 'netEarningsMinor', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'analyticsId', 'storeId', 'sellerId', 'currency',
+        'verifiedSalesCount', 'grossRevenueMinor', 'netEarningsMinor', 'updatedAt'
+      ]) &&
+      isValidId(data.analyticsId) &&
+      isValidId(data.storeId) &&
+      isValidId(data.sellerId) &&
+      data.currency in ['USD', 'PKR', 'INR', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD'] &&
+      data.verifiedSalesCount is number && data.verifiedSalesCount >= 0 &&
+      data.grossRevenueMinor is number && data.grossRevenueMinor >= 0 &&
+      data.netEarningsMinor is number && data.netEarningsMinor >= 0 &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: DownloadLog
+    function isValidDownloadLog(data) {
+      return data.keys().hasAll([
+        'downloadId', 'orderId', 'orderNumber', 'productId', 'storeId',
+        'sellerId', 'buyerId', 'downloadCount', 'maxDownloads', 'expiresAtMs', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'downloadId', 'orderId', 'orderNumber', 'productId', 'storeId',
+        'sellerId', 'buyerId', 'downloadCount', 'maxDownloads', 'expiresAtMs', 'createdAt'
+      ]) &&
+      isValidId(data.downloadId) &&
+      isValidId(data.orderId) &&
+      data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 40 &&
+      isValidId(data.productId) &&
+      isValidId(data.storeId) &&
+      isValidId(data.sellerId) &&
+      isValidId(data.buyerId) &&
+      data.downloadCount is number && data.downloadCount >= 1 && data.downloadCount <= 100 &&
+      data.maxDownloads is number && data.maxDownloads >= 1 && data.maxDownloads <= 100 &&
+      data.expiresAtMs is number && data.expiresAtMs >= 0 &&
+      data.createdAt is timestamp;
+    }
+
+    // Validation Blueprint: SubscriptionRecord
+    function isValidSubscriptionRecord(data) {
+      return data.keys().hasAll([
+        'subscriptionId', 'sellerId', 'storeId', 'plan', 'status', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'subscriptionId', 'sellerId', 'storeId', 'plan', 'status', 'updatedAt'
+      ]) &&
+      isValidId(data.subscriptionId) &&
+      isValidId(data.sellerId) &&
+      isValidId(data.storeId) &&
+      data.plan in ['Free', 'Pro'] &&
+      data.status in ['Active', 'Waitlist', 'Cancelled'] &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: LedgerRecord
+    function isValidLedgerRecord(data) {
+      return data.keys().hasAll([
+        'orderId', 'orderNumber', 'storeId', 'sellerId', 'buyerId',
+        'currency', 'commissionRateBps', 'grossAmountMinor',
+        'platformCommissionMinor', 'sellerShareBeforeFeesMinor',
+        'gatewayFeeMinor', 'sellerNetEarningsMinor', 'paymentMethod',
+        'paymentStatus', 'verificationMode', 'commissionStatus',
+        'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'orderId', 'orderNumber', 'storeId', 'sellerId', 'buyerId',
+        'currency', 'commissionRateBps', 'grossAmountMinor',
+        'platformCommissionMinor', 'sellerShareBeforeFeesMinor',
+        'gatewayFeeMinor', 'sellerNetEarningsMinor', 'paymentMethod',
+        'paymentStatus', 'verificationMode', 'commissionStatus',
+        'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.orderId) &&
+      data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 40 &&
+      isValidId(data.storeId) &&
+      isValidId(data.sellerId) &&
+      isValidId(data.buyerId) &&
+      data.currency in ['USD', 'PKR', 'INR', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD'] &&
+      data.commissionRateBps is number && data.commissionRateBps == 500 &&
+      data.grossAmountMinor is number && data.grossAmountMinor >= 0 && data.grossAmountMinor <= 5000000000 &&
+      data.platformCommissionMinor is number && data.platformCommissionMinor >= 0 && data.platformCommissionMinor <= 500000000 &&
+      data.sellerShareBeforeFeesMinor is number && data.sellerShareBeforeFeesMinor >= 0 && data.sellerShareBeforeFeesMinor <= 5000000000 &&
+      data.gatewayFeeMinor is number && data.gatewayFeeMinor >= 0 && data.gatewayFeeMinor <= 500000000 &&
+      data.sellerNetEarningsMinor is number && data.sellerNetEarningsMinor >= 0 && data.sellerNetEarningsMinor <= 5000000000 &&
+      data.paymentMethod in ['free_instant', 'jazzcash', 'easypaisa', 'upi_india', 'razorpay_inr', 'stripe_card', 'manual_bank', 'payoneer'] &&
+      data.paymentStatus in ['Pending', 'Paid', 'Failed', 'Refunded'] &&
+      data.verificationMode in ['Unverified', 'Instant Free', 'Manually Verified by Seller', 'Gateway Verified'] &&
+      data.commissionStatus in ['not_applicable', 'outstanding', 'paid', 'reversed', 'disputed'] &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: LedgerAuditLog (Immutable Append-Only)
+    function isValidLedgerAuditLog(data) {
+      return data.keys().hasAll([
+        'auditId', 'orderNumber', 'orderId', 'sellerId', 'actorUid',
+        'action', 'previousStatus', 'newStatus', 'verificationMode',
+        'detail', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'auditId', 'orderNumber', 'orderId', 'sellerId', 'actorUid',
+        'action', 'previousStatus', 'newStatus', 'verificationMode',
+        'detail', 'createdAt'
+      ]) &&
+      isValidId(data.auditId) &&
+      data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 40 &&
+      isValidId(data.orderId) &&
+      isValidId(data.sellerId) &&
+      isValidId(data.actorUid) &&
+      data.actorUid == request.auth.uid &&
+      data.action in [
+        'ORDER_CREATED',
+        'MANUAL_PAYMENT_VERIFIED',
+        'PAYMENT_REJECTED',
+        'ORDER_REFUNDED_REVERSED',
+        'COMMISSION_DISPUTED',
+        'COMMISSION_SETTLED',
+        'INVOICE_GENERATED',
+        'INVOICE_OVERDUE_RESTRICTED',
+        'COMMISSION_PAYMENT_SUBMITTED',
+        'COMMISSION_PAYMENT_VERIFIED',
+        'COMMISSION_PAYMENT_REJECTED',
+        'COMMISSION_ADJUSTED'
+      ] &&
+      data.previousStatus is string && data.previousStatus.size() >= 1 && data.previousStatus.size() <= 40 &&
+      data.newStatus is string && data.newStatus.size() >= 1 && data.newStatus.size() <= 40 &&
+      data.verificationMode is string && data.verificationMode.size() >= 1 && data.verificationMode.size() <= 80 &&
+      data.detail is string && data.detail.size() >= 1 && data.detail.size() <= 500 &&
+      data.createdAt is timestamp;
+    }
+
+    // Validation Blueprint: CommissionInvoice
+    function isValidCommissionInvoice(data) {
+      return data.keys().hasAll([
+        'invoiceId', 'invoiceNumber', 'sellerId', 'storeId', 'currency',
+        'orderNumbers', 'verifiedSalesCount', 'grossSalesMinor',
+        'commissionAmountMinor', 'paidAmountMinor', 'adjustedAmountMinor',
+        'remainingBalanceMinor', 'status', 'issuedAtMs', 'dueAtMs',
+        'serverSignature', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'invoiceId', 'invoiceNumber', 'sellerId', 'storeId', 'currency',
+        'orderNumbers', 'verifiedSalesCount', 'grossSalesMinor',
+        'commissionAmountMinor', 'paidAmountMinor', 'adjustedAmountMinor',
+        'remainingBalanceMinor', 'status', 'issuedAtMs', 'dueAtMs',
+        'lastPaymentMethod', 'lastPaymentReference', 'lastPaymentProofNote',
+        'submittedAtIso', 'verifiedByAdminEmail', 'verifiedAtIso',
+        'serverSignature', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.invoiceId) &&
+      data.invoiceNumber is string && data.invoiceNumber.size() >= 3 && data.invoiceNumber.size() <= 40 &&
+      isValidId(data.sellerId) &&
+      isValidId(data.storeId) &&
+      data.currency in ['USD', 'PKR', 'INR', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD'] &&
+      data.orderNumbers is list && data.orderNumbers.size() == 5 &&
+      data.orderNumbers[0] is string && data.orderNumbers[0].size() <= 40 &&
+      data.verifiedSalesCount is number && data.verifiedSalesCount == 5 &&
+      data.grossSalesMinor is number && data.grossSalesMinor > 0 &&
+      data.commissionAmountMinor is number && data.commissionAmountMinor > 0 &&
+      data.paidAmountMinor is number && data.paidAmountMinor >= 0 &&
+      data.adjustedAmountMinor is number && data.adjustedAmountMinor >= 0 &&
+      data.remainingBalanceMinor is number && data.remainingBalanceMinor >= 0 &&
+      data.status in ['open', 'overdue', 'payment_submitted', 'paid', 'voided'] &&
+      data.issuedAtMs is number && data.issuedAtMs > 0 &&
+      data.dueAtMs is number && data.dueAtMs > data.issuedAtMs &&
+      (!('lastPaymentMethod' in data) || (data.lastPaymentMethod is string && data.lastPaymentMethod.size() <= 60)) &&
+      (!('lastPaymentReference' in data) || (data.lastPaymentReference is string && data.lastPaymentReference.size() <= 160)) &&
+      (!('lastPaymentProofNote' in data) || (data.lastPaymentProofNote is string && data.lastPaymentProofNote.size() <= 500)) &&
+      (!('submittedAtIso' in data) || (data.submittedAtIso is string && data.submittedAtIso.size() <= 60)) &&
+      (!('verifiedByAdminEmail' in data) || (data.verifiedByAdminEmail is string && data.verifiedByAdminEmail.size() <= 254)) &&
+      (!('verifiedAtIso' in data) || (data.verifiedAtIso is string && data.verifiedAtIso.size() <= 60)) &&
+      data.serverSignature is string && data.serverSignature.size() >= 16 && data.serverSignature.size() <= 128 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: CommissionPayment
+    function isValidCommissionPayment(data) {
+      return data.keys().hasAll([
+        'paymentId', 'invoiceId', 'invoiceNumber', 'sellerId', 'storeId',
+        'currency', 'amountMinor', 'paymentMethod', 'paymentReference',
+        'proofNote', 'status', 'submittedByUid', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'paymentId', 'invoiceId', 'invoiceNumber', 'sellerId', 'storeId',
+        'currency', 'amountMinor', 'paymentMethod', 'paymentReference',
+        'proofNote', 'status', 'submittedByUid', 'verifiedByAdminEmail',
+        'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.paymentId) &&
+      isValidId(data.invoiceId) &&
+      data.invoiceNumber is string && data.invoiceNumber.size() >= 3 && data.invoiceNumber.size() <= 40 &&
+      isValidId(data.sellerId) &&
+      isValidId(data.storeId) &&
+      data.currency in ['USD', 'PKR', 'INR', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD'] &&
+      data.amountMinor is number && data.amountMinor > 0 &&
+      data.paymentMethod is string && data.paymentMethod.size() >= 2 && data.paymentMethod.size() <= 60 &&
+      data.paymentReference is string && data.paymentReference.size() >= 3 && data.paymentReference.size() <= 160 &&
+      data.proofNote is string && data.proofNote.size() <= 500 &&
+      data.status in ['submitted', 'verified', 'rejected'] &&
+      isValidId(data.submittedByUid) &&
+      (!('verifiedByAdminEmail' in data) || (data.verifiedByAdminEmail is string && data.verifiedByAdminEmail.size() <= 254)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: CommissionAdjustment
+    function isValidCommissionAdjustment(data) {
+      return data.keys().hasAll([
+        'adjustmentId', 'invoiceId', 'invoiceNumber', 'orderNumber',
+        'sellerId', 'currency', 'adjustmentAmountMinor', 'reason',
+        'detail', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'adjustmentId', 'invoiceId', 'invoiceNumber', 'orderNumber',
+        'sellerId', 'currency', 'adjustmentAmountMinor', 'reason',
+        'detail', 'createdAt'
+      ]) &&
+      isValidId(data.adjustmentId) &&
+      isValidId(data.invoiceId) &&
+      data.invoiceNumber is string && data.invoiceNumber.size() >= 3 && data.invoiceNumber.size() <= 40 &&
+      data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 40 &&
+      isValidId(data.sellerId) &&
+      data.currency in ['USD', 'PKR', 'INR', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD'] &&
+      data.adjustmentAmountMinor is number && data.adjustmentAmountMinor > 0 &&
+      data.reason in ['order_refunded', 'order_disputed'] &&
+      data.detail is string && data.detail.size() >= 1 && data.detail.size() <= 500 &&
+      data.createdAt is timestamp;
+    }
+
+    // Trusted Single Super Admin Collection (Writable ONLY via Firebase Admin SDK on backend)
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && isOwner(adminId);
+      allow list, write: if false;
+    }
+
+    // 1. Stores Collection (Public visitors can read only Active stores; Suspended stores blocked from public)
+    match /stores/{storeId} {
+      allow get: if isValidId(storeId) && (
+        resource == null ||
+        resource.data.status == 'Active' ||
+        isOwner(resource.data.ownerId) ||
+        isAdmin()
+      );
+      allow list: if resource.data.status == 'Active' || (isSignedIn() && resource.data.ownerId == request.auth.uid) || isAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(storeId) &&
+        isValidStore(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().status == 'Active' &&
+        incoming().plan in ['Free', 'Pro', 'Basic'] &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(storeId) &&
+        isValidStore(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(existing().ownerId) &&
+            existing().status != 'Suspended' &&
+            incoming().status == existing().status &&
+            incoming().plan == existing().plan &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'storeSlug', 'storeName', 'ownerName', 'instagramHandle',
+              'sellerCountry', 'productType', 'announcementText',
+              'heroHeadingLine1', 'heroHeadingLine2', 'heroSubheading',
+              'heroButtonText', 'heroImage', 'logoUrl', 'theme',
+              'customAccentColor', 'currency', 'exchangeRatePkr', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(storeId) && (isOwner(existing().ownerId) || isAdmin());
+    }
+
+    // 2A. Seller Payment Settings Collection (Strictly Private: Verified Owner or Super Admin ONLY)
+    match /sellerSettings/{sellerId} {
+      allow get: if isValidId(sellerId) && (isOwner(sellerId) || isAdmin());
+      allow list: if false;
+
+      allow create: if isValidId(sellerId) &&
+        (isOwner(sellerId) || isAdmin()) &&
+        isValidSellerSettings(incoming()) &&
+        incoming().ownerId == sellerId &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(sellerId) &&
+        (isOwner(sellerId) || isAdmin()) &&
+        isValidSellerSettings(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'email', 'jazzCashMerchantId', 'jazzCashEnabled',
+          'easypaisaStoreId', 'easypaisaEnabled', 'upiId', 'paymentLinkUrl',
+          'payoneerEmail', 'payoneerAccountId', 'payoneerPaymentLinkUrl',
+          'payoneerReceivingDetails', 'payoneerReceivingEmail',
+          'payoneerRequestLink', 'payoneerReceivingAccountDetails', 'payoneerEnabled',
+          'whatsappNotificationNumber', 'whatsappNotificationsEnabled',
+          'stripeAccountId', 'stripeEnabled', 'bankTransferInstructions', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(sellerId) && (isOwner(sellerId) || isAdmin());
+    }
+
+    // 2B. Private Seller Settings Subcollection (PII & Payoneer Isolated — Verified Owner or Super Admin ONLY)
+    match /users/{userId}/private/{docId} {
+      allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+
+      allow create: if isValidId(userId) &&
+        isValidId(docId) &&
+        (isOwner(userId) || isAdmin()) &&
+        isValidSellerSettings(incoming()) &&
+        incoming().ownerId == userId &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId) &&
+        isValidId(docId) &&
+        (isOwner(userId) || isAdmin()) &&
+        isValidSellerSettings(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'email', 'jazzCashMerchantId', 'jazzCashEnabled',
+          'easypaisaStoreId', 'easypaisaEnabled', 'upiId', 'paymentLinkUrl',
+          'payoneerEmail', 'payoneerAccountId', 'payoneerPaymentLinkUrl',
+          'payoneerReceivingDetails', 'payoneerReceivingEmail',
+          'payoneerRequestLink', 'payoneerReceivingAccountDetails', 'payoneerEnabled',
+          'whatsappNotificationNumber', 'whatsappNotificationsEnabled',
+          'stripeAccountId', 'stripeEnabled', 'bankTransferInstructions', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+    }
+
+    // 2C. User Profile & Role Onboarding Collection (Prevents Super Admin Self-Assignment)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+
+      allow create: if isValidId(userId) &&
+        (isOwner(userId) || isAdmin()) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == userId &&
+        (incoming().role in ['buyer', 'seller'] || (isAdmin() && incoming().role == 'super_admin')) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId) &&
+        (isOwner(userId) || isAdmin()) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (incoming().role in ['buyer', 'seller'] || (isAdmin() && incoming().role == 'super_admin')) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'role', 'displayName', 'email', 'onboardingCompleted', 'storeId', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // 3. Products Collection
+    match /products/{productId} {
+      allow get: if isValidId(productId) && (
+        resource == null ||
+        resource.data.published == true ||
+        (isSignedIn() && resource.data.ownerId == request.auth.uid) ||
+        isAdmin()
+      );
+
+      allow list: if resource.data.published == true ||
+        (isSignedIn() && resource.data.ownerId == request.auth.uid) ||
+        isAdmin();
+
+      allow create: if isVerifiedUser() &&
+        isValidId(productId) &&
+        isValidProduct(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/stores/$(incoming().storeId)) &&
+        get(/databases/$(database)/documents/stores/$(incoming().storeId)).data.ownerId == request.auth.uid &&
+        get(/databases/$(database)/documents/stores/$(incoming().storeId)).data.status == 'Active';
+
+      allow update: if isVerifiedUser() &&
+        isValidId(productId) &&
+        isValidProduct(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().storeId == existing().storeId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(existing().ownerId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'category', 'subtitle', 'description',
+              'priceUsd', 'pricePkr', 'isFree', 'published',
+              'status', 'image', 'fileName', 'fileType',
+              'fileSizeLabel', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(productId) && (isOwner(existing().ownerId) || isAdmin());
+
+      // 4. Protected Digital Deliverables Subcollection
+      match /deliverables/{deliverableId} {
+        allow get: if isValidId(productId) && isValidId(deliverableId) && (
+          (isSignedIn() && get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid) ||
+          get(/databases/$(database)/documents/products/$(productId)).data.isFree == true ||
+          (
+            isSignedIn() &&
+            exists(/databases/$(database)/documents/products/$(productId)/entitlements/$(request.auth.uid)) &&
+            get(/databases/$(database)/documents/products/$(productId)/entitlements/$(request.auth.uid)).data.status == 'Active'
+          ) ||
+          isAdmin()
+        );
+
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidId(productId) &&
+          isValidId(deliverableId) &&
+          isValidDeliverable(incoming()) &&
+          incoming().productId == productId &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/products/$(productId)) &&
+          get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid;
+
+        allow update: if isVerifiedUser() &&
+          isValidId(productId) &&
+          isValidId(deliverableId) &&
+          isValidDeliverable(incoming()) &&
+          incoming().productId == existing().productId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().updatedAt == request.time &&
+          get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'fileName', 'fileMimeType', 'fileDataUrl', 'updatedAt'
+          ]);
+
+        allow delete: if isValidId(productId) && isValidId(deliverableId) &&
+          isVerifiedUser() &&
+          get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid;
+      }
+
+      // 5. Verified Paid Download Entitlements Subcollection
+      match /entitlements/{buyerId} {
+        allow get: if isValidId(productId) && isValidId(buyerId) && isSignedIn() && (
+          resource == null ||
+          request.auth.uid == buyerId ||
+          resource.data.sellerId == request.auth.uid ||
+          (exists(/databases/$(database)/documents/products/$(productId)) && get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid) ||
+          isAdmin()
+        );
+
+        allow list: if false;
+
+        allow create: if isVerifiedUser() &&
+          isValidId(productId) &&
+          isValidId(buyerId) &&
+          isValidEntitlement(incoming()) &&
+          incoming().productId == productId &&
+          incoming().buyerId == buyerId &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/orders/$(incoming().orderId)) &&
+          (
+            incoming().sellerId == request.auth.uid ||
+            (exists(/databases/$(database)/documents/products/$(productId)) && get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid) ||
+            isAdmin()
+          );
+
+        allow update: if isVerifiedUser() &&
+          isValidId(productId) &&
+          isValidId(buyerId) &&
+          isValidEntitlement(incoming()) &&
+          incoming().productId == existing().productId &&
+          incoming().buyerId == existing().buyerId &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/orders/$(incoming().orderId)) &&
+          (
+            existing().sellerId == request.auth.uid ||
+            incoming().sellerId == request.auth.uid ||
+            (exists(/databases/$(database)/documents/products/$(productId)) && get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid) ||
+            isAdmin()
+          ) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['orderId', 'sellerId', 'status', 'expiresAtMs', 'updatedAt']);
+
+        allow delete: if isValidId(productId) && isValidId(buyerId) && isAdmin();
+      }
+    }
+
+    // 6. Orders Collection (PII protected: only buyer, seller, or admin can read)
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && isSignedIn() && (
+        resource == null ||
+        resource.data.buyerId == request.auth.uid ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.buyerId == request.auth.uid ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(orderId) &&
+        isValidOrder(incoming()) &&
+        incoming().buyerId == request.auth.uid &&
+        incoming().downloadCount == 0 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          (incoming().totalAmount == 0 && incoming().paymentMethod == 'free_instant' && incoming().paymentStatus == 'Paid') ||
+          (incoming().totalAmount > 0 && incoming().paymentMethod != 'free_instant' && incoming().paymentStatus == 'Pending')
+        ) &&
+        (
+          !exists(/databases/$(database)/documents/stores/$(incoming().storeId)) ||
+          get(/databases/$(database)/documents/stores/$(incoming().storeId)).data.ownerId == incoming().sellerId
+        ) &&
+        (
+          !exists(/databases/$(database)/documents/products/$(incoming().primaryProductId)) ||
+          get(/databases/$(database)/documents/products/$(incoming().primaryProductId)).data.ownerId == incoming().sellerId
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(orderId) &&
+        isValidOrder(incoming()) &&
+        incoming().orderNumber == existing().orderNumber &&
+        incoming().storeId == existing().storeId &&
+        incoming().sellerId == existing().sellerId &&
+        incoming().buyerId == existing().buyerId &&
+        incoming().primaryProductId == existing().primaryProductId &&
+        incoming().currency == existing().currency &&
+        incoming().subtotal == existing().subtotal &&
+        incoming().totalAmount == existing().totalAmount &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(existing().sellerId) &&
+            !(existing().paymentStatus in ['Refunded', 'Failed']) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'paymentReference', 'downloadToken', 'updatedAt'])
+          ) ||
+          (
+            isOwner(existing().buyerId) &&
+            existing().paymentStatus == 'Paid' &&
+            incoming().downloadCount == existing().downloadCount + 1 &&
+            incoming().downloadCount <= existing().maxDownloads &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['downloadCount', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isValidId(orderId) && isAdmin();
+    }
+
+    // 7. Seller-Isolated Customers Collection (Order-related customer info per seller)
+    match /customers/{customerId} {
+      allow get: if isValidId(customerId) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        resource.data.buyerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(customerId) &&
+        isValidCustomerRecord(incoming()) &&
+        incoming().customerId == customerId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isOwner(incoming().sellerId) ||
+          isOwner(incoming().buyerId) ||
+          isAdmin()
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(customerId) &&
+        isValidCustomerRecord(incoming()) &&
+        incoming().customerId == existing().customerId &&
+        incoming().sellerId == existing().sellerId &&
+        incoming().storeId == existing().storeId &&
+        incoming().buyerId == existing().buyerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(existing().sellerId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'customerName', 'customerEmail', 'orderCount', 'totalSpentMinor', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(customerId) && isAdmin();
+    }
+
+    // 8. Seller-Isolated Sales Analytics Collection
+    match /analytics/{analyticsId} {
+      allow get: if isValidId(analyticsId) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(analyticsId) &&
+        isValidAnalyticsRecord(incoming()) &&
+        incoming().analyticsId == analyticsId &&
+        incoming().updatedAt == request.time && (
+          isOwner(incoming().sellerId) ||
+          isAdmin()
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(analyticsId) &&
+        isValidAnalyticsRecord(incoming()) &&
+        incoming().analyticsId == existing().analyticsId &&
+        incoming().sellerId == existing().sellerId &&
+        incoming().storeId == existing().storeId &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(existing().sellerId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'verifiedSalesCount', 'grossRevenueMinor', 'netEarningsMinor', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(analyticsId) && isAdmin();
+    }
+
+    // 9. Protected Digital Downloads Audit Collection
+    match /downloads/{downloadId} {
+      allow get: if isValidId(downloadId) && isSignedIn() && (
+        resource == null ||
+        resource.data.buyerId == request.auth.uid ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.buyerId == request.auth.uid ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(downloadId) &&
+        isValidDownloadLog(incoming()) &&
+        incoming().downloadId == downloadId &&
+        incoming().createdAt == request.time && (
+          isOwner(incoming().buyerId) ||
+          isOwner(incoming().sellerId) ||
+          isAdmin()
+        );
+
+      allow update, delete: if false;
+    }
+
+    // 10. Subscriptions & Pro Waitlist Collection (Only Admin can activate Pro)
+    match /subscriptions/{subscriptionId} {
+      allow get: if isValidId(subscriptionId) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(subscriptionId) &&
+        isValidSubscriptionRecord(incoming()) &&
+        incoming().subscriptionId == subscriptionId &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(incoming().sellerId) &&
+            (incoming().plan == 'Free' || incoming().status == 'Waitlist')
+          )
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(subscriptionId) &&
+        isValidSubscriptionRecord(incoming()) &&
+        incoming().subscriptionId == existing().subscriptionId &&
+        incoming().sellerId == existing().sellerId &&
+        incoming().storeId == existing().storeId &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(existing().sellerId) &&
+            incoming().plan == existing().plan &&
+            incoming().status == 'Waitlist' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isValidId(subscriptionId) && isAdmin();
+    }
+
+    // 11. Persistent Financial Ledger Collection (Atomically synchronized with Orders)
+    match /ledger/{orderNumber} {
+      allow get: if isValidId(orderNumber) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        resource.data.buyerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        resource.data.buyerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(orderNumber) &&
+        isValidLedgerRecord(incoming()) &&
+        incoming().orderNumber == orderNumber &&
+        incoming().buyerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/orders/$(incoming().orderId));
+
+      allow update: if isVerifiedUser() &&
+        isValidId(orderNumber) &&
+        isValidLedgerRecord(incoming()) &&
+        incoming().orderId == existing().orderId &&
+        incoming().orderNumber == existing().orderNumber &&
+        incoming().storeId == existing().storeId &&
+        incoming().sellerId == existing().sellerId &&
+        incoming().buyerId == existing().buyerId &&
+        incoming().currency == existing().currency &&
+        incoming().commissionRateBps == existing().commissionRateBps &&
+        incoming().grossAmountMinor == existing().grossAmountMinor &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(existing().sellerId) &&
+            !(existing().paymentStatus in ['Refunded', 'Failed']) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'paymentStatus',
+              'verificationMode',
+              'commissionStatus',
+              'platformCommissionMinor',
+              'sellerShareBeforeFeesMinor',
+              'sellerNetEarningsMinor',
+              'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // 12. Immutable Ledger & Verification Audit Trail (Append-Only)
+    match /ledger_audit/{auditId} {
+      allow get: if isValidId(auditId) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        resource.data.actorUid == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(auditId) &&
+        isValidLedgerAuditLog(incoming()) &&
+        incoming().auditId == auditId &&
+        incoming().createdAt == request.time && (
+          incoming().sellerId == request.auth.uid ||
+          existsAfter(/databases/$(database)/documents/orders/$(incoming().orderId)) ||
+          isAdmin()
+        );
+
+      allow update, delete: if false;
+    }
+
+    // 13A. Automated 5% Commission Invoices (camelCase: /commissionInvoices/{invoiceId})
+    match /commissionInvoices/{invoiceId} {
+      allow get: if isValidId(invoiceId) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(invoiceId) &&
+        isValidCommissionInvoice(incoming()) &&
+        incoming().invoiceId == invoiceId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isOwner(incoming().sellerId) && incoming().status in ['open', 'overdue', 'payment_submitted'])
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(invoiceId) &&
+        isValidCommissionInvoice(incoming()) &&
+        incoming().invoiceId == existing().invoiceId &&
+        incoming().invoiceNumber == existing().invoiceNumber &&
+        incoming().sellerId == existing().sellerId &&
+        incoming().storeId == existing().storeId &&
+        incoming().currency == existing().currency &&
+        incoming().grossSalesMinor == existing().grossSalesMinor &&
+        incoming().commissionAmountMinor == existing().commissionAmountMinor &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(existing().sellerId) &&
+            existing().status != 'paid' &&
+            incoming().status == 'payment_submitted' &&
+            incoming().paidAmountMinor == existing().paidAmountMinor &&
+            incoming().remainingBalanceMinor == existing().remainingBalanceMinor &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'lastPaymentMethod', 'lastPaymentReference',
+              'lastPaymentProofNote', 'submittedAtIso', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // 13B. Automated 5% Commission Invoices (snake_case: /commission_invoices/{invoiceId})
+    match /commission_invoices/{invoiceId} {
+      allow get: if isValidId(invoiceId) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(invoiceId) &&
+        isValidCommissionInvoice(incoming()) &&
+        incoming().invoiceId == invoiceId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isOwner(incoming().sellerId) && incoming().status in ['open', 'overdue', 'payment_submitted'])
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(invoiceId) &&
+        isValidCommissionInvoice(incoming()) &&
+        incoming().invoiceId == existing().invoiceId &&
+        incoming().invoiceNumber == existing().invoiceNumber &&
+        incoming().sellerId == existing().sellerId &&
+        incoming().storeId == existing().storeId &&
+        incoming().currency == existing().currency &&
+        incoming().grossSalesMinor == existing().grossSalesMinor &&
+        incoming().commissionAmountMinor == existing().commissionAmountMinor &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(existing().sellerId) &&
+            existing().status != 'paid' &&
+            incoming().status == 'payment_submitted' &&
+            incoming().paidAmountMinor == existing().paidAmountMinor &&
+            incoming().remainingBalanceMinor == existing().remainingBalanceMinor &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'lastPaymentMethod', 'lastPaymentReference',
+              'lastPaymentProofNote', 'submittedAtIso', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // 14A. Commission Payments Collection (camelCase: /commissionPayments/{paymentId})
+    match /commissionPayments/{paymentId} {
+      allow get: if isValidId(paymentId) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(paymentId) &&
+        isValidCommissionPayment(incoming()) &&
+        incoming().paymentId == paymentId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(incoming().sellerId) &&
+            incoming().submittedByUid == request.auth.uid &&
+            incoming().status == 'submitted'
+          )
+        );
+
+      allow update: if isAdmin() &&
+        isValidId(paymentId) &&
+        isValidCommissionPayment(incoming()) &&
+        incoming().paymentId == existing().paymentId &&
+        incoming().invoiceId == existing().invoiceId &&
+        incoming().sellerId == existing().sellerId &&
+        incoming().amountMinor == existing().amountMinor &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'verifiedByAdminEmail', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // 14B. Commission Payments Collection (snake_case: /commission_payments/{paymentId})
+    match /commission_payments/{paymentId} {
+      allow get: if isValidId(paymentId) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(paymentId) &&
+        isValidCommissionPayment(incoming()) &&
+        incoming().paymentId == paymentId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(incoming().sellerId) &&
+            incoming().submittedByUid == request.auth.uid &&
+            incoming().status == 'submitted'
+          )
+        );
+
+      allow update: if isAdmin() &&
+        isValidId(paymentId) &&
+        isValidCommissionPayment(incoming()) &&
+        incoming().paymentId == existing().paymentId &&
+        incoming().invoiceId == existing().invoiceId &&
+        incoming().sellerId == existing().sellerId &&
+        incoming().amountMinor == existing().amountMinor &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'verifiedByAdminEmail', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // 15. Commission Adjustments Collection (Append-only credit adjustments from refunds/disputes)
+    match /commission_adjustments/{adjustmentId} {
+      allow get: if isValidId(adjustmentId) && isSignedIn() && (
+        resource == null ||
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow list: if isSignedIn() && (
+        resource.data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(adjustmentId) &&
+        isValidCommissionAdjustment(incoming()) &&
+        incoming().adjustmentId == adjustmentId &&
+        incoming().createdAt == request.time && (
+          isOwner(incoming().sellerId) ||
+          isAdmin()
+        );
+
+      allow update, delete: if false;
+    }
+  }
+}

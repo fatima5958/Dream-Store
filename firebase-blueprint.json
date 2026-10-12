@@ -1,0 +1,1087 @@
+{
+  "entities": {
+    "Store": {
+      "title": "Store",
+      "description": "A multi-vendor creator digital storefront on DreamStore.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the store owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "storeSlug": {
+          "type": "string",
+          "description": "Unique URL slug for the storefront.",
+          "minLength": 2,
+          "maxLength": 80,
+          "pattern": "^[a-zA-Z0-9_\\-\\.]+$"
+        },
+        "storeName": {
+          "type": "string",
+          "description": "Display name of the store.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "ownerName": {
+          "type": "string",
+          "description": "Public display name of the creator.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "instagramHandle": {
+          "type": "string",
+          "description": "Optional creator Instagram handle.",
+          "maxLength": 100
+        },
+        "sellerCountry": {
+          "type": "string",
+          "description": "Country of the seller.",
+          "maxLength": 80
+        },
+        "productType": {
+          "type": "string",
+          "description": "Primary digital product category.",
+          "maxLength": 100
+        },
+        "announcementText": {
+          "type": "string",
+          "description": "Top announcement bar text.",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "heroHeadingLine1": {
+          "type": "string",
+          "description": "First line of the storefront hero heading.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "heroHeadingLine2": {
+          "type": "string",
+          "description": "Second rose-accented line of the storefront hero heading.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "heroSubheading": {
+          "type": "string",
+          "description": "Hero subtitle describing the store.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "heroButtonText": {
+          "type": "string",
+          "description": "Primary CTA button text.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "heroImage": {
+          "type": "string",
+          "description": "Hero banner image URL or data URI.",
+          "minLength": 1,
+          "maxLength": 500000
+        },
+        "logoUrl": {
+          "type": "string",
+          "description": "Store logo or avatar URL.",
+          "minLength": 1,
+          "maxLength": 500000
+        },
+        "theme": {
+          "type": "string",
+          "description": "Store color palette theme.",
+          "enum": [
+            "blush-bloom",
+            "lavender-cloud",
+            "vanilla-studio",
+            "midnight-muse",
+            "peach-petal",
+            "clean-canvas",
+            "blush-princess",
+            "lavender-dreams",
+            "vanilla-bloom",
+            "rose-garden",
+            "midnight-fairy",
+            "minimal-muse",
+            "blush-rose",
+            "warm-cream",
+            "petal-peach",
+            "rosewood"
+          ]
+        },
+        "customAccentColor": {
+          "type": "string",
+          "description": "Optional seller-customized accent hex color.",
+          "maxLength": 20
+        },
+        "currency": {
+          "type": "string",
+          "description": "Default store currency.",
+          "enum": ["USD", "PKR", "INR", "GBP", "EUR", "AED", "SAR", "CAD", "AUD"]
+        },
+        "exchangeRatePkr": {
+          "type": "number",
+          "description": "Conversion rate from 1 USD to PKR."
+        },
+        "status": {
+          "type": "string",
+          "description": "Store platform status.",
+          "enum": ["Active", "Pending", "Suspended"]
+        },
+        "plan": {
+          "type": "string",
+          "description": "Store subscription tier.",
+          "enum": ["Free", "Pro", "Basic"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "ownerId",
+        "storeSlug",
+        "storeName",
+        "ownerName",
+        "announcementText",
+        "heroHeadingLine1",
+        "heroHeadingLine2",
+        "heroSubheading",
+        "heroButtonText",
+        "heroImage",
+        "logoUrl",
+        "theme",
+        "currency",
+        "exchangeRatePkr",
+        "status",
+        "plan",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SellerSettings": {
+      "title": "SellerSettings",
+      "description": "Private seller profile, local wallet, and Payoneer receiving account configuration.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "jazzCashMerchantId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "jazzCashEnabled": {
+          "type": "boolean"
+        },
+        "easypaisaStoreId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "easypaisaEnabled": {
+          "type": "boolean"
+        },
+        "upiId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "paymentLinkUrl": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "payoneerEmail": {
+          "type": "string",
+          "maxLength": 254
+        },
+        "payoneerAccountId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "payoneerPaymentLinkUrl": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "payoneerReceivingDetails": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "payoneerEnabled": {
+          "type": "boolean"
+        },
+        "whatsappNotificationNumber": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "whatsappNotificationsEnabled": {
+          "type": "boolean"
+        },
+        "stripeAccountId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "stripeEnabled": {
+          "type": "boolean"
+        },
+        "bankTransferInstructions": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "email",
+        "jazzCashMerchantId",
+        "jazzCashEnabled",
+        "easypaisaStoreId",
+        "easypaisaEnabled",
+        "upiId",
+        "paymentLinkUrl",
+        "stripeAccountId",
+        "stripeEnabled",
+        "bankTransferInstructions",
+        "updatedAt"
+      ]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Digital product listing in a seller's store.",
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "category": {
+          "type": "string",
+          "enum": ["Ebooks", "Workbooks", "Planners", "Templates", "Bundles"]
+        },
+        "subtitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 3000
+        },
+        "priceUsd": {
+          "type": "number"
+        },
+        "pricePkr": {
+          "type": "number"
+        },
+        "isFree": {
+          "type": "boolean"
+        },
+        "published": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Available", "Coming Soon", "Draft"]
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500000
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "fileType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "fileSizeLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "storeId",
+        "ownerId",
+        "title",
+        "category",
+        "subtitle",
+        "description",
+        "priceUsd",
+        "pricePkr",
+        "isFree",
+        "published",
+        "status",
+        "image",
+        "fileName",
+        "fileType",
+        "fileSizeLabel",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ProductDeliverable": {
+      "title": "ProductDeliverable",
+      "description": "Protected digital file payload for a product.",
+      "type": "object",
+      "properties": {
+        "productId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "fileMimeType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "fileDataUrl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 800000
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "productId",
+        "ownerId",
+        "fileName",
+        "fileMimeType",
+        "fileDataUrl",
+        "updatedAt"
+      ]
+    },
+    "ProductEntitlement": {
+      "title": "ProductEntitlement",
+      "description": "Verified download entitlement granted to a buyer after payment verification.",
+      "type": "object",
+      "properties": {
+        "productId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "buyerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sellerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "orderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Active", "Revoked"]
+        },
+        "expiresAtMs": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "productId",
+        "buyerId",
+        "sellerId",
+        "orderId",
+        "status",
+        "expiresAtMs",
+        "updatedAt"
+      ]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order record and digital download entitlement.",
+      "type": "object",
+      "properties": {
+        "orderNumber": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 40
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sellerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "buyerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "primaryProductId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "customerEmail": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "PKR", "INR", "GBP", "EUR", "AED", "SAR", "CAD", "AUD"]
+        },
+        "subtotal": {
+          "type": "number"
+        },
+        "totalAmount": {
+          "type": "number"
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": [
+            "free_instant",
+            "jazzcash",
+            "easypaisa",
+            "upi_india",
+            "razorpay_inr",
+            "stripe_card",
+            "manual_bank",
+            "payoneer"
+          ]
+        },
+        "paymentStatus": {
+          "type": "string",
+          "enum": ["Pending", "Paid", "Failed", "Refunded"]
+        },
+        "paymentReference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "itemTitlesSummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "itemCount": {
+          "type": "number"
+        },
+        "downloadToken": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128
+        },
+        "downloadCount": {
+          "type": "number"
+        },
+        "maxDownloads": {
+          "type": "number"
+        },
+        "expiresAtMs": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orderNumber",
+        "storeId",
+        "sellerId",
+        "buyerId",
+        "primaryProductId",
+        "customerName",
+        "customerEmail",
+        "currency",
+        "subtotal",
+        "totalAmount",
+        "paymentMethod",
+        "paymentStatus",
+        "paymentReference",
+        "itemTitlesSummary",
+        "itemCount",
+        "downloadToken",
+        "downloadCount",
+        "maxDownloads",
+        "expiresAtMs",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CustomerRecord": {
+      "title": "CustomerRecord",
+      "description": "Seller-isolated customer order relationship record.",
+      "type": "object",
+      "properties": {
+        "customerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "storeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "buyerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "customerEmail": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "orderCount": { "type": "number" },
+        "totalSpentMinor": { "type": "number" },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "PKR", "INR", "GBP", "EUR", "AED", "SAR", "CAD", "AUD"]
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "customerId",
+        "storeId",
+        "sellerId",
+        "buyerId",
+        "customerName",
+        "customerEmail",
+        "orderCount",
+        "totalSpentMinor",
+        "currency",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AnalyticsRecord": {
+      "title": "AnalyticsRecord",
+      "description": "Seller-isolated sales and conversion analytics snapshot.",
+      "type": "object",
+      "properties": {
+        "analyticsId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "storeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "PKR", "INR", "GBP", "EUR", "AED", "SAR", "CAD", "AUD"]
+        },
+        "verifiedSalesCount": { "type": "number" },
+        "grossRevenueMinor": { "type": "number" },
+        "netEarningsMinor": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "analyticsId",
+        "storeId",
+        "sellerId",
+        "currency",
+        "verifiedSalesCount",
+        "grossRevenueMinor",
+        "netEarningsMinor",
+        "updatedAt"
+      ]
+    },
+    "DownloadLog": {
+      "title": "DownloadLog",
+      "description": "Protected digital product download verification record.",
+      "type": "object",
+      "properties": {
+        "downloadId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "productId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "storeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "buyerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "downloadCount": { "type": "number" },
+        "maxDownloads": { "type": "number" },
+        "expiresAtMs": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "downloadId",
+        "orderId",
+        "orderNumber",
+        "productId",
+        "storeId",
+        "sellerId",
+        "buyerId",
+        "downloadCount",
+        "maxDownloads",
+        "expiresAtMs",
+        "createdAt"
+      ]
+    },
+    "SubscriptionRecord": {
+      "title": "SubscriptionRecord",
+      "description": "Seller Free vs. DreamStore Pro subscription & waitlist record.",
+      "type": "object",
+      "properties": {
+        "subscriptionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "storeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "plan": { "type": "string", "enum": ["Free", "Pro"] },
+        "status": { "type": "string", "enum": ["Active", "Waitlist", "Cancelled"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "subscriptionId",
+        "sellerId",
+        "storeId",
+        "plan",
+        "status",
+        "updatedAt"
+      ]
+    },
+    "LedgerRecord": {
+      "title": "LedgerRecord",
+      "description": "Persistent financial ledger record tracking gross sales, 5% DreamStore commission, seller share, verification mode, and commission settlement status.",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "storeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "buyerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "PKR", "INR", "GBP", "EUR", "AED", "SAR", "CAD", "AUD"]
+        },
+        "commissionRateBps": { "type": "number" },
+        "grossAmountMinor": { "type": "number" },
+        "platformCommissionMinor": { "type": "number" },
+        "sellerShareBeforeFeesMinor": { "type": "number" },
+        "gatewayFeeMinor": { "type": "number" },
+        "sellerNetEarningsMinor": { "type": "number" },
+        "paymentMethod": {
+          "type": "string",
+          "enum": [
+            "free_instant",
+            "jazzcash",
+            "easypaisa",
+            "upi_india",
+            "razorpay_inr",
+            "stripe_card",
+            "manual_bank",
+            "payoneer"
+          ]
+        },
+        "paymentStatus": {
+          "type": "string",
+          "enum": ["Pending", "Paid", "Failed", "Refunded"]
+        },
+        "verificationMode": {
+          "type": "string",
+          "enum": ["Unverified", "Instant Free", "Manually Verified by Seller", "Gateway Verified"]
+        },
+        "commissionStatus": {
+          "type": "string",
+          "enum": ["not_applicable", "outstanding", "paid", "reversed", "disputed"]
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orderId",
+        "orderNumber",
+        "storeId",
+        "sellerId",
+        "buyerId",
+        "currency",
+        "commissionRateBps",
+        "grossAmountMinor",
+        "platformCommissionMinor",
+        "sellerShareBeforeFeesMinor",
+        "gatewayFeeMinor",
+        "sellerNetEarningsMinor",
+        "paymentMethod",
+        "paymentStatus",
+        "verificationMode",
+        "commissionStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LedgerAuditLog": {
+      "title": "LedgerAuditLog",
+      "description": "Immutable append-only audit trail entry for order, manual payment verification, and commission state transitions.",
+      "type": "object",
+      "properties": {
+        "auditId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sellerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "action": {
+          "type": "string",
+          "enum": [
+            "ORDER_CREATED",
+            "MANUAL_PAYMENT_VERIFIED",
+            "PAYMENT_REJECTED",
+            "ORDER_REFUNDED_REVERSED",
+            "COMMISSION_DISPUTED",
+            "COMMISSION_SETTLED",
+            "INVOICE_GENERATED",
+            "INVOICE_OVERDUE_RESTRICTED",
+            "COMMISSION_PAYMENT_SUBMITTED",
+            "COMMISSION_PAYMENT_VERIFIED",
+            "COMMISSION_PAYMENT_REJECTED",
+            "COMMISSION_ADJUSTED"
+          ]
+        },
+        "previousStatus": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "newStatus": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "verificationMode": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "auditId",
+        "orderNumber",
+        "orderId",
+        "sellerId",
+        "actorUid",
+        "action",
+        "previousStatus",
+        "newStatus",
+        "verificationMode",
+        "detail",
+        "createdAt"
+      ]
+    },
+    "CommissionInvoice": {
+      "title": "CommissionInvoice",
+      "description": "Automated 5% commission invoice generated after every 5 verified eligible sales with a 7-day payment deadline.",
+      "type": "object",
+      "properties": {
+        "invoiceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "invoiceNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "sellerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "storeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "PKR", "INR", "GBP", "EUR", "AED", "SAR", "CAD", "AUD"]
+        },
+        "orderNumbers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "verifiedSalesCount": { "type": "number" },
+        "grossSalesMinor": { "type": "number" },
+        "commissionAmountMinor": { "type": "number" },
+        "paidAmountMinor": { "type": "number" },
+        "adjustedAmountMinor": { "type": "number" },
+        "remainingBalanceMinor": { "type": "number" },
+        "status": {
+          "type": "string",
+          "enum": ["open", "overdue", "payment_submitted", "paid", "voided"]
+        },
+        "issuedAtMs": { "type": "number" },
+        "dueAtMs": { "type": "number" },
+        "serverSignature": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "invoiceId",
+        "invoiceNumber",
+        "sellerId",
+        "storeId",
+        "currency",
+        "orderNumbers",
+        "verifiedSalesCount",
+        "grossSalesMinor",
+        "commissionAmountMinor",
+        "paidAmountMinor",
+        "adjustedAmountMinor",
+        "remainingBalanceMinor",
+        "status",
+        "issuedAtMs",
+        "dueAtMs",
+        "serverSignature",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CommissionPayment": {
+      "title": "CommissionPayment",
+      "description": "Seller commission payment submission and Super Admin verification record.",
+      "type": "object",
+      "properties": {
+        "paymentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "invoiceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "invoiceNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "sellerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "storeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "PKR", "INR", "GBP", "EUR", "AED", "SAR", "CAD", "AUD"]
+        },
+        "amountMinor": { "type": "number" },
+        "paymentMethod": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "paymentReference": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "proofNote": { "type": "string", "maxLength": 500 },
+        "status": {
+          "type": "string",
+          "enum": ["submitted", "verified", "rejected"]
+        },
+        "submittedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "paymentId",
+        "invoiceId",
+        "invoiceNumber",
+        "sellerId",
+        "storeId",
+        "currency",
+        "amountMinor",
+        "paymentMethod",
+        "paymentReference",
+        "proofNote",
+        "status",
+        "submittedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CommissionAdjustment": {
+      "title": "CommissionAdjustment",
+      "description": "Permanent record of commission invoice credit adjustments due to order refunds or disputes.",
+      "type": "object",
+      "properties": {
+        "adjustmentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "invoiceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "invoiceNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "orderNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "sellerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "PKR", "INR", "GBP", "EUR", "AED", "SAR", "CAD", "AUD"]
+        },
+        "adjustmentAmountMinor": { "type": "number" },
+        "reason": {
+          "type": "string",
+          "enum": ["order_refunded", "order_disputed"]
+        },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "adjustmentId",
+        "invoiceId",
+        "invoiceNumber",
+        "orderNumber",
+        "sellerId",
+        "currency",
+        "adjustmentAmountMinor",
+        "reason",
+        "detail",
+        "createdAt"
+      ]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User role onboarding profile storing buyer or seller role, display name, and email while preventing Super Admin self-assignment.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["buyer", "seller", "super_admin"]
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "onboardingCompleted": {
+          "type": "boolean"
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "role",
+        "displayName",
+        "email",
+        "onboardingCompleted",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/stores/{storeId}": {
+      "schema": { "$ref": "#/entities/Store" },
+      "description": "Publicly viewable storefronts owned by authenticated sellers."
+    },
+    "/sellerSettings/{sellerId}": {
+      "schema": { "$ref": "#/entities/SellerSettings" },
+      "description": "Isolated private seller settings and Payoneer/wallet receiving accounts."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/SellerSettings" },
+      "description": "Isolated private seller settings subcollection."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User account profile and first-login role onboarding selection."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Digital product catalog items associated with a store."
+    },
+    "/products/{productId}/deliverables/{deliverableId}": {
+      "schema": { "$ref": "#/entities/ProductDeliverable" },
+      "description": "Protected digital download files accessible only to owner or verified purchasers."
+    },
+    "/products/{productId}/entitlements/{buyerId}": {
+      "schema": { "$ref": "#/entities/ProductEntitlement" },
+      "description": "Verified download entitlements granted to paid customers."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer orders and digital delivery tracking."
+    },
+    "/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/CustomerRecord" },
+      "description": "Seller-isolated customer order relationship records."
+    },
+    "/analytics/{analyticsId}": {
+      "schema": { "$ref": "#/entities/AnalyticsRecord" },
+      "description": "Seller-isolated sales analytics snapshots."
+    },
+    "/downloads/{downloadId}": {
+      "schema": { "$ref": "#/entities/DownloadLog" },
+      "description": "Protected digital download access and token audit records."
+    },
+    "/subscriptions/{subscriptionId}": {
+      "schema": { "$ref": "#/entities/SubscriptionRecord" },
+      "description": "Seller Free and DreamStore Pro subscription entitlement records."
+    },
+    "/ledger/{orderNumber}": {
+      "schema": { "$ref": "#/entities/LedgerRecord" },
+      "description": "Persistent financial ledger records synchronized atomically with orders."
+    },
+    "/ledger_audit/{auditId}": {
+      "schema": { "$ref": "#/entities/LedgerAuditLog" },
+      "description": "Immutable append-only audit log of all payment verifications and commission transitions."
+    },
+    "/commissionInvoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/CommissionInvoice" },
+      "description": "Automated 5% commission invoices (camelCase collection)."
+    },
+    "/commission_invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/CommissionInvoice" },
+      "description": "Automated 5% commission invoices generated every 5 verified sales."
+    },
+    "/commissionPayments/{paymentId}": {
+      "schema": { "$ref": "#/entities/CommissionPayment" },
+      "description": "Seller commission payment submissions (camelCase collection)."
+    },
+    "/commission_payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/CommissionPayment" },
+      "description": "Seller commission payment submissions and admin verifications."
+    },
+    "/commission_adjustments/{adjustmentId}": {
+      "schema": { "$ref": "#/entities/CommissionAdjustment" },
+      "description": "Permanent record of commission adjustments from refunds or disputes."
+    }
+  }
+}

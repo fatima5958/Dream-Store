@@ -1,0 +1,681 @@
+{
+  "accounts": [
+    {
+      "uid": "u_925e3c9dc62b08dbe360a990",
+      "email": "candyland.1791718159530@dreamstore.test",
+      "displayName": "Zara Candy Studio",
+      "passwordSalt": "d220cfde476f31d77bfcba2102cd0893",
+      "passwordHash": "560ed7e7f9a10e7f5d70767aaf332bdd0eb73f8c80ee1aad96a137f36c723f850fe53a872205b3bd195edbb871cd2808f72f608665b34285727386df237380fa",
+      "createdAtMs": 1791718159634,
+      "updatedAtMs": 1791718159634
+    },
+    {
+      "uid": "u_d22d5c438ad6d558f8e1822e",
+      "email": "seller.a.1791733999654@dreamstore.test",
+      "displayName": "Seller A",
+      "passwordSalt": "fd1286d036e6576d696696e47c508320",
+      "passwordHash": "3844efa9c7df02a839412c8400b3719d866c5bcf08b5d1dcc9e67876072cf24575e2386e0c4de6c1872cfa989ce4059b762104f639ae5bc1f5e56fca6182808c",
+      "createdAtMs": 1791734000003,
+      "updatedAtMs": 1791734000003
+    },
+    {
+      "uid": "u_85210e8d6c1bf2a7885f5e1e",
+      "email": "seller.b.1791733999654@dreamstore.test",
+      "displayName": "Seller B",
+      "passwordSalt": "a988a6f4d41818c6d2d7ba4099e8b31b",
+      "passwordHash": "9136e58afb041dc72fc07e9c308d60d164b03f49ba72575f7bd919e5ae5589c809f80a4d9b954e2ab245c14a7b20c82620ddd3daf20c476480717fda89f506d0",
+      "createdAtMs": 1791734000077,
+      "updatedAtMs": 1791734000077
+    },
+    {
+      "uid": "u_4c8d17ac819c53942e0d0878",
+      "email": "seller-email-test-1791752656309@dreamstore.test",
+      "displayName": "Email Test Seller",
+      "passwordSalt": "daf177df14183b64f443253507ff7c9a",
+      "passwordHash": "652ae165522e7805f09792e73caba4de99b3903781a69f36279a1b00ec66753a1f957df6af3d0ce62d8b1a9ba95b15376fc1d59ce6392bffe267100349b656c0",
+      "createdAtMs": 1791752656529,
+      "updatedAtMs": 1791752656529
+    },
+    {
+      "uid": "u_f4f1a9f3f9ee0b533c325e43",
+      "email": "buyer-order-1791752656309@dreamstore.test",
+      "displayName": "Amina Buyer",
+      "passwordSalt": "8d519c1a3e9e0354f502d1e4f8abcd6d",
+      "passwordHash": "238e720488dad0f73c8ffd862285b9700376e9fd033759713acc890304b78d64970f152c3862b6377e7a2cd982436d2231096242151e4dec035c9a5f65a1373f",
+      "createdAtMs": 1791752656624,
+      "updatedAtMs": 1791752656624
+    },
+    {
+      "uid": "u_bf7dc2c39b10e5ace6cc9f64",
+      "email": "seller-email-test-1791752778570@dreamstore.test",
+      "displayName": "Email Test Seller",
+      "passwordSalt": "71b6a956a7e659d24998885737ce5b86",
+      "passwordHash": "9ce55a3efaddcd9ceab155883c2afe777a505410a728e29e70d493e2c1a2cce65a73c58253a19456d4875a70f4bf3fa175f0118de98fbe89cfbcad973de7126c",
+      "createdAtMs": 1791752778738,
+      "updatedAtMs": 1791752778738
+    },
+    {
+      "uid": "u_183eb8216ed12364026af0af",
+      "email": "buyer-order-1791752778570@dreamstore.test",
+      "displayName": "Amina Buyer",
+      "passwordSalt": "52392db3c10da855a7147b7703fdf9ad",
+      "passwordHash": "ece0d73ed132d2523e92cf3f44fbd879ca1eadedba7a476bd1b91e2637e8ac85af2367b75058a68c99023e3f465fe95640a99f92f8a7db060b8fafb4ee1b9537",
+      "createdAtMs": 1791752778822,
+      "updatedAtMs": 1791752778822
+    },
+    {
+      "uid": "u_6b839c334e5ef6e23950c74c",
+      "email": "seller-email-test-1791752959154@dreamstore.test",
+      "displayName": "Email Test Seller",
+      "passwordSalt": "bd15b6a6f336a6e6ece31dcb99e3f62a",
+      "passwordHash": "209d9f511719f9636f8634b6d49cf23694c9c234572eddd03aa22567d3cda9891cdd9a8a0493ad4465b8ed50075675390ae290d2dfe34a9c368f87227c605ea9",
+      "createdAtMs": 1791752959314,
+      "updatedAtMs": 1791752959314
+    },
+    {
+      "uid": "u_9fb45f01b5005efb1ac58f91",
+      "email": "buyer-order-1791752959154@dreamstore.test",
+      "displayName": "Amina Buyer",
+      "passwordSalt": "63639b3afc225bf66d3911cd55a9828d",
+      "passwordHash": "c2cab6a408042579ddb3a9648d8e911a2b95d6f8b010b42974a00ea9dcc37f69fa1952de778f9cb7a112dc7759276b3aeecbe3f3d491b99eeffca2616c4eb19b",
+      "createdAtMs": 1791752959410,
+      "updatedAtMs": 1791752959410
+    },
+    {
+      "uid": "u_05ecd3467a440a8a011b42ef",
+      "email": "new.buyer.1791774599708@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "331facfc3e5196308a8f1347c0873e76",
+      "passwordHash": "3aa3e77d9a4cdd3cff3a3e5956602b052c8e7d8c71d33729fd344cc318a6cf5897922db09d475614232fc09be7ff56db73b859277c297819be0a919cd5a31d39",
+      "createdAtMs": 1791774599773,
+      "updatedAtMs": 1791774599773
+    },
+    {
+      "uid": "u_139b5f7f01eb8653dd7e419b",
+      "email": "new.seller.1791774599847@dreamstore.app",
+      "displayName": "Zara Creator",
+      "passwordSalt": "043a9d3f8bf808ff659eb0582bc38fe1",
+      "passwordHash": "125ec8054ac848a3c5f0586bc64c5c5dde6a72848353440bc8f9b27078a791b62569530ffbaec8b37be7514ca5ba1f51b06181ae1bed43a7515bbc39335a1fe5",
+      "createdAtMs": 1791774599912,
+      "updatedAtMs": 1791774599912
+    },
+    {
+      "uid": "u_775d8d7e4f0853df4f330beb",
+      "email": "new.buyer.1791776896495@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "60250df1511c8d72071805cee425de57",
+      "passwordHash": "ec847e7bac04d4c276d468878e8d9f4d2b76cec36a1d724aaad01508f70e428e54973ec6df4314673b455e36a0170fe20719d8074dacda24cdfd70f601cef6e7",
+      "createdAtMs": 1791776896557,
+      "updatedAtMs": 1791776896557
+    },
+    {
+      "uid": "u_a8301020951bca524360b9bc",
+      "email": "new.seller.1791776896631@dreamstore.app",
+      "displayName": "Zara Creator",
+      "passwordSalt": "53cd7c7009e2cca6c88c5c964e0e0860",
+      "passwordHash": "c806735646452cfdb6042fe661c590a98c24df541132665718ff4072b54e21d8022e49173c3a462d611a7adc4cbecf85e5b9a816b6c2c244b6d3e121fa650dd4",
+      "createdAtMs": 1791776896690,
+      "updatedAtMs": 1791776896690
+    },
+    {
+      "uid": "u_f18b3a5f315d8c0d74d5f560",
+      "email": "buyer.nav.897667@dreamstore.app",
+      "displayName": "Nadia Shopper",
+      "passwordSalt": "51d1a0e8600d4df7beba489325263b80",
+      "passwordHash": "d207406e87f287bb7ae8a23d4c7342765f6212f33ea4e9a1d8d4874394597858f604c1d1191685472d817188bb2cf36d6f5455281b6c119a90183a5bd267a3ec",
+      "createdAtMs": 1791776897746,
+      "updatedAtMs": 1791776897746
+    },
+    {
+      "uid": "u_bca19888bac5b2b18b62203c",
+      "email": "seller.nav.897667@dreamstore.app",
+      "displayName": "Zainab Creator",
+      "passwordSalt": "f1a4e829a74f9929c564ee59135ed517",
+      "passwordHash": "4bd1df957a3f548dd1943259f6e7a47793d3e8c393a2230974e1c21acd71b474f81c54e3a5cf5523a69dd29d8d5890563e6755cd25b6bf3042645e04be3d201d",
+      "createdAtMs": 1791776897817,
+      "updatedAtMs": 1791776897817
+    },
+    {
+      "uid": "u_5bb66ff02791e5de8932d390",
+      "email": "buyer.role.840703@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "0163bcac839574146010720e8e5275f1",
+      "passwordHash": "f67f5c3a7d091cd4001182abc9bde46a20b815d39834bfbd7d551e8e4d78d79b47fa6c5bf5d146941994a9ac1965888bd58009823e08a9feb4d549bfc52378b8",
+      "createdAtMs": 1791777840883,
+      "updatedAtMs": 1791777840883
+    },
+    {
+      "uid": "u_f583d00850605acea2536c15",
+      "email": "seller.role.840703@dreamstore.app",
+      "displayName": "Hira Studio",
+      "passwordSalt": "c6178fea0f099693563471ebca8d7de0",
+      "passwordHash": "3fbd3f20f3549425646d1bf94554ef403d50f47b74881fd50e52dcbc4349cc8deb15a55c4fadfcac16776c92404fcc8e4dca002e80e31e9e240b3f443fb64913",
+      "createdAtMs": 1791777841081,
+      "updatedAtMs": 1791777841081
+    },
+    {
+      "uid": "u_2218a6e69b6c6bd651256ee5",
+      "email": "new.buyer.1791778135319@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "87ea395e0fc1b5266292f09129c13219",
+      "passwordHash": "c8c6286309094432a581a67057858064461a6bdd80ecf7977c9a87688ab66405a37bd98a90c16280d7e2ed617e5cb5c830b7cdb0a17998d97b249b93c2233f3e",
+      "createdAtMs": 1791778135391,
+      "updatedAtMs": 1791778135391
+    },
+    {
+      "uid": "u_cb891c6157a9ba47b529296b",
+      "email": "new.seller.1791778135486@dreamstore.app",
+      "displayName": "Zara Creator",
+      "passwordSalt": "80d5e4aac122a10d8ff00bfc650fd15d",
+      "passwordHash": "650b0304d037d2feacfce7d09f5386796e342c5a01737cd14d786e7d8cd04fa26b98495639cb7cca6284a3943f369b8cc40451bfc73168855481017a205d2547",
+      "createdAtMs": 1791778135589,
+      "updatedAtMs": 1791778135589
+    },
+    {
+      "uid": "u_94fe1a5d1ee39524fc349ada",
+      "email": "buyer.role.135857@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "81d9e37a0cffa08747962f1b56a2627b",
+      "passwordHash": "4c18d26c22611e17ecc0b0a36da00160d1fdb47f8ff94df3a733bc56236ef3e00a72a924ddfd5a2ac506261ddb08edf9047c0c964b0a73f44649ca09b82f4602",
+      "createdAtMs": 1791778136029,
+      "updatedAtMs": 1791778136029
+    },
+    {
+      "uid": "u_98ef6c6f3b90fd9b04501b8d",
+      "email": "seller.role.135857@dreamstore.app",
+      "displayName": "Hira Studio",
+      "passwordSalt": "434239e3d45d4b6a6e2fcd36bc1ad877",
+      "passwordHash": "8f05de64848dbf41c8d82059f733151abb47241bc2a7bcda4278c3601440eb8e3fc1788a5114d93baf24acf8757ec0bf2029a542a68819b798f04f0dd1f43104",
+      "createdAtMs": 1791778136199,
+      "updatedAtMs": 1791778136199
+    },
+    {
+      "uid": "u_00562f8485557cb9f7c21243",
+      "email": "new.buyer.1791778384808@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "0eab0d6ef133fb31f25c683d39be08b7",
+      "passwordHash": "a1c68209e325475c8b825cdfc576ac4362d278c564047ac00e6ae8a2e63490da034eea834721ccbdb2aabbad5946d0622e0c25490485a5405c27f1b4ff9fc130",
+      "createdAtMs": 1791778384882,
+      "updatedAtMs": 1791778384882
+    },
+    {
+      "uid": "u_34a34245662e2f4dd267286f",
+      "email": "new.seller.1791778384981@dreamstore.app",
+      "displayName": "Zara Creator",
+      "passwordSalt": "baa08f9198da11fa43e03ad63363dd3e",
+      "passwordHash": "815b3324f0b0b960b6549d292363996ce7624edc0382c975a9c2b47ecc4cb18bf7f56c03e1de7b0108cb76137ae8d2ef208d1ef056ee4abdff68e8397c60f29a",
+      "createdAtMs": 1791778385053,
+      "updatedAtMs": 1791778385053
+    },
+    {
+      "uid": "u_a597b5142d27c260ee6ef85a",
+      "email": "buyer.role.385353@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "1700df174088739396fd5d7a895ba443",
+      "passwordHash": "1076f06e444db43838211c33cc3312e0029f4f8027639958634b3bec8815baed4b372d064f386ac7f25145a2b803a7c5b8f3e5d1f45e7144532e56848d2ba29a",
+      "createdAtMs": 1791778385537,
+      "updatedAtMs": 1791778385537
+    },
+    {
+      "uid": "u_6851fa4577b9930aef03a648",
+      "email": "seller.role.385353@dreamstore.app",
+      "displayName": "Hira Studio",
+      "passwordSalt": "f72053219fbaab3cdd577a90480911c0",
+      "passwordHash": "bb9e539ba6460a5f40915c31c134c9778e036ba9b3f94ad5f5060152aa626711c493e944b9fe8d834b5829e75b3d6afa0f482285cdbffd1cdd009e3e67e54821",
+      "createdAtMs": 1791778385681,
+      "updatedAtMs": 1791778385681
+    },
+    {
+      "uid": "u_f238b2f2a01befb6ed0878ef",
+      "email": "buyer.role.459517@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "76c39370e585d7069abd495d7ca03b19",
+      "passwordHash": "c234c5e4e26948fee5d63ffe4804c06571063af341fb9cf5d79124b9fd3a88c820a43e2f7608e2be0fdc91bb075222f755ed14458d6c54dacf255c47a9fce166",
+      "createdAtMs": 1791778459705,
+      "updatedAtMs": 1791778459705
+    },
+    {
+      "uid": "u_cbedd42a1b1a13e582ff44ce",
+      "email": "seller.role.459517@dreamstore.app",
+      "displayName": "Hira Studio",
+      "passwordSalt": "fb8e371ab65d31462cc2fb7f08bb15e9",
+      "passwordHash": "55732205c2642bbba07a91ed8b0420a3858b4488a09b2e68a4a3d919ec0ca597879bcc3c71a840b4ba2f873f19dbdd935d621d138db6ee301c0a0bc9bd55ca91",
+      "createdAtMs": 1791778459873,
+      "updatedAtMs": 1791778459873
+    },
+    {
+      "uid": "u_e57fe9d4068e1225d35a9031",
+      "email": "buyer.role.211931@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "a16983c43a8cc5a92dc4af415003d1f6",
+      "passwordHash": "10a7b0736c109ee21f9c16c88079487ae403c7d17200a658d5a3f9b80a0efefcaf6d22c7204e6b5b2cb9aa080d63346eebbf88f02b9df98677a6a13e1ae8a5dd",
+      "createdAtMs": 1791779212123,
+      "updatedAtMs": 1791779212123
+    },
+    {
+      "uid": "u_8056e54693257de933fd242a",
+      "email": "seller.role.211931@dreamstore.app",
+      "displayName": "Hira Studio",
+      "passwordSalt": "93b73c307370004311c19c0e9f23c2d6",
+      "passwordHash": "03435a914505aa58b81c7d8a9c4532b42688539e2698a3c6f6e70fbee12a9f60fc22f05e7ec4dcf9257621a47d3da25c3ca41f652af9c31a1010bb9f064d2345",
+      "createdAtMs": 1791779212387,
+      "updatedAtMs": 1791779212387
+    },
+    {
+      "uid": "u_cd7f095f2d7853a59073ba5c",
+      "email": "buyer.role.280480@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "4ba9dd4b06dfb2ae318c69a4ebb66f48",
+      "passwordHash": "14dc9f92a95cf69b4b3d6534ec868e13ead05baaebaab2f78ef44058217cbbed7b896fce1b5a0040a49c3c7fa954109e97b6c3d38a112b9e0afeab79033b37c4",
+      "createdAtMs": 1791779280672,
+      "updatedAtMs": 1791779280672
+    },
+    {
+      "uid": "u_8faf07a710bb47008535523f",
+      "email": "seller.role.280480@dreamstore.app",
+      "displayName": "Hira Studio",
+      "passwordSalt": "b3058e9a944f8d191a5c76ef2c8cce31",
+      "passwordHash": "28bf7d57441f7a7761dc68376a673fb7fc58ec1fa4d806c957f3475ba9f0404b78a0bcbd026d976675055edcc8193f7d1f55bc27d8a729d397354c340f784830",
+      "createdAtMs": 1791779280886,
+      "updatedAtMs": 1791779280886
+    },
+    {
+      "uid": "u_bd674bd079e2158747b89e07",
+      "email": "buyer.role.409709@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "passwordSalt": "b0d44cb32afc7426a20d2629190dd438",
+      "passwordHash": "5074df8771984d7d069c424f9e0fc14ef6ba03e22c0a1f19d6f43fae4d2358b863a4e2b78e4719b69f78b090815dd29e585d6bce3da2db48b453f3193422b0de",
+      "createdAtMs": 1791779409885,
+      "updatedAtMs": 1791779409885
+    },
+    {
+      "uid": "u_d559aa056a991f2a2c30ac44",
+      "email": "seller.role.409709@dreamstore.app",
+      "displayName": "Hira Studio",
+      "passwordSalt": "d95043e45a0c09d4377b609c7a4ff46c",
+      "passwordHash": "9fb41fd4c8e977096bb23b374dfac97c6ffb1f19d6cb6e1ce926afc0f77531e6e232fa109cc06090272aca8b94037594ef04300c94ec55637705e5f8eee3cb55",
+      "createdAtMs": 1791779410077,
+      "updatedAtMs": 1791779410077
+    }
+  ],
+  "sessions": [
+    {
+      "sessionId": "c9470e2735ade422d41eb3fac21f0317a7e8",
+      "uid": "u_925e3c9dc62b08dbe360a990",
+      "email": "candyland.1791718159530@dreamstore.test",
+      "displayName": "Zara Candy Studio",
+      "expiresAtMs": 1792322959635
+    },
+    {
+      "sessionId": "8e79248f628498a43220163432771659c459",
+      "uid": "u_925e3c9dc62b08dbe360a990",
+      "email": "candyland.1791718159530@dreamstore.test",
+      "displayName": "Zara Candy Studio",
+      "expiresAtMs": 1792322959714
+    },
+    {
+      "sessionId": "e58c643ed4b17d39c401e6d70dddf454ae68",
+      "uid": "u_d22d5c438ad6d558f8e1822e",
+      "email": "seller.a.1791733999654@dreamstore.test",
+      "displayName": "Seller A",
+      "expiresAtMs": 1792338800004
+    },
+    {
+      "sessionId": "40e063834fdcb857bbcf174f9bffa59754cd",
+      "uid": "u_85210e8d6c1bf2a7885f5e1e",
+      "email": "seller.b.1791733999654@dreamstore.test",
+      "displayName": "Seller B",
+      "expiresAtMs": 1792338800077
+    },
+    {
+      "sessionId": "a49b87d7e671241381ba40bd2910ab341ed4",
+      "uid": "u_4c8d17ac819c53942e0d0878",
+      "email": "seller-email-test-1791752656309@dreamstore.test",
+      "displayName": "Email Test Seller",
+      "expiresAtMs": 1792357456530
+    },
+    {
+      "sessionId": "f866eecb854f570eb73a6dc61f00acaae97d",
+      "uid": "u_f4f1a9f3f9ee0b533c325e43",
+      "email": "buyer-order-1791752656309@dreamstore.test",
+      "displayName": "Amina Buyer",
+      "expiresAtMs": 1792357456625
+    },
+    {
+      "sessionId": "79944a34bb2d4e769d5329f8de76c60b5d00",
+      "uid": "u_bf7dc2c39b10e5ace6cc9f64",
+      "email": "seller-email-test-1791752778570@dreamstore.test",
+      "displayName": "Email Test Seller",
+      "expiresAtMs": 1792357578739
+    },
+    {
+      "sessionId": "44e1a8af49c1ff782bb07ef853c6547dd984",
+      "uid": "u_183eb8216ed12364026af0af",
+      "email": "buyer-order-1791752778570@dreamstore.test",
+      "displayName": "Amina Buyer",
+      "expiresAtMs": 1792357578823
+    },
+    {
+      "sessionId": "f0d289b652abc454544543a061946ae8073f",
+      "uid": "u_6b839c334e5ef6e23950c74c",
+      "email": "seller-email-test-1791752959154@dreamstore.test",
+      "displayName": "Email Test Seller",
+      "expiresAtMs": 1792357759314
+    },
+    {
+      "sessionId": "d9ea4fb934f1965a0807558e180641a5d182",
+      "uid": "u_9fb45f01b5005efb1ac58f91",
+      "email": "buyer-order-1791752959154@dreamstore.test",
+      "displayName": "Amina Buyer",
+      "expiresAtMs": 1792357759410
+    },
+    {
+      "sessionId": "5a9d64764976af69e2540cdec1e2e36baa4c",
+      "uid": "u_05ecd3467a440a8a011b42ef",
+      "email": "new.buyer.1791774599708@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792379399774
+    },
+    {
+      "sessionId": "43a31c37da8201da7696194bf41abf7e1b1e",
+      "uid": "u_139b5f7f01eb8653dd7e419b",
+      "email": "new.seller.1791774599847@dreamstore.app",
+      "displayName": "Zara Creator",
+      "expiresAtMs": 1792379399913
+    },
+    {
+      "sessionId": "30572b028b034ea261dad0d85116a2f44d18",
+      "uid": "u_775d8d7e4f0853df4f330beb",
+      "email": "new.buyer.1791776896495@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792381696558
+    },
+    {
+      "sessionId": "b450ea97fcd798aab5ff54f59586570f71c7",
+      "uid": "u_a8301020951bca524360b9bc",
+      "email": "new.seller.1791776896631@dreamstore.app",
+      "displayName": "Zara Creator",
+      "expiresAtMs": 1792381696690
+    },
+    {
+      "sessionId": "c7d950612a713461ce297abdc06420148672",
+      "uid": "u_775d8d7e4f0853df4f330beb",
+      "email": "new.buyer.1791776896495@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792381696802
+    },
+    {
+      "sessionId": "9cb70138e33be2dd591b085ffb7defb7fe42",
+      "uid": "u_a8301020951bca524360b9bc",
+      "email": "new.seller.1791776896631@dreamstore.app",
+      "displayName": "Zara Creator",
+      "expiresAtMs": 1792381696853
+    },
+    {
+      "sessionId": "e0324ecf383f4d57d98be67039a5b38b2a2c",
+      "uid": "u_f18b3a5f315d8c0d74d5f560",
+      "email": "buyer.nav.897667@dreamstore.app",
+      "displayName": "Nadia Shopper",
+      "expiresAtMs": 1792381697747
+    },
+    {
+      "sessionId": "b4a97f73e2f04852cfa38d3743fae816e1ac",
+      "uid": "u_bca19888bac5b2b18b62203c",
+      "email": "seller.nav.897667@dreamstore.app",
+      "displayName": "Zainab Creator",
+      "expiresAtMs": 1792381697818
+    },
+    {
+      "sessionId": "9fc6848f0cdb8fd51948583c53b386f14da3",
+      "uid": "u_5bb66ff02791e5de8932d390",
+      "email": "buyer.role.840703@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792382640884
+    },
+    {
+      "sessionId": "fcf8f14a2f1b00363f69e58518c608c38e4d",
+      "uid": "u_f583d00850605acea2536c15",
+      "email": "seller.role.840703@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792382641082
+    },
+    {
+      "sessionId": "5ca4774d4d49cec3bbc922df476cd7c3dc65",
+      "uid": "u_5bb66ff02791e5de8932d390",
+      "email": "buyer.role.840703@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792382641184
+    },
+    {
+      "sessionId": "cefb59c3771e80aaee41bc5dac37e97bfe35",
+      "uid": "u_f583d00850605acea2536c15",
+      "email": "seller.role.840703@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792382641242
+    },
+    {
+      "sessionId": "803f8dba3c5cf23262a59fb677f247d5b24b",
+      "uid": "u_2218a6e69b6c6bd651256ee5",
+      "email": "new.buyer.1791778135319@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792382935393
+    },
+    {
+      "sessionId": "09d6fc7f136635669178419f4ae4e7a1df20",
+      "uid": "u_cb891c6157a9ba47b529296b",
+      "email": "new.seller.1791778135486@dreamstore.app",
+      "displayName": "Zara Creator",
+      "expiresAtMs": 1792382935590
+    },
+    {
+      "sessionId": "baf494fb0f520afd2888fd6c74d951f774e6",
+      "uid": "u_2218a6e69b6c6bd651256ee5",
+      "email": "new.buyer.1791778135319@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792382935721
+    },
+    {
+      "sessionId": "c5a08432c9b6d85a57dcb9bca2131581ac9d",
+      "uid": "u_cb891c6157a9ba47b529296b",
+      "email": "new.seller.1791778135486@dreamstore.app",
+      "displayName": "Zara Creator",
+      "expiresAtMs": 1792382935775
+    },
+    {
+      "sessionId": "1bc078339c6c0e9f750e4ddb4b37009e2ecd",
+      "uid": "u_94fe1a5d1ee39524fc349ada",
+      "email": "buyer.role.135857@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792382936030
+    },
+    {
+      "sessionId": "9c5a1aefcc09ca63adb70f4e608d2af92917",
+      "uid": "u_98ef6c6f3b90fd9b04501b8d",
+      "email": "seller.role.135857@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792382936213
+    },
+    {
+      "sessionId": "bf8f394f66ba99cba7fb461e8a1656036c14",
+      "uid": "u_94fe1a5d1ee39524fc349ada",
+      "email": "buyer.role.135857@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792382936307
+    },
+    {
+      "sessionId": "77f2a602e80c2172e91599d52966607fbfdb",
+      "uid": "u_98ef6c6f3b90fd9b04501b8d",
+      "email": "seller.role.135857@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792382936362
+    },
+    {
+      "sessionId": "a76a9d73d5c9cf6e8da771df7e342e3381f1",
+      "uid": "u_00562f8485557cb9f7c21243",
+      "email": "new.buyer.1791778384808@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792383184883
+    },
+    {
+      "sessionId": "fc635c9bfd7ca7d7f5ffaddef8cc490887e4",
+      "uid": "u_34a34245662e2f4dd267286f",
+      "email": "new.seller.1791778384981@dreamstore.app",
+      "displayName": "Zara Creator",
+      "expiresAtMs": 1792383185053
+    },
+    {
+      "sessionId": "bef4b0cab460b6010057c4d2f31a93452273",
+      "uid": "u_00562f8485557cb9f7c21243",
+      "email": "new.buyer.1791778384808@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792383185222
+    },
+    {
+      "sessionId": "bb0328207011dd81e7debed8af2f6e1fabe8",
+      "uid": "u_34a34245662e2f4dd267286f",
+      "email": "new.seller.1791778384981@dreamstore.app",
+      "displayName": "Zara Creator",
+      "expiresAtMs": 1792383185277
+    },
+    {
+      "sessionId": "7a58e675aa304a301736e6e4ca037f716c41",
+      "uid": "u_a597b5142d27c260ee6ef85a",
+      "email": "buyer.role.385353@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792383185537
+    },
+    {
+      "sessionId": "8a83d6153ac69a9e1c77e123fa9c6f52aaf8",
+      "uid": "u_6851fa4577b9930aef03a648",
+      "email": "seller.role.385353@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792383185682
+    },
+    {
+      "sessionId": "af40ae8cf6386e5b36e8d36408a4cba2f2b3",
+      "uid": "u_a597b5142d27c260ee6ef85a",
+      "email": "buyer.role.385353@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792383185782
+    },
+    {
+      "sessionId": "daa29fe2b1867b5cd258c7119d0796adae62",
+      "uid": "u_6851fa4577b9930aef03a648",
+      "email": "seller.role.385353@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792383185838
+    },
+    {
+      "sessionId": "cf8799e4c04fa0b911c74b84b0f6acdbd81c",
+      "uid": "u_f238b2f2a01befb6ed0878ef",
+      "email": "buyer.role.459517@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792383259706
+    },
+    {
+      "sessionId": "29222fa07b4c0542c59649d72c9fdef014cf",
+      "uid": "u_cbedd42a1b1a13e582ff44ce",
+      "email": "seller.role.459517@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792383259873
+    },
+    {
+      "sessionId": "7f7c3082f186ecae30fd985e24cccff699b4",
+      "uid": "u_f238b2f2a01befb6ed0878ef",
+      "email": "buyer.role.459517@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792383259969
+    },
+    {
+      "sessionId": "9029500475d698fa73c2c191d22cb6ae7455",
+      "uid": "u_cbedd42a1b1a13e582ff44ce",
+      "email": "seller.role.459517@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792383260029
+    },
+    {
+      "sessionId": "7a978dafc61386b5d1cc8a6565627a68316f",
+      "uid": "u_e57fe9d4068e1225d35a9031",
+      "email": "buyer.role.211931@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792384012123
+    },
+    {
+      "sessionId": "b35c3049ca871688a65e3c6f357a2b8cfc4a",
+      "uid": "u_8056e54693257de933fd242a",
+      "email": "seller.role.211931@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792384012388
+    },
+    {
+      "sessionId": "4887b057f227b69bbbe79ea10344c921a5dd",
+      "uid": "u_e57fe9d4068e1225d35a9031",
+      "email": "buyer.role.211931@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792384012493
+    },
+    {
+      "sessionId": "e7d00c30c0fb2e9debd5bc3b058a93867a54",
+      "uid": "u_8056e54693257de933fd242a",
+      "email": "seller.role.211931@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792384012557
+    },
+    {
+      "sessionId": "bb0994d8fe49c5bfe0ef4b52c6abe6cf6e86",
+      "uid": "u_cd7f095f2d7853a59073ba5c",
+      "email": "buyer.role.280480@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792384080673
+    },
+    {
+      "sessionId": "eeea0ff549e39230f1e5db3cee314630e480",
+      "uid": "u_8faf07a710bb47008535523f",
+      "email": "seller.role.280480@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792384080887
+    },
+    {
+      "sessionId": "93345e2ea208fa76dbf06a2cc403fe08c288",
+      "uid": "u_cd7f095f2d7853a59073ba5c",
+      "email": "buyer.role.280480@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792384081005
+    },
+    {
+      "sessionId": "0c255769f90502edd7f0be6cfc8fe9db6779",
+      "uid": "u_8faf07a710bb47008535523f",
+      "email": "seller.role.280480@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792384081079
+    },
+    {
+      "sessionId": "51c7a9b1c050f57f8258d015c66107084186",
+      "uid": "u_bd674bd079e2158747b89e07",
+      "email": "buyer.role.409709@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792384209886
+    },
+    {
+      "sessionId": "fa8d0b0c0411e51ff4edeb97eda62a3c0027",
+      "uid": "u_d559aa056a991f2a2c30ac44",
+      "email": "seller.role.409709@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792384210078
+    },
+    {
+      "sessionId": "92143c1a097ee3ec765e61a21a33f5814c97",
+      "uid": "u_bd674bd079e2158747b89e07",
+      "email": "buyer.role.409709@dreamstore.app",
+      "displayName": "Amina Shopper",
+      "expiresAtMs": 1792384210175
+    },
+    {
+      "sessionId": "3ef9c7fa7a03cb82837c2240e9b6d196ac1f",
+      "uid": "u_d559aa056a991f2a2c30ac44",
+      "email": "seller.role.409709@dreamstore.app",
+      "displayName": "Hira Studio",
+      "expiresAtMs": 1792384210236
+    }
+  ]
+}
