@@ -448,6 +448,8 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                 data-testid="buyer-profile-email-input"
                 value={customerEmail}
                 onChange={(e) => setCustomerEmail(e.target.value)}
+                readOnly={Boolean(currentUserEmail)}
+                title={currentUserEmail ? 'Email is managed by your sign-in provider.' : undefined}
                 placeholder="you@example.com"
                 className="w-full px-4 py-3 rounded-2xl candy-input text-sm font-bold text-[#50352F] min-h-[48px]"
               />
