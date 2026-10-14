@@ -4450,6 +4450,41 @@ async function startServer() {
       return;
     }
 
+    // Cloud instances do not share /tmp. Load authoritative user role from
+    // Firebase Admin Firestore before guessing role from local caches/orders.
+    if (adminFirestoreDb) {
+      try {
+        const saved = await adminFirestoreDb.collection('users').doc(user.uid).get();
+        const fields = saved.exists ? saved.data() || {} : {};
+        const role = String(fields.role || '');
+        if (role === 'buyer' || role === 'seller') {
+          const hydrated: ServerUserProfileRecord = {
+            uid: user.uid,
+            role,
+            displayName: String(fields.displayName || user.displayName || 'Creator').slice(0, 120),
+            email: String(user.email || '').slice(0, 254),
+            onboardingCompleted: fields.onboardingCompleted === true,
+            ...(role === 'seller' ? { storeId: String(fields.storeId || `store-${user.uid.slice(0, 20)}`) } : {}),
+            createdAtIso: String(fields.createdAtIso || new Date().toISOString()),
+            updatedAtIso: String(fields.updatedAtIso || new Date().toISOString()),
+          };
+          serverUserProfiles.set(user.uid, hydrated);
+          res.json({
+            ok: true,
+            exists: true,
+            needsOnboarding: !hydrated.onboardingCompleted,
+            profile: hydrated,
+            permissions: buildRolePermissions(role),
+          });
+          return;
+        }
+      } catch (err) {
+        console.error('Could not retrieve verified user role from Firestore:', err);
+        res.status(503).json({ error: 'Account details are temporarily unavailable. Please retry.' });
+        return;
+      }
+    }
+
     // 3. Preserve existing sellers who already have an active store in serverStores, sellerSettings cache, or Firestore
     const canonicalUserStoreId = `store-${user.uid.slice(0, 20)}`;
     const existingStore =
@@ -4653,9 +4688,9 @@ async function startServer() {
       return;
     }
 
-    const cleanEmail = String(body.email || user.email || '')
-      .trim()
-      .slice(0, 254);
+    // Profile email always comes from cryptographically verified sign-in,
+    // never a freely editable browser field.
+    const cleanEmail = String(user.email || '').trim().slice(0, 254);
     const defaultNameFromEmail = cleanEmail ? cleanEmail.split('@')[0] : 'Shopper';
     const cleanName = String(body.displayName || body.name || defaultNameFromEmail)
       .trim()
@@ -4683,76 +4718,39 @@ async function startServer() {
       updatedAtIso: nowIso,
     };
 
-    serverUserProfiles.set(user.uid, savedProfile);
-    persistUserProfilesToTmp();
-
-    // Persist to Firestore users/{uid} when token is present (preserving createdAt if document exists)
-    if (FIREBASE_PROJECT_ID && FIREBASE_API_KEY && user.rawToken) {
-      try {
-        const dbRoot = `projects/${FIREBASE_PROJECT_ID}/databases/${encodeURIComponent(
-          FIRESTORE_DATABASE_ID
-        )}/documents`;
-        const docUrl = `https://firestore.googleapis.com/v1/${dbRoot}/users/${encodeURIComponent(
-          user.uid
-        )}?key=${FIREBASE_API_KEY}`;
-        let existingCreatedAtField: unknown = null;
-        try {
-          const checkRes = await fetch(docUrl, {
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${user.rawToken}`,
-            },
-          });
-          if (checkRes.ok) {
-            const checkJson = (await checkRes.json()) as {
-              fields?: Record<string, unknown>;
-            };
-            if (checkJson?.fields?.createdAt) {
-              existingCreatedAtField = checkJson.fields.createdAt;
-            }
-          }
-        } catch {
-          // Ignore existence check error
+    // Do not mark onboarding complete until the verified profile is durably
+    // committed. A /tmp or best-effort REST write loses seller roles on restart.
+    if (!adminFirestoreDb) {
+      res.status(503).json({ error: 'Account database is not available. No role was saved.' });
+      return;
+    }
+    try {
+      const profileRef = adminFirestoreDb.collection('users').doc(user.uid);
+      await adminFirestoreDb.runTransaction(async (tx) => {
+        const previous = await tx.get(profileRef);
+        const previousRole = String(previous.get('role') || '');
+        if (previousRole === 'super_admin' && !isSuper) {
+          throw new Error('Cannot change a privileged account role.');
         }
-
-        const commitUrl = `https://firestore.googleapis.com/v1/${dbRoot}:commit?key=${FIREBASE_API_KEY}`;
-        const fsFields: Record<string, unknown> = {
-          uid: toFirestoreValue(user.uid),
-          role: toFirestoreValue(rawRole),
-          displayName: toFirestoreValue(cleanName),
-          email: toFirestoreValue(cleanEmail),
-          onboardingCompleted: toFirestoreValue(true),
-          ...(rawRole === 'seller' ? { storeId: toFirestoreValue(canonicalStoreId) } : {}),
-          ...(existingCreatedAtField ? { createdAt: existingCreatedAtField } : {}),
-        };
-        const updateTransforms = existingCreatedAtField
-          ? [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }]
-          : [
-              { fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' },
-              { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
-            ];
-        await fetch(commitUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${user.rawToken}`,
-          },
-          body: JSON.stringify({
-            writes: [
-              {
-                update: {
-                  name: `${dbRoot}/users/${encodeURIComponent(user.uid)}`,
-                  fields: fsFields,
-                },
-                updateTransforms,
-              },
-            ],
-          }),
-        }).catch(() => undefined);
-      } catch {
-        // Non-blocking Firestore sync
-      }
+        // Authenticated users are allowed to select Buyer or Seller; a role
+        // change does not grant admin permissions (signed token and env UID).
+        const now = new Date();
+        tx.set(profileRef, {
+          uid: user.uid,
+          role: rawRole,
+          displayName: cleanName,
+          email: cleanEmail,
+          onboardingCompleted: true,
+          ...(rawRole === 'seller' ? { storeId: canonicalStoreId } : {}),
+          createdAt: previous.exists ? previous.get('createdAt') || now : now,
+          updatedAt: now,
+        });
+      });
+      serverUserProfiles.set(user.uid, savedProfile);
+    } catch (err) {
+      console.error('Durable user role save failed:', err);
+      res.status(503).json({ error: 'Your account role could not be saved securely. Please retry.' });
+      return;
     }
 
     res.json({
