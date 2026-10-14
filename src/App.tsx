@@ -797,29 +797,13 @@ export default function App() {
             if (storeSnap.exists()) {
               hasExistingStoreDoc = true;
               existingStoreData = storeSnap.data();
-              if (!existingRole) {
-                existingRole = 'seller';
-              }
+              // Store metadata may be used to populate the UI, but never to
+              // grant a role before the verified backend confirms ownership.
             }
           } catch {
             // Ignore store check error
           }
 
-          if (!existingRole) {
-            try {
-              const userSnap = await getDoc(doc(db, 'users', user.uid));
-              if (userSnap.exists()) {
-                const ud = userSnap.data();
-                if (ud.onboardingCompleted && (ud.role === 'buyer' || ud.role === 'seller')) {
-                  existingRole = ud.role;
-                  existingName = String(ud.displayName || defaultName);
-                  existingEmail = String(ud.email || defaultEmail);
-                }
-              }
-            } catch {
-              // Ignore user doc check error
-            }
-          }
         }
 
         if (!existingRole) {
@@ -869,7 +853,7 @@ export default function App() {
         }
 
         // If brand-new user on first login (no existing role and no existing store), prompt Role Onboarding
-        if (!existingRole && !hasExistingStoreDoc) {
+        if (!existingRole) {
           setUserProfile(null);
           setAuthModalOpen(false);
           setRoleOnboardingOpen(true);
