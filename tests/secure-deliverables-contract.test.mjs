@@ -23,7 +23,8 @@ test('upload uses owner/product-scoped private Firebase Storage without sample s
   assert.match(seller, /deliverables\/\$\{sdkUid\}\/\$\{productId\}\//);
   assert.match(server, /app.post\('\/api\/uploads\/product'/);
   assert.match(server, /resolveOwnedStoreForUser\(user.uid\)/);
-  assert.match(seller, /setProdFileDataUrl\(`storage:\/\//);
+  assert.match(seller, /privateReference = `storage:\/\//);
+  assert.match(seller, /setProdFileDataUrl\(privateReference\)/);
   assert.doesNotMatch(seller, /createSampleGuideDataUrl/);
   assert.match(rules, /request\.auth\.uid == ownerId \|\| isSuperAdmin\(\)/);
   assert.match(rules, /allow list: if false/);
