@@ -5952,6 +5952,10 @@ async function startServer() {
       const productDocRef = adminFirestoreDb.collection('products').doc(record.id);
       const existingSnap = await productDocRef.get();
       if (existingSnap.exists) {
+        if (existingSnap.get('deleted') === true) {
+          res.status(410).json({ error: 'This product was removed and cannot be republished. Create a new listing.' });
+          return;
+        }
         const savedOwner = String(existingSnap.get('ownerId') || '');
         const savedStore = String(existingSnap.get('storeId') || '');
         if (savedOwner !== effectiveOwnerId || savedStore !== record.storeId) {
@@ -5962,6 +5966,7 @@ async function startServer() {
       const now = new Date();
       await productDocRef.set({
         ...record,
+        deleted: false,
         createdAt: existingSnap.exists ? existingSnap.get('createdAt') || now : now,
         updatedAt: now,
       }, { merge: true });
@@ -5991,46 +5996,36 @@ async function startServer() {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
-
-    const { productId } = req.body || {};
-    const existing = serverProducts.get(String(productId));
-    if (!existing) {
-      const ownedStore = await resolveOwnedStoreForUser(user.uid);
-      if (!isSuper && !ownedStore) {
-        res.status(403).json({
-          error: `Forbidden: Buyer "${user.uid}" does not own a store and cannot delete seller products.`,
-        });
-        return;
-      }
-      res.status(404).json({ error: 'Product not found.' });
-      return;
-    }
-    if (!isSuper && existing.ownerId !== user.uid) {
-      res.status(403).json({
-        error: `Forbidden: Seller "${user.uid}" cannot delete product "${productId}" owned by "${existing.ownerId}".`,
-      });
+    const productId = String(req.body?.productId || '').trim();
+    if (!/^[A-Za-z0-9_-]{2,128}$/.test(productId)) {
+      res.status(400).json({ error: 'Invalid product ID.' });
       return;
     }
     if (!adminFirestoreDb) {
-      res.status(503).json({ error: 'Secure product database unavailable. Product was not deleted.' });
+      res.status(503).json({ error: 'Secure product database unavailable. Product was not removed.' });
       return;
     }
     try {
-      const ref = adminFirestoreDb.collection('products').doc(String(productId));
-      const snap = await ref.get();
-      if (!snap.exists) {
-        res.status(404).json({ error: 'Product not found in the saved catalog.' });
+      const productRef = adminFirestoreDb.collection('products').doc(productId);
+      const snap = await productRef.get();
+      if (!snap.exists || snap.get('deleted') === true) {
+        res.status(404).json({ error: 'Product not found.' });
         return;
       }
       if (!isSuper && snap.get('ownerId') !== user.uid) {
-        res.status(403).json({ error: 'You cannot delete another seller\'s product.' });
+        res.status(403).json({ error: 'You cannot remove another seller\'s product.' });
         return;
       }
-      // Soft-delete to preserve purchased buyer entitlements and originals.
-      // Archived products are never published in seller storefronts or checkout.
-      await ref.update({ published: false, status: 'Draft', updatedAt: new Date() });
-      serverProducts.delete(String(productId));
-      serverProductDeliverables.delete(String(productId));
+      // Tombstone the listing durably, including unpublished drafts. Keep the
+      // private original file and order history available to existing buyers.
+      await productRef.update({
+        published: false,
+        status: 'Draft',
+        deleted: true,
+        updatedAt: new Date(),
+      });
+      serverProducts.delete(productId);
+      serverProductDeliverables.delete(productId);
       res.json({ ok: true, deletedId: productId, archived: true });
     } catch (err) {
       console.error('Product archive failed:', err);
