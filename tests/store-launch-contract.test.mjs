@@ -108,3 +108,20 @@ test('public endpoints do not expose financial metrics or count visits for unkno
   assert.match(visits, /!matched \|\| matched\.status !== 'Active'/);
   assert.match(visits, /const targetStoreId = matched\.storeId/);
 });
+
+test('role onboarding refreshes Firebase ID token and securely recovers from a rejected session', () => {
+  const start = app.indexOf('  const handleCompleteRoleOnboarding = async');
+  const end = app.indexOf('  const handleNavigate =', start);
+  assert.ok(start >= 0, 'onboarding handler exists');
+  const roleHandler = app.slice(start, end < 0 ? start + 6500 : end);
+  assert.match(roleHandler, /getAuthHeaders\(\{\}, \{ forceRefresh: true, requireAuth: true \}\)/);
+  assert.match(roleHandler, /if \(res\.status === 401\)/);
+  assert.match(roleHandler, /await requireNewSignIn\(\)/);
+  assert.match(roleHandler, /setAuthModalMode\('signin'\)/);
+  assert.match(roleHandler, /invalidateRejectedLegacyEmailSession\(\)/);
+  assert.match(firebase, /auth\.currentUser\.getIdToken\(options\.forceRefresh === true\)/);
+  assert.match(firebase, /if \(options\.requireAuth && !headers\.Authorization\)/);
+  assert.match(firebase, /setServerEmailSession\(null\)/);
+  assert.match(server, /code: 'auth\/session-invalid'/);
+  assert.match(server, /const user = await extractVerifiedCaller\(req\)/);
+});
