@@ -919,13 +919,13 @@ export default function App() {
               storeId: userStoreId,
               email: existingEmail,
               jazzCashMerchantId: '',
-              jazzCashEnabled: true,
+              jazzCashEnabled: false,
               easypaisaStoreId: '',
-              easypaisaEnabled: true,
+              easypaisaEnabled: false,
               upiId: '',
               paymentLinkUrl: '',
               payoneerEnabled: false,
-              payoneerReceivingEmail: existingEmail,
+              payoneerReceivingEmail: '',
               payoneerRequestLink: '',
               payoneerReceivingAccountDetails: '',
               whatsappNotificationNumber: '',
@@ -1690,13 +1690,13 @@ export default function App() {
         storeId: userStoreId,
         email: cleanEmail,
         jazzCashMerchantId: '',
-        jazzCashEnabled: true,
+        jazzCashEnabled: false,
         easypaisaStoreId: '',
-        easypaisaEnabled: true,
+        easypaisaEnabled: false,
         upiId: '',
         paymentLinkUrl: '',
         payoneerEnabled: false,
-        payoneerReceivingEmail: cleanEmail,
+        payoneerReceivingEmail: '',
         payoneerRequestLink: '',
         payoneerReceivingAccountDetails: '',
         whatsappNotificationNumber: '',
@@ -2271,15 +2271,14 @@ export default function App() {
       return c;
     });
 
-    let primaryProduct = resolvedCart[0].product;
-    const rawBuyerUid = params.buyerUid || currentUser?.uid || 'sandbox-test-buyer-uid';
-    const targetSellerId =
-      (primaryProduct.ownerId &&
-      primaryProduct.ownerId !== 'demo-owner' &&
-      primaryProduct.ownerId !== 'seller-pk-fatima' &&
-      primaryProduct.ownerId !== 'seller-in-ananya'
-        ? primaryProduct.ownerId
-        : config.ownerId) || 'seller-pk-fatima';
+    if (!currentUser) throw new Error('Sign in before placing an order.');
+    if (resolvedCart.length === 0) throw new Error('Your bag is empty. Choose a product before checkout.');
+    const primaryProduct = resolvedCart[0].product;
+    const rawBuyerUid = currentUser.uid;
+    const targetSellerId = String(primaryProduct.ownerId || '');
+    if (!targetSellerId || !config.storeId) {
+      throw new Error('Seller or store is unavailable. Refresh the product page.');
+    }
     const serverBuyerId = rawBuyerUid;
     const cartSig = resolvedCart.map((c) => `${c.product.id}:${c.quantity}`).join('|');
     const refSig = (params.paymentReference || 'free').trim();
@@ -2639,6 +2638,11 @@ export default function App() {
   };
 
   const handleNavigate = (screen: ScreenId, productId?: string) => {
+    if (!currentUser && (screen === 'wizard' || screen === 'owner-dashboard' || screen === 'visual-editor')) {
+      setAuthModalMode('signup');
+      setAuthModalOpen(true);
+      return;
+    }
     // Role-based navigation enforcement
     if (screen === 'super-admin' && !isSuperAdminVerified) {
       setBlockedAccessNotice(
@@ -2693,11 +2697,10 @@ export default function App() {
   const handleSwitchSellerStore = (targetStoreId: string) => {
     setActiveStoreId(targetStoreId);
     const targetConfig = storeConfigs[targetStoreId];
-    const storeProds = products.filter((p) => p.storeId === targetStoreId);
-    if (storeProds.length > 0) {
-      setSelectedProductId(storeProds[0].id);
-      setCart([{ product: storeProds[0], quantity: 1 }]);
-    }
+    const storeProds = products.filter((p) => p.storeId === targetStoreId && p.published);
+    setSelectedProductId(storeProds[0]?.id || '');
+    // Switching stores never auto-adds a product or carries across seller carts.
+    setCart([]);
     try {
       const url = new URL(window.location.href);
       if (targetConfig?.storeSlug) {
@@ -2732,10 +2735,8 @@ export default function App() {
     setActiveStoreId(targetStoreId);
     activeStoreIdRef.current = targetStoreId;
     const storeProds = products.filter((p) => p.storeId === targetStoreId);
-    if (storeProds.length > 0) {
-      setSelectedProductId(storeProds[0].id);
-      setCart([{ product: storeProds[0], quantity: 1 }]);
-    }
+    setSelectedProductId(storeProds[0]?.id || '');
+    setCart([]);
     setActiveScreen(targetScreen);
     try {
       const targetConfig = storeConfigsRef.current[targetStoreId];
@@ -2983,7 +2984,7 @@ export default function App() {
         onCompleteOnboarding={handleCompleteRoleOnboarding}
       />
 
-      {activeScreen === 'wizard' && userProfile?.role !== 'buyer' && (
+      {activeScreen === 'wizard' && currentUser && (userProfile?.role === 'seller' || userProfile?.role === 'super_admin') && (
         <StoreSetupWizard
           config={config}
           onUpdateConfig={handleUpdateConfig}
@@ -2997,7 +2998,7 @@ export default function App() {
         />
       )}
 
-      {activeScreen === 'owner-dashboard' && userProfile?.role !== 'buyer' && (
+      {activeScreen === 'owner-dashboard' && currentUser && (userProfile?.role === 'seller' || userProfile?.role === 'super_admin') && (
         <StoreOwnerDashboard
           config={config}
           onUpdateConfig={handleUpdateConfig}
@@ -3079,7 +3080,7 @@ export default function App() {
         </div>
       )}
 
-      {activeScreen === 'visual-editor' && userProfile?.role !== 'buyer' && (
+      {activeScreen === 'visual-editor' && currentUser && (userProfile?.role === 'seller' || userProfile?.role === 'super_admin') && (
         <VisualStoreEditor
           config={config}
           onUpdateConfig={handleUpdateConfig}
