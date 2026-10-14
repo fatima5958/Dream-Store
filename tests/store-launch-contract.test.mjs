@@ -60,3 +60,24 @@ test('new production sessions never inherit a demo seller, personal branding or 
   assert.doesNotMatch(create, /fatima\.tech|ananya\.creates|displayStoreName/);
   assert.match(app, /import\.meta\.env\.DEV \? INITIAL_STORE_CONFIG\.storeId : ''/);
 });
+
+test('seller product deletion is durable and cannot silently resurrect on restart', () => {
+  const serverDelete = server.slice(server.indexOf("app.post('/api/products/delete'"), server.indexOf("// 5. Server-Side Commission Calculator Endpoint"));
+  assert.match(serverDelete, /await ref\.update\(\{ published: false, status: 'Draft'/);
+  assert.match(serverDelete, /serverProducts\.delete/);
+  assert.match(serverDelete, /snap\.get\('ownerId'\) !== user\.uid/);
+  const clientDelete = app.slice(app.indexOf('  const handleDeleteProduct = async'), app.indexOf('  const handleSavePaymentSettings ='));
+  assert.match(clientDelete, /await fetch\('\/api\/products\/delete'/);
+  assert.match(clientDelete, /if \(!response\.ok\)/);
+  assert.ok(clientDelete.indexOf('if (!response.ok)') < clientDelete.indexOf('setProducts((prev) => prev.filter'), 'UI updates after server acceptance');
+  assert.doesNotMatch(clientDelete, /deleteDoc\(doc\(db, 'products'/);
+});
+
+test('seller catalog never silently assigns fake prices or files to a paid product', () => {
+  const upsert = server.slice(server.indexOf('  const handleUpsertProduct = async'), server.indexOf("  app.post('/api/products/upsert'"));
+  assert.match(upsert, /Set your own valid USD and PKR prices/);
+  assert.match(upsert, /!Number\.isFinite\(givenUsd\)/);
+  assert.match(upsert, /title\.length < 2/);
+  assert.doesNotMatch(upsert, /Math\.max\(1, Number\(productPayload\.priceUsd\) \|\| 1\)/);
+  assert.doesNotMatch(upsert, /fileSizeLabel: String\(productPayload\.fileSizeLabel \|\| '2\.4 MB'\)/);
+});
