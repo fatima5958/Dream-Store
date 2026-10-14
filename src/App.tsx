@@ -1849,44 +1849,8 @@ export default function App() {
     }
     // A new store has no products until its seller uploads real originals.
 
-    // Save to Firestore when authenticated via Firebase SDK
-    if (currentUser && hasFirebaseSdkSession()) {
-      const storeRef = doc(db, 'stores', resolvedStoreId);
-      try {
-        const existingSnap = await getDoc(storeRef);
-        const existingData = existingSnap.exists() ? existingSnap.data() : null;
-        await setDoc(
-          storeRef,
-          {
-            ownerId: existingData?.ownerId || currentUser.uid,
-            storeSlug: cleanSlug,
-            storeName: cleanName,
-            ownerName: fullStore.ownerName.slice(0, 100),
-            instagramHandle: (fullStore.instagramHandle || '').slice(0, 100),
-            sellerCountry: (fullStore.sellerCountry || 'Pakistan').slice(0, 80),
-            productType: (fullStore.productType || 'Ebooks & Guides').slice(0, 100),
-            announcementText: fullStore.announcementText.slice(0, 240),
-            heroHeadingLine1: (fullStore.heroHeadingLine1 || 'Small Steps').slice(0, 120),
-            heroHeadingLine2: (fullStore.heroHeadingLine2 || 'Big Changes.').slice(0, 120),
-            heroSubheading: (fullStore.heroSubheading || 'Digital products').slice(0, 500),
-            heroButtonText: (fullStore.heroButtonText || 'Shop Now').slice(0, 60),
-            heroImage: fullStore.heroImage || INITIAL_STORE_CONFIG.heroImage,
-            logoUrl: fullStore.logoUrl || INITIAL_STORE_CONFIG.logoUrl,
-            theme: fullStore.theme || 'blush-bloom',
-            customAccentColor: (fullStore.customAccentColor || '').slice(0, 20),
-            currency: fullStore.currency || 'PKR',
-            exchangeRatePkr: Number(fullStore.exchangeRatePkr) || 278,
-            status: existingData?.status || 'Active',
-            plan: existingData?.plan || 'Free',
-            ...(existingSnap.exists() ? {} : { createdAt: serverTimestamp() }),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      } catch (err) {
-        reportFirestoreError(err, OperationType.WRITE, `stores/${resolvedStoreId}`);
-      }
-    }
+    // Store documents are committed by the verified backend before success;
+    // no conflicting browser-side second write or synthetic starter products.
 
     return fullStore;
   };
