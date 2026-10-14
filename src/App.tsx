@@ -1941,10 +1941,10 @@ export default function App() {
 
   const handleAddProduct = async (newProduct: Product) => {
     const fileDataUrl = String(newProduct.fileDataUrl || '');
-    if (newProduct.published && !fileDataUrl.startsWith('data:')) {
+    if (newProduct.published && !fileDataUrl.startsWith('data:') && !fileDataUrl.startsWith('storage://')) {
       throw new Error('Upload the original file before publishing a digital product.');
     }
-    if (fileDataUrl.length >= 700000) {
+    if (fileDataUrl.startsWith('data:') && fileDataUrl.length >= 700000) {
       throw new Error('Original file is too large for beta storage. The product was not published.');
     }
     if (!currentUser) throw new Error('Sign in before adding a product.');
@@ -2066,6 +2066,17 @@ export default function App() {
           fileSizeLabel: merged.fileSizeLabel.slice(0, 60),
           updatedAt: serverTimestamp(),
         });
+        // Replacement files must remain available after the browser/server restarts.
+        if (merged.fileDataUrl?.startsWith('storage://')) {
+          await setDoc(doc(db, 'products', productId, 'deliverables', 'main'), {
+            productId,
+            ownerId: currentUser.uid,
+            fileName: merged.fileName.slice(0, 255),
+            fileMimeType: merged.fileType.slice(0, 100),
+            fileDataUrl: merged.fileDataUrl,
+            updatedAt: serverTimestamp(),
+          }, { merge: true });
+        }
       } catch (err) {
         reportFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
       }
