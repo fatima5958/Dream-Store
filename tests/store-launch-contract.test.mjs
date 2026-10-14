@@ -125,3 +125,16 @@ test('role onboarding refreshes Firebase ID token and securely recovers from a r
   assert.match(server, /code: 'auth\/session-invalid'/);
   assert.match(server, /const user = await extractVerifiedCaller\(req\)/);
 });
+
+test('auth restoration never promotes a locally cached role when backend identity is unverified', () => {
+  const start = app.indexOf('// 2. Listen to Firebase & Email Authentication state');
+  const end = app.indexOf('// 3.', start);
+  assert.ok(start >= 0);
+  const restoration = app.slice(start, end > start ? end : start + 21000);
+  assert.doesNotMatch(restoration, /const cachedRaw = localStorage\.getItem/);
+  assert.match(restoration, /getAuthHeaders\(\{\}, \{ forceRefresh: true, requireAuth: true \}\)/);
+  assert.match(restoration, /if \(profRes\.status === 401\)/);
+  assert.match(restoration, /setAuthModalMode\('signin'\)/);
+  assert.match(restoration, /Account verification is temporarily unavailable/);
+  assert.match(restoration, /Could not verify your account/);
+});
