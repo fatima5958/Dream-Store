@@ -823,50 +823,48 @@ export default function App() {
         }
 
         if (!existingRole) {
+          // Role and onboarding state must come from the verified backend.
+          // Do not grant Seller/Buyer dashboards from editable localStorage.
           try {
-            const authHeaders = await getAuthHeaders();
+            const authHeaders = await getAuthHeaders({}, { forceRefresh: true, requireAuth: true });
             const profRes = await fetch('/api/users/profile', {
               headers: authHeaders,
+              cache: 'no-store',
             });
-            if (profRes.ok) {
-              const profData = await profRes.json();
-              if (
-                profData &&
-                profData.needsOnboarding === false &&
-                profData.profile &&
-                (profData.profile.role === 'buyer' ||
-                  profData.profile.role === 'seller' ||
-                  (verifiedSuperAdmin && profData.profile.role === 'super_admin'))
-              ) {
-                existingRole = profData.profile.role;
-                existingName = String(profData.profile.displayName || defaultName);
-                existingEmail = String(profData.profile.email || defaultEmail);
-              }
+            if (profRes.status === 401) {
+              invalidateRejectedLegacyEmailSession();
+              await signOutUser().catch(() => {});
+              setUserProfile(null);
+              setRoleOnboardingOpen(false);
+              setAuthModalMode('signin');
+              setAuthModalOpen(true);
+              setBlockedAccessNotice('Your session expired. Sign in again to open your account.');
+              return;
+            }
+            if (!profRes.ok) {
+              setUserProfile(null);
+              setRoleOnboardingOpen(false);
+              setBlockedAccessNotice('Account verification is temporarily unavailable. Please refresh and retry.');
+              return;
+            }
+            const profData = await profRes.json();
+            if (
+              profData &&
+              profData.needsOnboarding === false &&
+              profData.profile &&
+              (profData.profile.role === 'buyer' ||
+                profData.profile.role === 'seller' ||
+                (verifiedSuperAdmin && profData.profile.role === 'super_admin'))
+            ) {
+              existingRole = profData.profile.role;
+              existingName = String(profData.profile.displayName || defaultName);
+              existingEmail = String(profData.profile.email || defaultEmail);
             }
           } catch {
-            // Ignore network error
-          }
-        }
-
-        // Fallback to localStorage profile cache for returning users if offline
-        if (!existingRole) {
-          try {
-            const cachedRaw = localStorage.getItem(`dreamstore_user_profile_${user.uid}`);
-            if (cachedRaw) {
-              const cached = JSON.parse(cachedRaw);
-              if (
-                cached &&
-                cached.uid === user.uid &&
-                cached.onboardingCompleted &&
-                (cached.role === 'buyer' || cached.role === 'seller')
-              ) {
-                existingRole = cached.role;
-                existingName = String(cached.displayName || defaultName);
-                existingEmail = String(cached.email || defaultEmail);
-              }
-            }
-          } catch {
-            // Ignore storage error
+            setUserProfile(null);
+            setRoleOnboardingOpen(false);
+            setBlockedAccessNotice('Could not verify your account. Check your connection and retry.');
+            return;
           }
         }
 
