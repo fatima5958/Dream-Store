@@ -217,7 +217,8 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
     [isolatedStorePaymentSettings, gatewayStatus]
   );
 
-  const isPaidCheckoutConfigured = configuredPaymentMethods.length > 0;
+  const isPaidCheckoutGloballyEnabled = gatewayStatus.paidCheckoutEnabled === true;
+  const isPaidCheckoutConfigured = isPaidCheckoutGloballyEnabled && configuredPaymentMethods.length > 0;
 
   React.useEffect(() => {
     if (isFreeCart) {
@@ -275,10 +276,12 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
       return;
     }
 
+    if (!isFreeCart && !isPaidCheckoutGloballyEnabled) {
+      setCheckoutError('Paid checkout is not yet available during DreamStore beta testing. Please do not transfer money for this order.');
+      return;
+    }
     if (!isFreeCart && !isPaidCheckoutConfigured) {
-      setCheckoutError(
-        'Paid checkout is disabled for this store until the seller configures valid payment receiving details in Seller Dashboard → Payment Settings.'
-      );
+      setCheckoutError('Seller payment setup is incomplete. Paid checkout is unavailable for this store.');
       return;
     }
 
@@ -762,6 +765,20 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                   <span>
                     100% Free Digital Product ($0.00) — Instant Verified Download Enabled!
                   </span>
+                </div>
+              ) : !isPaidCheckoutGloballyEnabled ? (
+                <div
+                  data-testid="checkout-beta-payments-disabled"
+                  className="p-5 sm:p-6 rounded-[26px] bg-[#FFF6DA] border-2 border-[#FFD47B] text-[#50352F] space-y-2.5"
+                >
+                  <div className="flex items-center gap-2 text-sm sm:text-base font-extrabold text-[#8A5A19]">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-[#D66795]" />
+                    <span>Paid Orders Coming Soon — Beta Testing</span>
+                  </div>
+                  <p className="text-xs sm:text-sm font-bold text-[#6E4D45] leading-relaxed">
+                    Please do not send a payment yet. DreamStore is testing secure order verification.
+                    Free downloads and browsing remain available.
+                  </p>
                 </div>
               ) : !isPaidCheckoutConfigured ? (
                 <div
