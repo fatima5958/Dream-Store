@@ -1858,11 +1858,13 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                                     type="button"
                                     disabled={!statementConfirmed}
                                     onClick={async () => {
-                                      markOrderTransitionedToCompleted(ord.id);
-                                      await onUpdateOrderStatus(ord.id, 'Paid');
-                                      showToast(
-                                        `Order #${ord.orderNumber} Seller Verified & secure download email sent to ${ord.customerEmail}!`
-                                      );
+                                      try {
+                                        await onUpdateOrderStatus(ord.id, 'Paid');
+                                        markOrderTransitionedToCompleted(ord.id);
+                                        showToast(`Order #${ord.orderNumber} payment verified; download unlocked.`);
+                                      } catch (err) {
+                                        showToast(err instanceof Error ? err.message : 'Payment verification failed.');
+                                      }
                                     }}
                                     className="px-3.5 py-2 rounded-full candy-btn-mint disabled:opacity-40 text-[13px] font-extrabold text-[#50352F] cursor-pointer min-h-[42px]"
                                   >
@@ -1871,8 +1873,12 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                                   <button
                                     type="button"
                                     onClick={async () => {
-                                      await onUpdateOrderStatus(ord.id, 'Failed');
-                                      showToast(`Order #${ord.orderNumber} marked Failed`);
+                                      try {
+                                        await onUpdateOrderStatus(ord.id, 'Failed');
+                                        showToast(`Order #${ord.orderNumber} marked Failed`);
+                                      } catch (err) {
+                                        showToast(err instanceof Error ? err.message : 'Payment rejection failed.');
+                                      }
                                     }}
                                     className="px-3.5 py-2 rounded-full candy-btn-white text-[#C93B5B] text-[13px] font-extrabold cursor-pointer min-h-[42px]"
                                   >
@@ -1887,10 +1893,12 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                                 <button
                                   type="button"
                                   onClick={async () => {
-                                    await onUpdateOrderStatus(ord.id, 'Refunded');
-                                    showToast(
-                                      `Order #${ord.orderNumber} refunded & 5% commission reversed`
-                                    );
+                                    try {
+                                      await onUpdateOrderStatus(ord.id, 'Refunded');
+                                      showToast(`Order #${ord.orderNumber} marked Refunded; commission reversed.`);
+                                    } catch (err) {
+                                      showToast(err instanceof Error ? err.message : 'Refund update failed.');
+                                    }
                                   }}
                                   className="px-3.5 py-2 rounded-full candy-btn-white text-[13px] font-bold text-[#7A5A52] hover:text-[#C93B5B] cursor-pointer min-h-[42px]"
                                 >
@@ -3116,8 +3124,8 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                   setIsVerifyingExpress(true);
                   setExpressVerifyError(null);
                   try {
-                    markOrderTransitionedToCompleted(reviewingOrder.id);
                     await onUpdateOrderStatus(reviewingOrder.id, 'Paid');
+                    markOrderTransitionedToCompleted(reviewingOrder.id);
                     showToast(
                       `Order #${reviewingOrder.orderNumber} Seller Verified & buyer download unlocked!`
                     );
