@@ -40,3 +40,30 @@ jobs:
 
       - name: Test actual Firestore and Storage security rules (no live Firebase project)
         run: npx firebase-tools emulators:exec --project demo-dreamstore-authorization --config firebase.emulator.json --only firestore,storage "node --test tests/firebase-security-emulator.test.mjs"
+
+  public-browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install app dependencies
+        run: bun install --frozen-lockfile
+      - name: Install headless Chromium for Playwright
+        run: bunx playwright install chromium --with-deps
+      - name: Start DreamStore on a local test server
+        run: |
+          nohup bun run dev > /tmp/dreamstore-browser-smoke.log 2>&1 &
+          for attempt in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/dreamstore-browser-smoke.log
+          exit 1
+      - name: Test visitor, signup, guest permissions, store discovery and mobile
+        run: node --test tests/public-beta-browser.test.mjs
+      - name: Show server logs if failed
+        if: failure()
+        run: tail -160 /tmp/dreamstore-browser-smoke.log || true
