@@ -5595,6 +5595,99 @@ async function startServer() {
     });
   });
 
+  // Verified upload fallback for server-email sessions that do not have a Firebase
+  // browser SDK session. Does not accept base64 or publicly expose signed URLs.
+  app.post('/api/uploads/product',
+    express.raw({ type: 'application/octet-stream', limit: '5mb' }),
+    async (req, res) => {
+      const user = await requireAuthenticatedUser(req, res);
+      if (!user) return;
+      if (!user.emailVerified || isVerifiedBuyerOnly(user.uid)) {
+        res.status(403).json({ error: 'Verified sellers only.' });
+        return;
+      }
+      const productId = String(req.headers['x-product-id'] || '');
+      const targetStoreId = String(req.headers['x-store-id'] || '');
+      const originalName = String(req.headers['x-file-name'] || '');
+      const contentType = String(req.headers['x-file-type'] || '').trim().toLowerCase();
+      const allowed = new Map([
+        ['pdf', 'application/pdf'],
+        ['zip', 'application/zip'],
+        ['epub', 'application/epub+zip'],
+        ['txt', 'text/plain'],
+        ['doc', 'application/msword'],
+        ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+      ]);
+      let decodedName = '';
+      try { decodedName = decodeURIComponent(originalName); } catch {
+        res.status(400).json({ error: 'Invalid filename.' }); return;
+      }
+      const ext = decodedName.split('.').pop()?.toLowerCase() || '';
+      const data = req.body;
+      if (
+        !Buffer.isBuffer(data) || data.length < 1 ||
+        data.length > 5 * 1024 * 1024 ||
+        !/^[a-zA-Z0-9_-]{2,128}$/.test(productId) ||
+        decodedName.length < 1 || decodedName.length > 180 ||
+        allowed.get(ext) !== contentType
+      ) {
+        res.status(422).json({ error: 'Invalid file, product ID, MIME type or size (maximum 5 MB).' });
+        return;
+      }
+      const store = await resolveOwnedStoreForUser(user.uid);
+      if (!store || store.storeId !== targetStoreId) {
+        res.status(403).json({ error: 'Only the verified store owner can upload original files.' });
+        return;
+      }
+      if (!FIREBASE_STORAGE_BUCKET || !adminFirestoreDb) {
+        res.status(503).json({ error: 'Private Firebase Storage is not configured.' });
+        return;
+      }
+      // Reject another seller's existing product ID before any upload.
+      const existingProduct = await adminFirestoreDb.collection('products').doc(productId).get();
+      if (existingProduct.exists && (
+        existingProduct.get('ownerId') !== user.uid ||
+        existingProduct.get('storeId') !== targetStoreId
+      )) {
+        res.status(403).json({ error: 'Product belongs to another seller.' });
+        return;
+      }
+      const cleanName = decodedName.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
+      const objectPath = `deliverables/${user.uid}/${productId}/${crypto.randomBytes(12).toString('hex')}-${cleanName}`;
+      try {
+        const object = getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).file(objectPath);
+        await object.save(data, {
+          resumable: false,
+          metadata: { contentType },
+          validation: 'crc32c',
+        });
+        try {
+          await adminFirestoreDb.collection('products').doc(productId)
+            .collection('deliverables').doc('main').set({
+              productId,
+              ownerId: user.uid,
+              fileName: decodedName,
+              fileMimeType: contentType,
+              fileDataUrl: `storage://${objectPath}`,
+              updatedAt: new Date(),
+            });
+        } catch (error) {
+          await object.delete({ ignoreNotFound: true }).catch(() => {});
+          throw error;
+        }
+        res.json({
+          ok: true,
+          fileName: decodedName,
+          fileMimeType: contentType,
+          fileSizeBytes: data.length,
+          fileReference: `storage://${objectPath}`,
+        });
+      } catch {
+        res.status(503).json({ error: 'Secure upload failed. Try again before publishing.' });
+      }
+    }
+  );
+
   // 4. Cross-Seller Product Upsert / Save & Delete Endpoints (Enforces Cryptographic Seller Isolation & Overdue Commission Restrictions)
   const handleUpsertProduct = async (req: express.Request, res: express.Response) => {
     const user = await requireAuthenticatedUser(req, res);
