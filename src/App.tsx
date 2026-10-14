@@ -2319,128 +2319,18 @@ export default function App() {
       .slice(0, 1000);
     const totalCount = resolvedCart.reduce((s, c) => s + c.quantity, 0);
 
-    let sellerId =
-      data.sellerId ||
-      (primaryProduct.ownerId &&
-      primaryProduct.ownerId !== 'demo-owner' &&
-      primaryProduct.ownerId !== 'seller-pk-fatima' &&
-      primaryProduct.ownerId !== 'seller-in-ananya'
-        ? primaryProduct.ownerId
-        : config.ownerId || currentUser?.uid || 'seller-pk-fatima');
-
-    let storeId =
-      data.storeId ||
-      (primaryProduct.storeId &&
-      primaryProduct.storeId !== 'store-fatima-tech' &&
-      primaryProduct.storeId !== 'store-in-ananya'
-        ? primaryProduct.storeId
-        : config.storeId || (currentUser ? `store-${currentUser.uid.slice(0, 20)}` : 'store-fatima-tech'));
-
-    let primaryProductId = primaryProduct.id;
-
-    // Atomic Firestore Transaction when authenticated with Firebase SDK
-    if (currentUser && hasFirebaseSdkSession()) {
-      try {
-        const storeDocRef = doc(db, 'stores', storeId);
-        const storeSnap = await getDoc(storeDocRef);
-        if (storeSnap.exists()) {
-          const storeData = storeSnap.data();
-          if (storeData?.ownerId) {
-            sellerId = storeData.ownerId;
-          }
-        }
-      } catch {
-        // Proceed to transaction
-      }
+    // Order/ledger records are now committed atomically by the verified backend.
+    // The browser must never write financial ledger entries or duplicate orders.
+    const sellerId = String(data.sellerId || '');
+    const storeId = String(data.storeId || '');
+    const primaryProductId = String(primaryProduct.id);
+    if (!sellerId || !storeId) {
+      throw new Error('Server did not confirm a verified seller and store.');
     }
-
-    const orderRef = doc(db, 'orders', orderId);
-    const ledgerRef = doc(db, 'ledger', data.orderNumber);
-    const auditId = `aud-${Date.now()}`;
-    const auditRef = doc(db, 'ledger_audit', auditId);
-
     const verificationMode: VerificationMode =
-      data.verificationMode ||
-      (data.calculatedTotal === 0 ? 'Instant Free' : 'Unverified');
+      data.verificationMode || (data.calculatedTotal === 0 ? 'Instant Free' : 'Unverified');
     const commissionStatus: CommissionStatus =
-      data.commissionStatus ||
-      (data.calculatedTotal === 0 ? 'not_applicable' : 'outstanding');
-
-    // Atomic Firestore Transaction when authenticated with Firebase SDK
-    if (currentUser && hasFirebaseSdkSession()) {
-      try {
-        await runTransaction(db, async (tx) => {
-          const existingLedger = await tx.get(ledgerRef);
-          if (existingLedger.exists()) {
-            throw new Error(`Duplicate ledger entry prevented for ${data.orderNumber}`);
-          }
-
-          tx.set(orderRef, {
-            orderNumber: data.orderNumber,
-            storeId,
-            sellerId,
-            buyerId: currentUser.uid,
-            primaryProductId,
-            customerName: params.customerName.slice(0, 120),
-            customerEmail: params.customerEmail.slice(0, 254),
-            currency: params.currency,
-            subtotal: data.calculatedSubtotal,
-            totalAmount: data.calculatedTotal,
-            paymentMethod: params.paymentMethod,
-            paymentStatus: data.initialPaymentStatus,
-            paymentReference: params.paymentReference.slice(0, 200),
-            itemTitlesSummary,
-            itemCount: totalCount,
-            downloadToken: data.downloadToken,
-            downloadCount: 0,
-            maxDownloads: data.maxDownloads,
-            expiresAtMs: data.expiresAtMs,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          tx.set(ledgerRef, {
-            orderId,
-            orderNumber: data.orderNumber,
-            storeId,
-            sellerId,
-            buyerId: currentUser.uid,
-            currency: params.currency,
-            commissionRateBps: 500,
-            grossAmountMinor: data.commissionBreakdown.grossAmountMinor,
-            platformCommissionMinor: data.commissionBreakdown.platformCommissionMinor,
-            sellerShareBeforeFeesMinor: data.commissionBreakdown.sellerShareBeforeFeesMinor,
-            gatewayFeeMinor: data.commissionBreakdown.gatewayFeeMinor,
-            sellerNetEarningsMinor: data.commissionBreakdown.sellerNetEarningsMinor,
-            paymentMethod: params.paymentMethod,
-            paymentStatus: data.initialPaymentStatus,
-            verificationMode,
-            commissionStatus,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          tx.set(auditRef, {
-            auditId,
-            orderNumber: data.orderNumber,
-            orderId,
-            sellerId,
-            actorUid: currentUser.uid,
-            action: 'ORDER_CREATED',
-            previousStatus: 'None',
-            newStatus: data.initialPaymentStatus,
-            verificationMode,
-            detail:
-              data.calculatedTotal === 0
-                ? 'Free order created atomically with instant download token.'
-                : `Order created (${params.currency} ${data.calculatedTotal}) via ${params.paymentMethod}. Pending seller statement confirmation.`,
-            createdAt: serverTimestamp(),
-          });
-        });
-      } catch (err) {
-        reportFirestoreError(err, OperationType.CREATE, `orders/${orderId}`);
-      }
-    }
+      data.commissionStatus || (data.calculatedTotal === 0 ? 'not_applicable' : 'outstanding');
 
     if (data.auditEntry) {
       setAuditLogs((prev) => [data.auditEntry, ...prev]);
