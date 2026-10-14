@@ -4360,18 +4360,8 @@ async function startServer() {
   const serverUserProfiles = new Map<string, ServerUserProfileRecord>();
 
   const loadUserProfilesFromTmp = () => {
-    if (SUPER_ADMIN_UID) {
-      serverUserProfiles.set(SUPER_ADMIN_UID, {
-        uid: SUPER_ADMIN_UID,
-        role: 'super_admin',
-        displayName: 'Fatima',
-        email: SUPER_ADMIN_EMAIL,
-        onboardingCompleted: true,
-        storeId: `store-${SUPER_ADMIN_UID.slice(0, 20)}`,
-        createdAtIso: new Date().toISOString(),
-        updatedAtIso: new Date().toISOString(),
-      });
-    }
+    // A verified admin profile is built only after the server checks an auth token.
+    // No baked-in personal name, email, or seeded admin record.
     try {
       if (fs.existsSync(USER_PROFILES_TMP_PATH)) {
         const raw = JSON.parse(fs.readFileSync(USER_PROFILES_TMP_PATH, 'utf8')) as Record<
