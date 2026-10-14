@@ -523,8 +523,8 @@ export default function App() {
           where('published', '==', true)
         );
         const prodSnap = await getDocs(qPubProds);
-        if (!prodSnap.empty) {
-          const fsProds: Product[] = prodSnap.docs.map((pDoc) => {
+        {
+          const fsProds: Product[] = prodSnap.docs.filter((pDoc) => pDoc.data().deleted !== true).map((pDoc) => {
             const pd = pDoc.data();
             return {
               id: pDoc.id,
@@ -615,19 +615,19 @@ export default function App() {
           setActiveStoreId(loadedStoreId);
 
           if (Array.isArray(data.products) && data.products.length > 0) {
-            const apiProds: Product[] = data.products.map((pd: any) => ({
+            const apiProds: Product[] = data.products.filter((pd: any) => pd.deleted !== true && pd.published === true).map((pd: any) => ({
               id: pd.id,
               storeId: pd.storeId || loadedStoreId,
               ownerId: pd.ownerId || s.ownerId,
               title: pd.title,
-              category: pd.category || 'Ebooks & Guides',
-              subtitle: pd.subtitle || 'Instant Digital Download',
-              description: pd.description || pd.subtitle || 'Digital guide',
+              category: pd.category || 'Ebooks',
+              subtitle: pd.subtitle || '',
+              description: pd.description || '',
               whatsIncluded: [
-                `Complete ${pd.fileName || 'Guide.pdf'} (${pd.fileSizeLabel || '2.4 MB'})`,
+                `Original file: ${pd.fileName || ''} (${pd.fileSizeLabel || 'size unknown'})`,
               ],
               details: [
-                { label: 'Format', value: pd.fileType || 'PDF' },
+                { label: 'Format', value: pd.fileType || '' },
                 { label: 'Delivery', value: 'Instant Digital Download' },
               ],
               price: Number(pd.priceUsd) || 0,
@@ -638,16 +638,16 @@ export default function App() {
               status: pd.status || 'Available',
               image: resolveStoreAssetUrl(pd.image),
               gallery: [resolveStoreAssetUrl(pd.image)].filter(Boolean),
-              features: INITIAL_PRODUCTS[0].features,
-              fileName: pd.fileName || 'Guide.pdf',
-              fileType: pd.fileType || 'PDF',
-              fileSizeLabel: pd.fileSizeLabel || '2.4 MB',
+              features: [],
+              fileName: pd.fileName || '',
+              fileType: pd.fileType || '',
+              fileSizeLabel: pd.fileSizeLabel || '',
             }));
             setProducts((prev) => {
               const existingIds = new Set(apiProds.map((fp) => fp.id));
-              return [...apiProds, ...prev.filter((p) => !existingIds.has(p.id))];
+              return [...apiProds, ...prev.filter((p) => p.storeId !== loadedStoreId && !existingIds.has(p.id))];
             });
-            setSelectedProductId(apiProds[0].id);
+            setSelectedProductId(apiProds[0]?.id || '');
           } else {
             // No published products means an empty storefront, not fabricated goods.
             setProducts((prev) => prev.filter((p) => p.storeId !== loadedStoreId));
@@ -1145,8 +1145,7 @@ export default function App() {
     const unsubProducts = onSnapshot(
       qProducts,
       (snap) => {
-        if (!snap.empty) {
-          const loaded: Product[] = snap.docs.map((docSnap) => {
+        const loaded: Product[] = snap.docs.filter((docSnap) => docSnap.data().deleted !== true).map((docSnap) => {
             const d = docSnap.data();
             return {
               id: docSnap.id,
@@ -1156,11 +1155,7 @@ export default function App() {
               category: d.category,
               subtitle: d.subtitle,
               description: d.description,
-              whatsIncluded: [
-                `Complete ${d.fileName} (${d.fileSizeLabel})`,
-                'Morning & Evening Gentle Routine Trackers',
-                'Printable & Tablet-Friendly Worksheets',
-              ],
+              whatsIncluded: d.fileName ? [`Original file: ${d.fileName} (${d.fileSizeLabel || 'size unknown'})`] : [],
               details: [
                 { label: 'Format', value: d.fileType },
                 { label: 'File Size', value: d.fileSizeLabel },
@@ -1173,11 +1168,8 @@ export default function App() {
               published: d.published,
               status: d.status,
               image: resolveStoreAssetUrl(d.image),
-              gallery: [
-                resolveStoreAssetUrl(d.image),
-                NEUTRAL_PUBLIC_STORE_CONFIG.heroImage,
-              ].filter(Boolean),
-              features: INITIAL_PRODUCTS[0].features,
+              gallery: [resolveStoreAssetUrl(d.image)].filter(Boolean),
+              features: [],
               fileName: d.fileName,
               fileType: d.fileType,
               fileSizeLabel: d.fileSizeLabel,
@@ -1190,22 +1182,15 @@ export default function App() {
             );
             return [...loaded, ...others];
           });
-          // Ensure cart and selectedProductId use the authenticated user's real Firestore product
-          // instead of the unpersisted demo product template
           setSelectedProductId((prevId) =>
-            prevId === 'prod-30-day-reset' && loaded[0] ? loaded[0].id : prevId
+            loaded.some((p) => p.id === prevId) ? prevId : (loaded[0]?.id || '')
           );
-          setCart((prevCart) => {
-            if (
-              prevCart.length === 1 &&
-              prevCart[0].product.id === 'prod-30-day-reset' &&
-              loaded[0]
-            ) {
-              return [{ product: loaded[0], quantity: prevCart[0].quantity }];
-            }
-            return prevCart;
-          });
-        }
+          setCart((prevCart) =>
+            prevCart.filter((item) =>
+              item.product.ownerId !== currentUser.uid ||
+              loaded.some((p) => p.id === item.product.id && p.published)
+            )
+          );
       },
       (err) => reportFirestoreError(err, OperationType.LIST, 'products')
     );
