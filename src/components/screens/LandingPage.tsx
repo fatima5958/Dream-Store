@@ -378,16 +378,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           >
             {isAuthenticated ? (
               <>
-                {userEmail && (
-                  <span
-                    data-testid="navbar-user-email"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#FFF2DF] border border-[#E8D2B5] text-xs font-extrabold text-[#50352F] max-w-[180px] truncate"
-                    title={userEmail}
-                  >
-                    <span className="w-2 h-2 rounded-full bg-[#236B56] shrink-0" />
-                    <span className="truncate">{userEmail}</span>
-                  </span>
-                )}
                 <button
                   type="button"
                   data-testid="desktop-nav-dashboard"
@@ -512,7 +502,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                           }}
                           className="w-full min-h-[44px] px-4 py-2 rounded-2xl bg-[#FFF2DF] border border-[#E8D2B5] text-sm font-bold text-[#6E4F47] flex items-center justify-center cursor-pointer"
                         >
-                          Sign Out ({userEmail || 'Account'})
+                          Sign Out
                         </button>
                       )}
                     </>
