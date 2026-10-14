@@ -213,8 +213,8 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
   const [prodSubtitle, setProdSubtitle] = useState('');
   const [prodDescription, setProdDescription] = useState('');
   const [prodIsFree, setProdIsFree] = useState(false);
-  const [prodPriceUsd, setProdPriceUsd] = useState<number>(29);
-  const [prodPricePkr, setProdPricePkr] = useState<number>(8050);
+  const [prodPriceUsd, setProdPriceUsd] = useState<number>(0);
+  const [prodPricePkr, setProdPricePkr] = useState<number>(0);
   const [prodPublished, setProdPublished] = useState(true);
   const [prodImage, setProdImage] = useState<string>(products[0]?.image || config.heroImage);
   const [prodFileName, setProdFileName] = useState('');
@@ -411,8 +411,8 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
     setProdSubtitle('');
     setProdDescription('');
     setProdIsFree(false);
-    setProdPriceUsd(29);
-    setProdPricePkr(8050);
+    setProdPriceUsd(0);
+    setProdPricePkr(0);
     setProdPublished(true);
     setProdImage(products[0]?.image || config.heroImage);
     setProdFileName('');
@@ -572,15 +572,15 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
       return;
     }
 
+    if (!prodIsFree && (!Number.isFinite(prodPriceUsd) || !Number.isFinite(prodPricePkr) ||
+        prodPriceUsd < 1 || prodPricePkr < 100)) {
+      setProductFormError('Enter your own price (minimum $1 / Rs.100), or mark the product Free.');
+      return;
+    }
     setIsSavingProduct(true);
     try {
-      const finalUsd = prodIsFree ? 0 : Math.max(1, Number(prodPriceUsd) || 29);
-      const finalPkr = prodIsFree
-        ? 0
-        : Math.max(
-            100,
-            Number(prodPricePkr) || Math.round(finalUsd * (config.exchangeRatePkr || 278))
-          );
+      const finalUsd = prodIsFree ? 0 : Number(prodPriceUsd);
+      const finalPkr = prodIsFree ? 0 : Number(prodPricePkr);
 
       const payload: Product = {
         id: editingProductId || draftProductId,
@@ -588,18 +588,9 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
         ownerId: currentUserUid || config.ownerId,
         title: prodTitle.trim(),
         category: prodCategory,
-        subtitle:
-          prodSubtitle.trim() ||
-          prodDescription.trim().slice(0, 120) ||
-          'A gentle digital guide for mindful daily growth.',
-        description:
-          prodDescription.trim() ||
-          'Thoughtfully crafted digital resource with step-by-step exercises and printable templates.',
-        whatsIncluded: [
-          `Complete ${prodFileName} (${prodFileSize})`,
-          'Printable & Tablet-Friendly Worksheets',
-          'Lifetime Instant Digital Access',
-        ],
+        subtitle: prodSubtitle.trim() || prodDescription.trim().slice(0, 120) || '',
+        description: prodDescription.trim(),
+        whatsIncluded: prodFileName ? [`Original file: ${prodFileName} (${prodFileSize})`] : [],
         details: [
           { label: 'Format', value: prodFileType },
           { label: 'File Size', value: prodFileSize },
@@ -612,12 +603,8 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
         published: prodPublished,
         status: prodPublished ? 'Available' : 'Draft',
         image: prodImage,
-        gallery: [prodImage, config.heroImage],
-        features: products[0]?.features || [
-          { title: 'PDF Format', subtitle: 'Instant Download', icon: 'pdf' },
-          { title: 'Easy to Follow', subtitle: 'Step-by-Step Guide', icon: 'guide' },
-          { title: 'Full of Practical Tools', subtitle: 'Worksheets & Templates', icon: 'tools' },
-        ],
+        gallery: [prodImage],
+        features: [],
         fileName: prodFileName,
         fileType: prodFileType,
         fileSizeLabel: prodFileSize,
@@ -629,7 +616,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
         showToast('Product updated successfully');
       } else {
         await onAddProduct(payload);
-        showToast('Product published to your store');
+        showToast(prodPublished ? 'Product published to your store' : 'Product saved as draft');
         setPublishSparkleBanner(payload.title);
         setTimeout(() => setPublishSparkleBanner(null), 6000);
       }
