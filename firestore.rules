@@ -35,10 +35,13 @@ service cloud.firestore {
       return isVerifiedUser() && request.auth.uid == userId;
     }
 
-    // Strictly UID-backed Super Admin check (Restricted exclusively to configured SUPER_ADMIN_UID; never email or arbitrary role claim)
+    // Server-provisioned Firebase custom claims are part of the signed ID token.
+    // Only Firebase Admin SDK (restricted to SUPER_ADMIN_UID and bootstrap secret)
+    // may assign both claims; never trust profile documents or client input.
     function isAdmin() {
       return isVerifiedUser() &&
-        request.auth.uid == 'V2Yxrm20XFWYscGUtHcBN8E9wA62';
+        request.auth.token.role == 'super_admin' &&
+        request.auth.token.superAdmin == true;
     }
 
     // Validation Blueprint: Store
