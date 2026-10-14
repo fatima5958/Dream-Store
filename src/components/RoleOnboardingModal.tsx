@@ -49,7 +49,7 @@ export const RoleOnboardingModal: React.FC<RoleOnboardingModalProps> = ({
   const resolveEffectiveEmail = () => {
     const candidate = (email.trim() || defaultEmail.trim()).slice(0, 254);
     if (candidate && candidate.includes('@')) return candidate;
-    return 'creator@dreamstore.app';
+    return '';
   };
 
   const handleSelectSellerAndStartWizard = async () => {
@@ -58,6 +58,10 @@ export const RoleOnboardingModal: React.FC<RoleOnboardingModalProps> = ({
     setSelectedRole('seller');
     const finalName = resolveEffectiveName();
     const finalEmail = resolveEffectiveEmail();
+    if (!finalEmail || !finalEmail.includes('@')) {
+      setErrorMsg('An email address is required. Please finish account registration.');
+      return;
+    }
     setIsSaving(true);
     try {
       await onCompleteOnboarding({
