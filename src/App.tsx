@@ -1943,10 +1943,12 @@ export default function App() {
     if (fileDataUrl.startsWith('data:') && fileDataUrl.length >= 700000) {
       throw new Error('Original file is too large for beta storage. The product was not published.');
     }
-    if (!currentUser || !hasFirebaseSdkSession()) {
-      throw new Error('Please sign in with a verified Firebase account before publishing.');
+    if (!currentUser) {
+      throw new Error('Please sign in before publishing products.');
     }
 
+    // Firebase accounts stage the draft in Firestore. Authenticated server-email
+    // accounts stage private file metadata through /api/uploads/product.
     if (hasFirebaseSdkSession()) {
       try {
         await setDoc(doc(db, 'products', newProduct.id), {
@@ -2016,8 +2018,8 @@ export default function App() {
   const handleUpdateProduct = async (productId: string, partial: Partial<Product>) => {
     const target = products.find((p) => p.id === productId);
     if (!target) throw new Error('Product no longer exists.');
-    if (!currentUser || !hasFirebaseSdkSession()) {
-      throw new Error('Please sign in with a verified Firebase account before editing products.');
+    if (!currentUser) {
+      throw new Error('Sign in before editing products.');
     }
     const merged: Product = { ...target, ...partial };
     if (merged.ownerId !== currentUser.uid && !isSuperAdminVerified) {
@@ -2026,7 +2028,8 @@ export default function App() {
 
     // Store the replacement private file reference before the server verifies
     // the object and publishes a new version of this listing.
-    if (merged.fileDataUrl?.startsWith('storage://') &&
+    if (hasFirebaseSdkSession() &&
+        merged.fileDataUrl?.startsWith('storage://') &&
         merged.fileDataUrl !== target.fileDataUrl) {
       try {
         await setDoc(doc(db, 'products', productId, 'deliverables', 'main'), {
