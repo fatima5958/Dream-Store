@@ -1,0 +1,30 @@
+name: DreamStore Pull Request Checks
+
+on:
+  push:
+    branches:
+      - fix/launch-checkout-download-safety
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install from committed lockfile
+        run: bun install --frozen-lockfile
+      - name: TypeScript typecheck
+        run: bun run lint
+      - name: Production Vite build
+        run: bun run build
+      - name: Static 5MB storage and security contract checks
+        run: bun test tests/secure-deliverables-contract.test.mjs
