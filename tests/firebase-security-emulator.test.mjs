@@ -2,7 +2,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { ref, uploadBytes, getBytes } from 'firebase/storage';
 
 const projectId = 'demo-dreamstore-authorization';
@@ -31,6 +31,12 @@ before(async () => {
 
   await env.withSecurityRulesDisabled(async (ctx) => {
     const database = ctx.firestore();
+    await setDoc(doc(database, 'stores', 'store-one'), {
+      ownerId: 'seller-one',
+      storeSlug: 'seller-one',
+      status: 'Active',
+      plan: 'Free',
+    });
     await setDoc(doc(database, 'products', 'digital-one'), {
       ownerId: 'seller-one',
       storeId: 'store-one',
@@ -159,4 +165,46 @@ test('New seller can create a Free store but cannot self-grant Pro plan', async 
     { ...base, plan: 'Pro' }));
   await assertSucceeds(setDoc(doc(user('seller-one').firestore(), 'stores', 'store-seller-one'),
     { ...base, plan: 'Free' }));
+});
+
+test('Seller can create an incomplete draft but cannot publish or delete directly', async () => {
+  const sellerDb = user('seller-one').firestore();
+  const draft = doc(sellerDb, 'products', 'draft-only-product');
+  const fields = {
+    storeId: 'store-one',
+    ownerId: 'seller-one',
+    title: 'Fresh Seller Product',
+    category: 'Ebooks',
+    subtitle: '',
+    description: '',
+    priceUsd: 0,
+    pricePkr: 0,
+    isFree: true,
+    published: false,
+    status: 'Draft',
+    image: '',
+    fileName: '',
+    fileType: '',
+    fileSizeLabel: '',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  await assertFails(setDoc(doc(sellerDb, 'products', 'fake-published-product'), {
+    ...fields, published: true, status: 'Available',
+  }));
+  await assertSucceeds(setDoc(draft, fields));
+  await assertFails(updateDoc(draft, {
+    published: true,
+    status: 'Available',
+    updatedAt: serverTimestamp(),
+  }));
+  await assertFails(deleteDoc(draft));
+  await assertFails(updateDoc(doc(sellerDb, 'products', 'digital-one'), {
+    published: false,
+    status: 'Draft',
+    updatedAt: serverTimestamp(),
+  }));
+  const ownDraft = await assertSucceeds(getDoc(draft));
+  assert.equal(ownDraft.exists(), true);
+  await assertFails(getDoc(doc(user('other-buyer').firestore(), 'products', 'draft-only-product')));
 });
