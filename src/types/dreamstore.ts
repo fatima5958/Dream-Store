@@ -379,6 +379,7 @@ export function getConfiguredSellerPaymentMethods(
 }
 
 export interface GatewayServerStatus {
+  paidCheckoutEnabled?: boolean;
   jazzcashConfigured: boolean;
   easypaisaConfigured: boolean;
   razorpayConfigured?: boolean;
