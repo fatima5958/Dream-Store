@@ -1184,10 +1184,50 @@ async function resolveVerifiedStoreRecord(
 void hydrateActiveStoresFromFirestore();
 void hydratePublishedProductsFromFirestore();
 
-function savePersistentStateToDisk() {
-  // Local JSON file persistence is intentionally disabled per security & financial rules.
-  // All financial records live in server-authoritative memory and sync to Firestore collections.
+// Firestore is the durable financial source of truth; in-memory maps are read caches only.
+let ledgerHydrationFinished = false;
+let ledgerHydrationSucceeded = false;
+async function hydrateFinancialLedgerFromFirestore(): Promise<boolean> {
+  if (!adminFirestoreDb) {
+    console.error('Financial database unavailable: Firebase Admin Firestore is not configured.');
+    ledgerHydrationFinished = true;
+    return false;
+  }
+  try {
+    const snapshot = await adminFirestoreDb.collection('ledger').get();
+    for (const doc of snapshot.docs) {
+      const record = doc.data() as LedgerEntry;
+      // Legacy client-created ledger projections are not trusted as payment authority.
+      if (
+        record.orderNumber !== doc.id ||
+        !record.ledgerId ||
+        !record.orderId ||
+        !record.buyerId ||
+        !record.sellerId ||
+        !['Pending', 'Paid', 'Failed', 'Refunded'].includes(record.paymentStatus)
+      ) continue;
+      persistentLedger.set(doc.id, record);
+    }
+    ledgerHydrationSucceeded = true;
+    console.log(`Loaded ${persistentLedger.size} authoritative financial orders from Firestore.`);
+    return true;
+  } catch (err) {
+    console.error('Financial ledger hydration failed; checkout and financial endpoints will fail closed.', err);
+    return false;
+  } finally {
+    ledgerHydrationFinished = true;
+  }
 }
+const financialLedgerHydration = hydrateFinancialLedgerFromFirestore();
+
+async function ensureFinancialDatabaseReady(res: express.Response): Promise<boolean> {
+  if (!adminFirestoreDb || !(await financialLedgerHydration) || !ledgerHydrationFinished || !ledgerHydrationSucceeded) {
+    res.status(503).json({ error: 'Secure order database is unavailable. No checkout or payment change was accepted.' });
+    return false;
+  }
+  return true;
+}
+
 
 function signInvoiceRecord(payload: {
   invoiceId: string;
@@ -5902,8 +5942,11 @@ async function startServer() {
         return;
       }
 
-      if (processedIdempotencyKeys.has(idempotencyKey)) {
-        const existing = processedIdempotencyKeys.get(idempotencyKey)!;
+      if (!(await ensureFinancialDatabaseReady(res))) return;
+
+      const scopedIdempotencyKey = `${verifiedBuyer.uid}:${String(idempotencyKey)}`;
+      if (processedIdempotencyKeys.has(scopedIdempotencyKey)) {
+        const existing = processedIdempotencyKeys.get(scopedIdempotencyKey)!;
         res.status(409).json({
           duplicate: true,
           error: `Duplicate checkout & ledger submission blocked (Order ${existing.orderNumber} already created).`,
@@ -6153,14 +6196,49 @@ async function startServer() {
         updatedAtIso: new Date().toISOString(),
       };
 
+      // Commit the financial order, buyer order and idempotency key atomically.
+      // Never return a successful checkout based solely on in-memory state.
+      const financialDb = adminFirestoreDb!;
+      const ledgerRef = financialDb.collection('ledger').doc(orderNumber);
+      const buyerOrderRef = financialDb.collection('orders').doc(orderId);
+      const idempotencyDocId = crypto.createHash('sha256').update(scopedIdempotencyKey).digest('hex');
+      const idempotencyRef = financialDb.collection('checkout_idempotency').doc(idempotencyDocId);
+      const committed = await financialDb.runTransaction(async (tx) => {
+        const [priorKey, priorOrder] = await Promise.all([tx.get(idempotencyRef), tx.get(ledgerRef)]);
+        if (priorKey.exists) {
+          const prior = priorKey.data() || {};
+          return { duplicate: true, orderNumber: String(prior.orderNumber || ''), orderId: String(prior.orderId || '') };
+        }
+        if (priorOrder.exists) throw new Error('Order ID collision. Please retry checkout.');
+        const timestamp = new Date();
+        tx.create(ledgerRef, ledgerRecord as unknown as Record<string, unknown>);
+        tx.create(buyerOrderRef, {
+          orderNumber, storeId: resolvedStoreId, sellerId: resolvedSellerId, buyerId,
+          primaryProductId, customerName: ledgerRecord.customerName,
+          customerEmail: ledgerRecord.customerEmail, currency,
+          subtotal: calculatedTotal, totalAmount: calculatedTotal,
+          paymentMethod, paymentStatus: initialPaymentStatus,
+          paymentReference: ledgerRecord.paymentReference,
+          itemTitlesSummary: computedSummary, itemCount: computedCount,
+          downloadToken: clientDownloadToken, downloadCount: 0,
+          maxDownloads: 5, expiresAtMs,
+          createdAt: timestamp, updatedAt: timestamp,
+        });
+        tx.create(idempotencyRef, { buyerId, orderNumber, orderId, createdAtIso: timestamp.toISOString() });
+        return { duplicate: false, orderNumber, orderId };
+      });
+      if (committed.duplicate) {
+        res.status(409).json({
+          duplicate: true,
+          orderNumber: committed.orderNumber,
+          orderId: committed.orderId,
+          error: 'Duplicate checkout blocked: This request was already submitted.',
+        });
+        return;
+      }
       persistentLedger.set(orderNumber, ledgerRecord);
-      savePersistentStateToDisk();
-
-      processedIdempotencyKeys.set(idempotencyKey, {
-        orderNumber,
-        orderId,
-        timestamp: Date.now(),
-        downloadToken: clientDownloadToken,
+      processedIdempotencyKeys.set(scopedIdempotencyKey, {
+        orderNumber, orderId, timestamp: Date.now(), downloadToken: clientDownloadToken,
       });
 
       const auditEntry = appendAuditEntry({
