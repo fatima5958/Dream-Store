@@ -160,7 +160,14 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const screenParam = params.get('screen') as ScreenId | null;
     // Never render super-admin before server-side SUPER_ADMIN_UID verification completes
-    if (screenParam === 'super-admin' || window.location.pathname.toLowerCase().includes('super-admin')) {
+    // A direct URL cannot render a private workspace before authentication and role resolution.
+    if (
+      screenParam === 'super-admin' ||
+      screenParam === 'owner-dashboard' ||
+      screenParam === 'wizard' ||
+      screenParam === 'visual-editor' ||
+      window.location.pathname.toLowerCase().includes('super-admin')
+    ) {
       return 'landing';
     }
     if (screenParam && SCREEN_TABS.some((t) => t.id === screenParam)) {
