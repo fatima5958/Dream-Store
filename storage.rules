@@ -36,8 +36,8 @@ service firebase.storage {
     function isValidDeliverableUpload() {
       return request.resource != null &&
              request.resource.size > 0 &&
-             request.resource.size <= 50 * 1024 * 1024 &&
-             request.resource.contentType.matches('(application/pdf|application/zip|text/plain|application/epub\\+zip|image/png|image/jpeg)');
+             request.resource.size <= 5 * 1024 * 1024 &&
+             request.resource.contentType.matches('(application/pdf|application/zip|text/plain|application/epub\\+zip|application/msword|application/vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document)');
     }
 
     // 1. Public Storefront Branding Assets (Logos, Covers, Product Thumbnails)
