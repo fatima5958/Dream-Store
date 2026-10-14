@@ -312,13 +312,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   };
 
   const handleExploreStores = () => {
-    const previewSection =
-      document.getElementById('themes') || document.getElementById('storefront-preview');
-    if (previewSection) {
-      previewSection.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth' });
-    } else {
-      onNavigate('storefront');
-    }
+    // "Explore Stores" means real active seller stores, not a themed UI mockup.
+    setMobileNavOpen(false);
+    setShowExploreStoresModal(true);
   };
 
   return (
@@ -880,7 +876,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       </div>
 
                       {/* Switch Live Sample Stores Bar */}
-                      {storeList.length > 1 && onSwitchStore && (
+                      {storeList.length > 0 && onSwitchStore && (
                         <div className="mt-6 pt-4 border-t border-current/10 flex flex-wrap items-center justify-between gap-2">
                           <span className={`text-xs font-bold ${activePreviewTheme.mutedTextClass}`}>
                             Explore live creator storefronts:
@@ -1265,7 +1261,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <h3 className="font-candy text-xl font-bold text-[#50352F] mb-3">
               Explore Creator Stores
             </h3>
-            <div className="space-y-2">
+            <div className="space-y-2" data-testid="live-store-directory">
+              {storeList.length === 0 && (
+                <p className="text-sm font-medium text-[#6E4F47] py-4">
+                  No public creator stores are available yet. Be the first to launch yours!
+                </p>
+              )}
               {storeList.map((s) => (
                 <button
                   key={s.storeId}
