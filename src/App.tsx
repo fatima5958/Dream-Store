@@ -1896,7 +1896,10 @@ export default function App() {
       if (validSlug.length >= 2 && (next.storeName || '').trim().length >= 1) {
         try {
           const existingSnap = await getDoc(storeRef);
-          const existingData = existingSnap.exists() ? existingSnap.data() : null;
+          // Wizard inputs are local drafts. Never create an Active public store
+          // until the final Launch action has been durably accepted by the backend.
+          if (!existingSnap.exists()) return;
+          const existingData = existingSnap.data();
           await setDoc(
             storeRef,
             {
