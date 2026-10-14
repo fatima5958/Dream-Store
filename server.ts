@@ -1228,6 +1228,30 @@ async function ensureFinancialDatabaseReady(res: express.Response): Promise<bool
   return true;
 }
 
+async function commitFinancialOrderTransition(
+  entry: LedgerEntry,
+  expectedStatus: LedgerEntry['paymentStatus']
+): Promise<void> {
+  if (!adminFirestoreDb || !(await financialLedgerHydration)) {
+    throw new Error('Secure financial database unavailable.');
+  }
+  const ledgerRef = adminFirestoreDb.collection('ledger').doc(entry.orderNumber);
+  const orderRef = adminFirestoreDb.collection('orders').doc(entry.orderId);
+  await adminFirestoreDb.runTransaction(async (tx) => {
+    const current = await tx.get(ledgerRef);
+    if (!current.exists || current.get('paymentStatus') !== expectedStatus) {
+      throw new Error('Payment status changed in another session. Please refresh the order.');
+    }
+    tx.set(ledgerRef, entry as unknown as Record<string, unknown>);
+    tx.set(orderRef, {
+      paymentStatus: entry.paymentStatus,
+      downloadToken: entry.downloadToken,
+      downloadCount: entry.downloadCount,
+      updatedAt: new Date(),
+    }, { merge: true });
+  });
+}
+
 
 function signInvoiceRecord(payload: {
   invoiceId: string;
@@ -6300,6 +6324,11 @@ async function startServer() {
     const isSuper = isStrictSuperAdminUser(user);
 
     const { orderNumber, newStatus, statementConfirmed } = req.body || {};
+    if (!(await ensureFinancialDatabaseReady(res))) return;
+    if (newStatus !== 'Paid' && newStatus !== 'Failed') {
+      res.status(400).json({ error: 'Invalid payment verification status.' });
+      return;
+    }
     const entry = persistentLedger.get(String(orderNumber));
     if (!entry) {
       res.status(404).json({ error: `Order "${orderNumber}" not found in persistent ledger.` });
@@ -6329,7 +6358,7 @@ async function startServer() {
       return;
     }
 
-    if (newStatus === 'Paid' && statementConfirmed === false) {
+    if (newStatus === 'Paid' && statementConfirmed !== true) {
       res.status(400).json({
         error:
           'Seller must explicitly complete the wallet/bank statement checklist before verifying payment receipt.',
@@ -6354,6 +6383,7 @@ async function startServer() {
       }
 
       const prevStatus = entry.paymentStatus;
+      const previousRecord = { ...entry };
 
       if (newStatus === 'Paid') {
         entry.paymentStatus = 'Paid';
@@ -6370,17 +6400,18 @@ async function startServer() {
           expiresAtMs: entry.expiresAtMs,
         });
 
-        // Trigger secure buyer email using authoritative customerEmail from the order record
+        try {
+          await commitFinancialOrderTransition(entry, prevStatus);
+        } catch {
+          persistentLedger.set(entry.orderNumber, previousRecord);
+          res.status(503).json({ error: 'Payment confirmation was not saved. Refresh and retry; no download was unlocked.' });
+          return;
+        }
+
+        // Notify the buyer only after the Paid transition is durable.
         const emailNotification = await triggerBuyerPaidOrderEmail(
           entry,
           user.uid,
-          user.rawToken
-        );
-
-        syncFirestoreDoc(
-          'ledger',
-          entry.orderNumber,
-          entry as unknown as Record<string, unknown>,
           user.rawToken
         );
 
@@ -6429,12 +6460,13 @@ async function startServer() {
         entry.downloadToken = 'LOCKED-UNTIL-PAYMENT-VERIFIED';
         entry.updatedAtIso = new Date().toISOString();
 
-        syncFirestoreDoc(
-          'ledger',
-          entry.orderNumber,
-          entry as unknown as Record<string, unknown>,
-          user.rawToken
-        );
+        try {
+          await commitFinancialOrderTransition(entry, prevStatus);
+        } catch {
+          persistentLedger.set(entry.orderNumber, previousRecord);
+          res.status(503).json({ error: 'Payment rejection was not saved. Refresh and retry.' });
+          return;
+        }
 
         const auditEntry = appendAuditEntry(
           {
@@ -6745,6 +6777,7 @@ async function startServer() {
     const isSuper = isStrictSuperAdminUser(user);
 
     const { orderNumber, reason } = req.body || {};
+    if (!(await ensureFinancialDatabaseReady(res))) return;
     const entry = persistentLedger.get(String(orderNumber));
     if (!entry) {
       res.status(404).json({ error: `Order "${orderNumber}" not found in persistent ledger.` });
@@ -6760,7 +6793,7 @@ async function startServer() {
       return;
     }
 
-    await withSellerLock(entry.sellerId, () => {
+    await withSellerLock(entry.sellerId, async () => {
       if (entry.paymentStatus === 'Refunded') {
         res.status(409).json({
           error: `Duplicate refund blocked: Order "${orderNumber}" has already been refunded.`,
@@ -6770,6 +6803,7 @@ async function startServer() {
 
       const prevStatus = entry.paymentStatus;
       const oldCommission = entry.platformCommissionMinor;
+      const previousRecord = { ...entry };
 
       entry.paymentStatus = 'Refunded';
       entry.commissionStatus = 'reversed';
@@ -6781,12 +6815,13 @@ async function startServer() {
       entry.refundedAtIso = new Date().toISOString();
       entry.updatedAtIso = new Date().toISOString();
 
-      syncFirestoreDoc(
-        'ledger',
-        entry.orderNumber,
-        entry as unknown as Record<string, unknown>,
-        user.rawToken
-      );
+      try {
+        await commitFinancialOrderTransition(entry, prevStatus);
+      } catch {
+        persistentLedger.set(entry.orderNumber, previousRecord);
+        res.status(503).json({ error: 'Refund reversal was not saved. Refresh and retry.' });
+        return;
+      }
 
       const auditEntry = appendAuditEntry(
         {
