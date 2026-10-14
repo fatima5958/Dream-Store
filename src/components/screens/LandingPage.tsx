@@ -312,13 +312,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   };
 
   const handleExploreStores = () => {
-    const previewSection =
-      document.getElementById('themes') || document.getElementById('storefront-preview');
-    if (previewSection) {
-      previewSection.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth' });
-    } else {
-      onNavigate('storefront');
-    }
+    // "Explore Stores" means real active seller stores, not a themed UI mockup.
+    setMobileNavOpen(false);
+    setShowExploreStoresModal(true);
   };
 
   return (
@@ -378,16 +374,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           >
             {isAuthenticated ? (
               <>
-                {userEmail && (
-                  <span
-                    data-testid="navbar-user-email"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#FFF2DF] border border-[#E8D2B5] text-xs font-extrabold text-[#50352F] max-w-[180px] truncate"
-                    title={userEmail}
-                  >
-                    <span className="w-2 h-2 rounded-full bg-[#236B56] shrink-0" />
-                    <span className="truncate">{userEmail}</span>
-                  </span>
-                )}
                 <button
                   type="button"
                   data-testid="desktop-nav-dashboard"
@@ -512,7 +498,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                           }}
                           className="w-full min-h-[44px] px-4 py-2 rounded-2xl bg-[#FFF2DF] border border-[#E8D2B5] text-sm font-bold text-[#6E4F47] flex items-center justify-center cursor-pointer"
                         >
-                          Sign Out ({userEmail || 'Account'})
+                          Sign Out
                         </button>
                       )}
                     </>
@@ -890,7 +876,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       </div>
 
                       {/* Switch Live Sample Stores Bar */}
-                      {storeList.length > 1 && onSwitchStore && (
+                      {storeList.length > 0 && onSwitchStore && (
                         <div className="mt-6 pt-4 border-t border-current/10 flex flex-wrap items-center justify-between gap-2">
                           <span className={`text-xs font-bold ${activePreviewTheme.mutedTextClass}`}>
                             Explore live creator storefronts:
@@ -1275,7 +1261,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <h3 className="font-candy text-xl font-bold text-[#50352F] mb-3">
               Explore Creator Stores
             </h3>
-            <div className="space-y-2">
+            <div className="space-y-2" data-testid="live-store-directory">
+              {storeList.length === 0 && (
+                <p className="text-sm font-medium text-[#6E4F47] py-4">
+                  No public creator stores are available yet. Be the first to launch yours!
+                </p>
+              )}
               {storeList.map((s) => (
                 <button
                   key={s.storeId}

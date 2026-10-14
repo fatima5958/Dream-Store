@@ -1,0 +1,71 @@
+name: DreamStore Pull Request Checks
+
+on:
+  push:
+    branches:
+      - fix/launch-checkout-download-safety
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install from committed lockfile
+        run: bun install --frozen-lockfile
+      - name: TypeScript typecheck
+        run: bun run lint
+      - name: Production Vite build
+        run: bun run build
+      - name: Static 5MB storage, launch onboarding and safety contracts
+        run: bun test tests/secure-deliverables-contract.test.mjs tests/store-launch-contract.test.mjs
+
+      - name: Set up Java for Firebase emulators
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install emulator CLI and Firebase security test harness
+        run: npm install --no-save --legacy-peer-deps --no-audit --no-fund firebase-tools@14 @firebase/rules-unit-testing@5
+
+      - name: Test actual Firestore and Storage security rules (no live Firebase project)
+        run: npx firebase-tools emulators:exec --project demo-dreamstore-authorization --config firebase.emulator.json --only firestore,storage "node --test tests/firebase-security-emulator.test.mjs"
+
+  public-browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install app dependencies
+        run: bun install --frozen-lockfile
+      - name: Install headless Chromium for Playwright
+        run: bunx playwright install chromium --with-deps
+      - name: Build production UI for Chromium flow testing
+        run: bun run build
+      - name: Start isolated production Vite preview (Firebase Admin credentials not required)
+        run: |
+          nohup bunx vite preview --host 127.0.0.1 --port 3000 > /tmp/dreamstore-browser-smoke.log 2>&1 &
+          for attempt in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:3000/ >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/dreamstore-browser-smoke.log
+          exit 1
+      - name: Test visitor, signup, guest permissions, store discovery and mobile
+        run: node --test tests/public-beta-browser.test.mjs
+      - name: Show server logs if failed
+        if: failure()
+        run: tail -160 /tmp/dreamstore-browser-smoke.log || true

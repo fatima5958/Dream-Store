@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app';
+import { getStorage } from 'firebase/storage';
 import {
   getAuth,
   GoogleAuthProvider,
@@ -8,6 +9,7 @@ import {
   getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
   updateProfile,
   sendPasswordResetEmail,
   signOut,
@@ -82,6 +84,7 @@ const app = initializeApp({
   authDomain: effectiveAuthDomain,
 });
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const storage = getStorage(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope('profile');
@@ -877,7 +880,14 @@ export async function signUpWithEmailAccount(
       try {
         await updateProfile(cred.user, { displayName });
       } catch {
-        // Ignore profile update failure
+        // Display name can be updated later.
+      }
+    }
+    if (cred.user && !cred.user.emailVerified) {
+      try {
+        await sendEmailVerification(cred.user);
+      } catch (err) {
+        console.warn('Email verification could not be sent. Product uploads remain locked until verified.', err);
       }
     }
     return cred.user;

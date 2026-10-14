@@ -35,10 +35,13 @@ service cloud.firestore {
       return isVerifiedUser() && request.auth.uid == userId;
     }
 
-    // Strictly UID-backed Super Admin check (Restricted exclusively to configured SUPER_ADMIN_UID; never email or arbitrary role claim)
+    // Server-provisioned Firebase custom claims are part of the signed ID token.
+    // Only Firebase Admin SDK (restricted to SUPER_ADMIN_UID and bootstrap secret)
+    // may assign both claims; never trust profile documents or client input.
     function isAdmin() {
       return isVerifiedUser() &&
-        request.auth.uid == 'V2Yxrm20XFWYscGUtHcBN8E9wA62';
+        request.auth.token.role == 'super_admin' &&
+        request.auth.token.superAdmin == true;
     }
 
     // Validation Blueprint: Store
@@ -159,20 +162,20 @@ service cloud.firestore {
       ]) &&
       isValidId(data.storeId) &&
       isValidId(data.ownerId) &&
-      data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+      data.title is string && data.title.size() >= 2 && data.title.size() <= 160 &&
       data.category in ['Ebooks', 'Workbooks', 'Planners', 'Templates', 'Bundles'] &&
-      data.subtitle is string && data.subtitle.size() >= 1 && data.subtitle.size() <= 300 &&
-      data.description is string && data.description.size() >= 1 && data.description.size() <= 3000 &&
+      data.subtitle is string && data.subtitle.size() <= 300 &&
+      data.description is string && data.description.size() <= 3000 &&
       data.priceUsd is number && data.priceUsd >= 0 && data.priceUsd <= 100000 &&
       data.pricePkr is number && data.pricePkr >= 0 && data.pricePkr <= 25000000 &&
       data.isFree is bool &&
       ((data.isFree == true && data.priceUsd == 0 && data.pricePkr == 0) || (data.isFree == false && data.priceUsd > 0 && data.pricePkr > 0)) &&
       data.published is bool &&
       data.status in ['Available', 'Coming Soon', 'Draft'] &&
-      data.image is string && data.image.size() >= 1 && data.image.size() <= 500000 &&
-      data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255 &&
-      data.fileType is string && data.fileType.size() >= 1 && data.fileType.size() <= 100 &&
-      data.fileSizeLabel is string && data.fileSizeLabel.size() >= 1 && data.fileSizeLabel.size() <= 60 &&
+      data.image is string && data.image.size() <= 500000 &&
+      data.fileName is string && data.fileName.size() <= 255 &&
+      data.fileType is string && data.fileType.size() <= 100 &&
+      data.fileSizeLabel is string && data.fileSizeLabel.size() <= 60 &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp;
     }
@@ -533,6 +536,7 @@ service cloud.firestore {
         incoming().ownerId == request.auth.uid &&
         incoming().status == 'Active' &&
         incoming().plan in ['Free', 'Pro', 'Basic'] &&
+        (isAdmin() || incoming().plan == 'Free') &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
 
@@ -661,9 +665,13 @@ service cloud.firestore {
         (isSignedIn() && resource.data.ownerId == request.auth.uid) ||
         isAdmin();
 
+      // Firebase clients can create unpublished drafts only. Server Admin SDK
+      // exclusively verifies original files and flips products to Published.
       allow create: if isVerifiedUser() &&
         isValidId(productId) &&
         isValidProduct(incoming()) &&
+        incoming().published == false &&
+        incoming().status == 'Draft' &&
         incoming().ownerId == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
@@ -671,39 +679,42 @@ service cloud.firestore {
         get(/databases/$(database)/documents/stores/$(incoming().storeId)).data.ownerId == request.auth.uid &&
         get(/databases/$(database)/documents/stores/$(incoming().storeId)).data.status == 'Active';
 
+      // Browser SDK cannot update any published listing or republish an
+      // archived draft; every publish and edit to a published item goes through
+      // the authenticated backend and Firebase Admin SDK.
       allow update: if isVerifiedUser() &&
         isValidId(productId) &&
         isValidProduct(incoming()) &&
+        existing().published == false &&
+        incoming().published == false &&
+        incoming().status == 'Draft' &&
+        isOwner(existing().ownerId) &&
         incoming().ownerId == existing().ownerId &&
         incoming().storeId == existing().storeId &&
         incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().ownerId) &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'title', 'category', 'subtitle', 'description',
-              'priceUsd', 'pricePkr', 'isFree', 'published',
-              'status', 'image', 'fileName', 'fileType',
-              'fileSizeLabel', 'updatedAt'
-            ])
-          )
-        );
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'category', 'subtitle', 'description',
+          'priceUsd', 'pricePkr', 'isFree', 'status', 'image',
+          'fileName', 'fileType', 'fileSizeLabel', 'updatedAt'
+        ]);
 
-      allow delete: if isValidId(productId) && (isOwner(existing().ownerId) || isAdmin());
+      // Only backend can archive/remove listings so purchased originals remain.
+      allow delete: if false;
 
       // 4. Protected Digital Deliverables Subcollection
       match /deliverables/{deliverableId} {
-        allow get: if isValidId(productId) && isValidId(deliverableId) && (
-          (isSignedIn() && get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid) ||
-          get(/databases/$(database)/documents/products/$(productId)).data.isFree == true ||
+        // Never allow buyers (even of free/entitled products) to read the private
+        // blob or storage:// path through Firestore. Every buyer download
+        // must go through the verified server route to enforce token, status,
+        // expiry, product isolation and durable download limits.
+        allow get: if isValidId(productId) && isValidId(deliverableId) &&
+          isVerifiedUser() &&
+          exists(/databases/$(database)/documents/products/$(productId)) &&
           (
-            isSignedIn() &&
-            exists(/databases/$(database)/documents/products/$(productId)/entitlements/$(request.auth.uid)) &&
-            get(/databases/$(database)/documents/products/$(productId)/entitlements/$(request.auth.uid)).data.status == 'Active'
-          ) ||
-          isAdmin()
-        );
+            get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid ||
+            isAdmin()
+          );
 
         allow list: if false;
 
@@ -1019,45 +1030,9 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(orderNumber) &&
-        isValidLedgerRecord(incoming()) &&
-        incoming().orderNumber == orderNumber &&
-        incoming().buyerId == request.auth.uid &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time &&
-        existsAfter(/databases/$(database)/documents/orders/$(incoming().orderId));
-
-      allow update: if isVerifiedUser() &&
-        isValidId(orderNumber) &&
-        isValidLedgerRecord(incoming()) &&
-        incoming().orderId == existing().orderId &&
-        incoming().orderNumber == existing().orderNumber &&
-        incoming().storeId == existing().storeId &&
-        incoming().sellerId == existing().sellerId &&
-        incoming().buyerId == existing().buyerId &&
-        incoming().currency == existing().currency &&
-        incoming().commissionRateBps == existing().commissionRateBps &&
-        incoming().grossAmountMinor == existing().grossAmountMinor &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().sellerId) &&
-            !(existing().paymentStatus in ['Refunded', 'Failed']) &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'paymentStatus',
-              'verificationMode',
-              'commissionStatus',
-              'platformCommissionMinor',
-              'sellerShareBeforeFeesMinor',
-              'sellerNetEarningsMinor',
-              'updatedAt'
-            ])
-          )
-        );
-
-      allow delete: if false;
+      // Financial ledger writes are server-authoritative only (Firebase Admin SDK).
+      // Buyers and sellers must use authenticated checkout/verification APIs.
+      allow create, update, delete: if false;
     }
 
     // 12. Immutable Ledger & Verification Audit Trail (Append-Only)

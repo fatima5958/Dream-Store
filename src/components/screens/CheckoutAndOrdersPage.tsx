@@ -110,7 +110,7 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
       setCustomerName((prev) => prev.trim() || currentUserEmail.split('@')[0]);
     }
     if (currentUserEmail) {
-      setCustomerEmail((prev) => prev.trim() || currentUserEmail);
+      setCustomerEmail(currentUserEmail);
     }
   }, [currentUserName, currentUserEmail]);
   const [selectedPaymentMethod, setSelectedPaymentMethod] =
@@ -142,7 +142,7 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
     }
   }, []);
 
-  const [sandboxBuyerEnabled, setSandboxBuyerEnabled] = useState(() => Boolean(urlBuyerUid));
+  const [sandboxBuyerEnabled, setSandboxBuyerEnabled] = useState(() => import.meta.env.DEV && Boolean(urlBuyerUid));
   const [downloadFeedback, setDownloadFeedback] = useState<{
     orderId: string;
     ok: boolean;
@@ -150,7 +150,8 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
   } | null>(null);
 
   const effectiveBuyerUid =
-    urlBuyerUid || currentUserUid || (sandboxBuyerEnabled ? 'sandbox-test-buyer-uid' : null);
+    currentUserUid ||
+    (import.meta.env.DEV ? (urlBuyerUid || (sandboxBuyerEnabled ? 'sandbox-test-buyer-uid' : null)) : null);
 
   // Real-time synchronized view of the buyer's most recently placed order
   const liveCompletedOrder = completedOrder
@@ -173,7 +174,7 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
   };
 
   React.useEffect(() => {
-    if (currentUserEmail && !customerEmail) {
+    if (currentUserEmail && customerEmail !== currentUserEmail) {
       setCustomerEmail(currentUserEmail);
     }
   }, [currentUserEmail, customerEmail]);
@@ -217,7 +218,8 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
     [isolatedStorePaymentSettings, gatewayStatus]
   );
 
-  const isPaidCheckoutConfigured = configuredPaymentMethods.length > 0;
+  const isPaidCheckoutGloballyEnabled = gatewayStatus.paidCheckoutEnabled === true;
+  const isPaidCheckoutConfigured = isPaidCheckoutGloballyEnabled && configuredPaymentMethods.length > 0;
 
   React.useEffect(() => {
     if (isFreeCart) {
@@ -266,7 +268,7 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
     setCheckoutError(null);
 
     if (!effectiveBuyerUid) {
-      setCheckoutError('Please sign in with Google or enable Sandbox Test Buyer mode to link your digital order & download access.');
+      setCheckoutError('Please sign in to save your digital order and access your downloads.');
       return;
     }
 
@@ -275,10 +277,12 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
       return;
     }
 
+    if (!isFreeCart && !isPaidCheckoutGloballyEnabled) {
+      setCheckoutError('Paid checkout is not yet available during DreamStore beta testing. Please do not transfer money for this order.');
+      return;
+    }
     if (!isFreeCart && !isPaidCheckoutConfigured) {
-      setCheckoutError(
-        'Paid checkout is disabled for this store until the seller configures valid payment receiving details in Seller Dashboard → Payment Settings.'
-      );
+      setCheckoutError('Seller payment setup is incomplete. Paid checkout is unavailable for this store.');
       return;
     }
 
@@ -444,6 +448,8 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                 data-testid="buyer-profile-email-input"
                 value={customerEmail}
                 onChange={(e) => setCustomerEmail(e.target.value)}
+                readOnly={Boolean(currentUserEmail)}
+                title={currentUserEmail ? 'Email is managed by your sign-in provider.' : undefined}
                 placeholder="you@example.com"
                 className="w-full px-4 py-3 rounded-2xl candy-input text-sm font-bold text-[#50352F] min-h-[48px]"
               />
@@ -674,21 +680,23 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                   <strong className="block text-[#9E3B66] font-extrabold mb-0.5">
                     Sign In Required for Digital Delivery
                   </strong>
-                  Sign in with Google so your order and download links are tied to your account, or enable Sandbox Buyer mode to test checkout in preview.
+                  Sign in to keep your orders and secure download links in your account.
                 </div>
                 <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-                  <button
-                    type="button"
-                    data-testid="enable-sandbox-buyer-btn"
-                    onClick={() => {
-                      setSandboxBuyerEnabled(true);
-                      if (!customerName) setCustomerName('Amina Test Buyer');
-                      if (!customerEmail) setCustomerEmail('amina.buyer@example.com');
-                    }}
-                    className="candy-btn-cream px-4 py-2.5 rounded-2xl text-xs font-extrabold cursor-pointer min-h-[42px]"
-                  >
-                    Use Sandbox Buyer
-                  </button>
+                  {import.meta.env.DEV && (
+                    <button
+                      type="button"
+                      data-testid="enable-sandbox-buyer-btn"
+                      onClick={() => {
+                        setSandboxBuyerEnabled(true);
+                        if (!customerName) setCustomerName('Test Buyer');
+                        if (!customerEmail) setCustomerEmail('buyer@example.test');
+                      }}
+                      className="candy-btn-cream px-4 py-2.5 rounded-2xl text-xs font-extrabold cursor-pointer min-h-[42px]"
+                    >
+                      Developer Sandbox Buyer
+                    </button>
+                  )}
                   <CandyButton
                     type="button"
                     variant="pink"
@@ -738,9 +746,16 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                     required
                     value={customerEmail}
                     onChange={(e) => setCustomerEmail(e.target.value)}
+                    readOnly={Boolean(currentUserEmail)}
+                    aria-describedby={currentUserEmail ? 'checkout-verified-email-help' : undefined}
                     placeholder="you@email.com"
                     className="w-full block min-w-0 px-4 py-3 rounded-2xl candy-input text-base min-h-[50px]"
                   />
+                  {currentUserEmail && (
+                    <p id="checkout-verified-email-help" className="ds-helper mt-1">
+                      Downloads are tied to your signed-in account email.
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -762,6 +777,20 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                   <span>
                     100% Free Digital Product ($0.00) — Instant Verified Download Enabled!
                   </span>
+                </div>
+              ) : !isPaidCheckoutGloballyEnabled ? (
+                <div
+                  data-testid="checkout-beta-payments-disabled"
+                  className="p-5 sm:p-6 rounded-[26px] bg-[#FFF6DA] border-2 border-[#FFD47B] text-[#50352F] space-y-2.5"
+                >
+                  <div className="flex items-center gap-2 text-sm sm:text-base font-extrabold text-[#8A5A19]">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-[#D66795]" />
+                    <span>Paid Orders Coming Soon — Beta Testing</span>
+                  </div>
+                  <p className="text-xs sm:text-sm font-bold text-[#6E4D45] leading-relaxed">
+                    Please do not send a payment yet. DreamStore is testing secure order verification.
+                    Free downloads and browsing remain available.
+                  </p>
                 </div>
               ) : !isPaidCheckoutConfigured ? (
                 <div

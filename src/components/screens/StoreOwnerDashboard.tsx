@@ -36,7 +36,6 @@ import {
   calculateCommissionMinor,
   CommissionInvoice,
   CommissionStatus,
-  createSampleGuideDataUrl,
   CURRENCY_META,
   CurrencyCode,
   CUSTOM_ACCENT_PRESETS,
@@ -56,7 +55,8 @@ import {
   StoreConfig,
   StoreThemeId,
 } from '../../types/dreamstore';
-import { getAuthHeaders } from '../../lib/firebase';
+import { auth, getAuthHeaders, storage } from '../../lib/firebase';
+import { ref as storageRef, uploadBytesResumable } from 'firebase/storage';
 import { EditableText, EmptyOrdersGiftBoxSVG, PastelImage } from '../EditableText';
 import {
   CandyButton,
@@ -136,6 +136,8 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
   const [imageUploadStatus, setImageUploadStatus] = useState<string | null>(null);
   const [fileUploadStatus, setFileUploadStatus] = useState<string | null>(null);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [isUploadingDigitalFile, setIsUploadingDigitalFile] = useState(false);
+  const [draftProductId, setDraftProductId] = useState(() => `prod-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
 
   const [statementCheckedByOrder, setStatementCheckedByOrder] = useState<Record<string, boolean>>(
     {}
@@ -211,13 +213,13 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
   const [prodSubtitle, setProdSubtitle] = useState('');
   const [prodDescription, setProdDescription] = useState('');
   const [prodIsFree, setProdIsFree] = useState(false);
-  const [prodPriceUsd, setProdPriceUsd] = useState<number>(29);
-  const [prodPricePkr, setProdPricePkr] = useState<number>(8050);
+  const [prodPriceUsd, setProdPriceUsd] = useState<number>(0);
+  const [prodPricePkr, setProdPricePkr] = useState<number>(0);
   const [prodPublished, setProdPublished] = useState(true);
   const [prodImage, setProdImage] = useState<string>(products[0]?.image || config.heroImage);
-  const [prodFileName, setProdFileName] = useState('Digital-Guide.pdf');
-  const [prodFileType, setProdFileType] = useState('PDF Document');
-  const [prodFileSize, setProdFileSize] = useState('4.2 MB');
+  const [prodFileName, setProdFileName] = useState('');
+  const [prodFileType, setProdFileType] = useState('');
+  const [prodFileSize, setProdFileSize] = useState('');
   const [prodFileDataUrl, setProdFileDataUrl] = useState('');
 
   // Orders Filter State
@@ -400,6 +402,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
       return;
     }
     setEditingProductId(null);
+    setDraftProductId(`prod-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
     setProductFormError(null);
     setImageUploadStatus(null);
     setFileUploadStatus(null);
@@ -408,13 +411,13 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
     setProdSubtitle('');
     setProdDescription('');
     setProdIsFree(false);
-    setProdPriceUsd(29);
-    setProdPricePkr(8050);
+    setProdPriceUsd(0);
+    setProdPricePkr(0);
     setProdPublished(true);
     setProdImage(products[0]?.image || config.heroImage);
-    setProdFileName('Mindful-Guide.pdf');
-    setProdFileType('PDF Guide');
-    setProdFileSize('5.4 MB');
+    setProdFileName('');
+    setProdFileType('');
+    setProdFileSize('');
     setProdFileDataUrl('');
     setShowProductModal(true);
   };
@@ -457,66 +460,137 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
     reader.readAsDataURL(file);
   };
 
-  const handleDigitalFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDigitalFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setFileUploadStatus('Preparing digital file...');
-    setProdFileName(file.name);
-    setProdFileType(file.type || 'Digital Archive');
-    const kb = Math.max(1, Math.round(file.size / 1024));
-    const sizeLabel = kb > 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`;
-    setProdFileSize(sizeLabel);
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string' && reader.result.length < 700000) {
-        setProdFileDataUrl(reader.result);
+    setProdFileDataUrl('');
+    setProductFormError(null);
+    const MAX_FILE_BYTES = 5 * 1024 * 1024;
+    const supportedTypes: Record<string, string> = {
+      pdf: 'application/pdf',
+      zip: 'application/zip',
+      epub: 'application/epub+zip',
+      txt: 'text/plain',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+    const extension = file.name.split('.').pop()?.toLowerCase() || '';
+    const contentType = supportedTypes[extension];
+    if (!contentType || file.size < 1 || file.size > MAX_FILE_BYTES) {
+      const message = !contentType
+        ? 'Choose a PDF, EPUB, ZIP, TXT, DOC or DOCX file.'
+        : file.size < 1
+        ? 'The file is empty. Please choose a valid file.'
+        : 'Maximum file size is 5 MB. Choose a smaller original file.';
+      setFileUploadStatus(message);
+      setProductFormError(message);
+      return;
+    }
+    if (!currentUserUid) {
+      setProductFormError('Sign in with a verified seller account before uploading.');
+      setFileUploadStatus('Sign in to upload.');
+      return;
+    }
+
+    setIsUploadingDigitalFile(true);
+    setFileUploadStatus('Uploading original file (0%)...');
+    const productId = editingProductId || draftProductId;
+    try {
+      let privateReference = '';
+      const sdkUid = auth.currentUser?.uid;
+      if (sdkUid === currentUserUid && auth.currentUser?.emailVerified) {
+        const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
+        const objectPath = `deliverables/${sdkUid}/${productId}/${Date.now()}-${safeName}`;
+        const task = uploadBytesResumable(storageRef(storage, objectPath), file, { contentType });
+        await new Promise<void>((resolve, reject) => {
+          task.on(
+            'state_changed',
+            (snapshot) => {
+              const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+              setFileUploadStatus(`Uploading original file (${pct}%)...`);
+            },
+            reject,
+            resolve
+          );
+        });
+        privateReference = `storage://${objectPath}`;
       } else {
-        setProdFileDataUrl(createSampleGuideDataUrl(prodTitle || file.name, prodSubtitle));
+        // Server-email accounts do not have a Firebase browser SDK session.
+        // Upload the original bytes through a verified seller-only backend route.
+        const headers = await getAuthHeaders();
+        const upload = await fetch('/api/uploads/product', {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'Content-Type': 'application/octet-stream',
+            'X-Product-ID': productId,
+            'X-Store-ID': config.storeId,
+            'X-File-Name': encodeURIComponent(file.name),
+            'X-File-Type': contentType,
+          },
+          body: file,
+        });
+        const result = await upload.json().catch(() => ({}));
+        if (!upload.ok || !String(result.fileReference || '').startsWith('storage://')) {
+          throw new Error(result.error || 'The original file could not be uploaded.');
+        }
+        privateReference = result.fileReference;
       }
-      setFileUploadStatus(`File ready: ${file.name} (${sizeLabel})`);
-    };
-    reader.onerror = () => {
-      setFileUploadStatus('Could not read digital file. Please select a valid PDF, ZIP, or EPUB.');
-    };
-    reader.readAsDataURL(file);
+      const sizeLabel = file.size >= 1024 * 1024
+        ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
+        : `${Math.ceil(file.size / 1024)} KB`;
+      setProdFileName(file.name);
+      setProdFileType(contentType);
+      setProdFileSize(sizeLabel);
+      setProdFileDataUrl(privateReference);
+      setFileUploadStatus(`Original file securely uploaded: ${file.name} (${sizeLabel})`);
+    } catch {
+      setProdFileDataUrl('');
+      setProdFileName('');
+      setProdFileType('');
+      setProdFileSize('');
+      setProductFormError('Upload failed. Your product has not been published. Check Firebase Storage access.');
+      setFileUploadStatus('Secure file upload failed. Please try again.');
+    } finally {
+      setIsUploadingDigitalFile(false);
+    }
   };
 
   const handleSaveProductForm = async (e: React.FormEvent) => {
     e.preventDefault();
     setProductFormError(null);
+    if (isUploadingDigitalFile) {
+      setProductFormError('Wait until the original file finishes uploading.');
+      return;
+    }
+    if (prodPublished && !editingProductId && !prodFileDataUrl.startsWith('storage://') && !prodFileDataUrl.startsWith('data:')) {
+      setProductFormError('Upload a real digital file before publishing this product. Demo files are never substituted.');
+      return;
+    }
     if (!prodTitle.trim() || prodTitle.trim().length < 2) {
       setProductFormError('Please enter a product title (at least 2 characters).');
       return;
     }
 
+    if (!prodIsFree && (!Number.isFinite(prodPriceUsd) || !Number.isFinite(prodPricePkr) ||
+        prodPriceUsd < 1 || prodPricePkr < 100)) {
+      setProductFormError('Enter your own price (minimum $1 / Rs.100), or mark the product Free.');
+      return;
+    }
     setIsSavingProduct(true);
     try {
-      const finalUsd = prodIsFree ? 0 : Math.max(1, Number(prodPriceUsd) || 29);
-      const finalPkr = prodIsFree
-        ? 0
-        : Math.max(
-            100,
-            Number(prodPricePkr) || Math.round(finalUsd * (config.exchangeRatePkr || 278))
-          );
+      const finalUsd = prodIsFree ? 0 : Number(prodPriceUsd);
+      const finalPkr = prodIsFree ? 0 : Number(prodPricePkr);
 
       const payload: Product = {
-        id: editingProductId || `prod-${Date.now()}`,
+        id: editingProductId || draftProductId,
         storeId: config.storeId,
         ownerId: currentUserUid || config.ownerId,
         title: prodTitle.trim(),
         category: prodCategory,
-        subtitle:
-          prodSubtitle.trim() ||
-          prodDescription.trim().slice(0, 120) ||
-          'A gentle digital guide for mindful daily growth.',
-        description:
-          prodDescription.trim() ||
-          'Thoughtfully crafted digital resource with step-by-step exercises and printable templates.',
-        whatsIncluded: [
-          `Complete ${prodFileName} (${prodFileSize})`,
-          'Printable & Tablet-Friendly Worksheets',
-          'Lifetime Instant Digital Access',
-        ],
+        subtitle: prodSubtitle.trim() || prodDescription.trim().slice(0, 120) || '',
+        description: prodDescription.trim(),
+        whatsIncluded: prodFileName ? [`Original file: ${prodFileName} (${prodFileSize})`] : [],
         details: [
           { label: 'Format', value: prodFileType },
           { label: 'File Size', value: prodFileSize },
@@ -529,21 +603,12 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
         published: prodPublished,
         status: prodPublished ? 'Available' : 'Draft',
         image: prodImage,
-        gallery: [prodImage, config.heroImage],
-        features: products[0]?.features || [
-          { title: 'PDF Format', subtitle: 'Instant Download', icon: 'pdf' },
-          { title: 'Easy to Follow', subtitle: 'Step-by-Step Guide', icon: 'guide' },
-          { title: 'Full of Practical Tools', subtitle: 'Worksheets & Templates', icon: 'tools' },
-        ],
+        gallery: [prodImage],
+        features: [],
         fileName: prodFileName,
         fileType: prodFileType,
         fileSizeLabel: prodFileSize,
-        fileDataUrl:
-          prodFileDataUrl ||
-          createSampleGuideDataUrl(
-            prodTitle.trim(),
-            prodSubtitle.trim() || 'Digital Product Download'
-          ),
+        fileDataUrl: prodFileDataUrl,
       };
 
       if (editingProductId) {
@@ -551,11 +616,13 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
         showToast('Product updated successfully');
       } else {
         await onAddProduct(payload);
-        showToast('Product published to your store');
+        showToast(prodPublished ? 'Product published to your store' : 'Product saved as draft');
         setPublishSparkleBanner(payload.title);
         setTimeout(() => setPublishSparkleBanner(null), 6000);
       }
       setShowProductModal(false);
+    } catch (err) {
+      setProductFormError(err instanceof Error ? err.message : 'Product could not be saved. Please retry.');
     } finally {
       setIsSavingProduct(false);
     }
@@ -1542,7 +1609,14 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onDeleteProduct(prod.id)}
+                        onClick={async () => {
+                          try {
+                            await onDeleteProduct(prod.id);
+                            showToast('Product removed from your store. Existing purchases remain accessible.');
+                          } catch (err) {
+                            showToast(err instanceof Error ? err.message : 'Could not remove the product.');
+                          }
+                        }}
                         title="Delete product"
                         aria-label={`Delete ${prod.title}`}
                         className="w-11 h-11 rounded-full candy-btn-white text-[#7A5A52] hover:text-[#C93B5B] flex items-center justify-center cursor-pointer shrink-0"
@@ -1840,11 +1914,13 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                                     type="button"
                                     disabled={!statementConfirmed}
                                     onClick={async () => {
-                                      markOrderTransitionedToCompleted(ord.id);
-                                      await onUpdateOrderStatus(ord.id, 'Paid');
-                                      showToast(
-                                        `Order #${ord.orderNumber} Seller Verified & secure download email sent to ${ord.customerEmail}!`
-                                      );
+                                      try {
+                                        await onUpdateOrderStatus(ord.id, 'Paid');
+                                        markOrderTransitionedToCompleted(ord.id);
+                                        showToast(`Order #${ord.orderNumber} payment verified; download unlocked.`);
+                                      } catch (err) {
+                                        showToast(err instanceof Error ? err.message : 'Payment verification failed.');
+                                      }
                                     }}
                                     className="px-3.5 py-2 rounded-full candy-btn-mint disabled:opacity-40 text-[13px] font-extrabold text-[#50352F] cursor-pointer min-h-[42px]"
                                   >
@@ -1853,8 +1929,12 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                                   <button
                                     type="button"
                                     onClick={async () => {
-                                      await onUpdateOrderStatus(ord.id, 'Failed');
-                                      showToast(`Order #${ord.orderNumber} marked Failed`);
+                                      try {
+                                        await onUpdateOrderStatus(ord.id, 'Failed');
+                                        showToast(`Order #${ord.orderNumber} marked Failed`);
+                                      } catch (err) {
+                                        showToast(err instanceof Error ? err.message : 'Payment rejection failed.');
+                                      }
                                     }}
                                     className="px-3.5 py-2 rounded-full candy-btn-white text-[#C93B5B] text-[13px] font-extrabold cursor-pointer min-h-[42px]"
                                   >
@@ -1869,10 +1949,12 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                                 <button
                                   type="button"
                                   onClick={async () => {
-                                    await onUpdateOrderStatus(ord.id, 'Refunded');
-                                    showToast(
-                                      `Order #${ord.orderNumber} refunded & 5% commission reversed`
-                                    );
+                                    try {
+                                      await onUpdateOrderStatus(ord.id, 'Refunded');
+                                      showToast(`Order #${ord.orderNumber} marked Refunded; commission reversed.`);
+                                    } catch (err) {
+                                      showToast(err instanceof Error ? err.message : 'Refund update failed.');
+                                    }
                                   }}
                                   className="px-3.5 py-2 rounded-full candy-btn-white text-[13px] font-bold text-[#7A5A52] hover:text-[#C93B5B] cursor-pointer min-h-[42px]"
                                 >
@@ -3098,8 +3180,8 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                   setIsVerifyingExpress(true);
                   setExpressVerifyError(null);
                   try {
-                    markOrderTransitionedToCompleted(reviewingOrder.id);
                     await onUpdateOrderStatus(reviewingOrder.id, 'Paid');
+                    markOrderTransitionedToCompleted(reviewingOrder.id);
                     showToast(
                       `Order #${reviewingOrder.orderNumber} Seller Verified & buyer download unlocked!`
                     );
@@ -3272,7 +3354,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                 <FileText className="w-5 h-5 text-[#6B4EA2] mb-1.5" />
                 <span className="text-[14px] font-extrabold text-[#50352F]">Digital File</span>
                 <span className="ds-helper text-[#6B4EA2] font-bold truncate max-w-full mt-0.5">
-                  {fileUploadStatus || `${prodFileName} (${prodFileSize})`}
+                  {fileUploadStatus || (prodFileName ? `${prodFileName} (${prodFileSize})` : 'Choose PDF, EPUB, ZIP or document (max 5 MB)')}
                 </span>
                 <input
                   type="file"
@@ -3347,7 +3429,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                 data-testid="publish-product-btn"
                 variant="pink"
                 size="md"
-                loading={isSavingProduct}
+                loading={isSavingProduct || isUploadingDigitalFile}
                 className="w-full md:w-auto px-5 py-3 min-h-[44px]"
               >
                 <span>{editingProductId ? 'Update Product' : 'Publish Product'}</span>

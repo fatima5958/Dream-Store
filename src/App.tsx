@@ -17,7 +17,6 @@ import {
   calculateCommissionMinor,
   CartItem,
   CommissionStatus,
-  createSampleGuideDataUrl,
   CurrencyCode,
   formatMinorToMajor,
   GatewayServerStatus,
@@ -107,40 +106,44 @@ const LEGACY_STORAGE_KEYS = [
   'dreamstore_wizard_step_v1',
 ];
 
+// Neutral presentation before a real seller/store is selected.
+// Demo creator names, payment accounts and product data must never be defaults in production.
+const NEUTRAL_PUBLIC_STORE_CONFIG: StoreConfig = {
+  ...INITIAL_STORE_CONFIG,
+  storeId: '',
+  ownerId: '',
+  ownerEmail: '',
+  storeSlug: '',
+  storeName: '',
+  ownerName: 'Creator',
+  ownerRole: 'Store Owner',
+  ownerAvatar: '',
+  logoUrl: '',
+  socialWebsite: '',
+  instagramHandle: '',
+  sellerCountry: 'Pakistan',
+  productType: 'Digital Products',
+  announcementText: 'Welcome to your store',
+  heroHeadingLine1: 'Your Store',
+  heroHeadingLine2: 'Your Style',
+  heroSubheading: 'Digital products from independent creators.',
+  heroButtonText: 'Explore Products',
+  heroImage: '',
+};
+
 function buildFreshUserStoreConfig(user: {
   uid: string;
   displayName?: string | null;
   email?: string | null;
 }): StoreConfig {
   const userStoreId = `store-${user.uid.slice(0, 20)}`;
-  const rawName =
-    user.displayName?.trim() ||
-    (user.email ? user.email.split('@')[0].replace(/[^a-zA-Z0-9 ]/g, ' ').trim() : '') ||
-    'Creator';
-  const cleanSlug =
-    rawName
-      .toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/[^a-z0-9_.-]/g, '')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 32) || `store-${user.uid.slice(0, 8).toLowerCase()}`;
-  const slugWithSuffix =
-    cleanSlug === 'fatima.tech' || cleanSlug === 'ananya.creates' || cleanSlug.length < 2
-      ? `creator-${user.uid.slice(0, 8).toLowerCase()}`
-      : cleanSlug;
-  const displayStoreName = `${rawName}'s Studio`.slice(0, 100);
-
+  const rawName = user.displayName?.trim() || 'Creator';
   return {
-    ...INITIAL_STORE_CONFIG,
+    ...NEUTRAL_PUBLIC_STORE_CONFIG,
     storeId: userStoreId,
     ownerId: user.uid,
-    storeName: displayStoreName,
-    storeSlug: slugWithSuffix,
+    ownerEmail: user.email || '',
     ownerName: rawName.slice(0, 100),
-    instagramHandle: `@${slugWithSuffix}`,
-    sellerCountry: 'Pakistan',
-    productType: 'Ebooks & Guides',
-    announcementText: `Welcome to ${displayStoreName} — Digital Downloads & Guides ✨`,
   };
 }
 
@@ -159,15 +162,21 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const screenParam = params.get('screen') as ScreenId | null;
     // Never render super-admin before server-side SUPER_ADMIN_UID verification completes
-    if (screenParam === 'super-admin' || window.location.pathname.toLowerCase().includes('super-admin')) {
+    // A direct URL cannot render a private workspace before authentication and role resolution.
+    if (
+      screenParam === 'super-admin' ||
+      screenParam === 'owner-dashboard' ||
+      screenParam === 'wizard' ||
+      screenParam === 'visual-editor' ||
+      window.location.pathname.toLowerCase().includes('super-admin')
+    ) {
       return 'landing';
     }
     if (screenParam && SCREEN_TABS.some((t) => t.id === screenParam)) {
       return screenParam;
     }
-    if (params.get('store')) {
-      return 'storefront';
-    }
+    // Wait for an actual store lookup before showing a seller's storefront.
+    // Unknown slugs must not render the default/demo template.
     return 'landing';
   });
   const activeScreenRef = useRef<ScreenId>(activeScreen);
@@ -190,38 +199,33 @@ export default function App() {
   const [activeSellerTab, setActiveSellerTab] = useState<OwnerTab>('overview');
   const [blockedAccessNotice, setBlockedAccessNotice] = useState<string | null>(null);
 
+  // Demo storefronts are only for local preview, not published visitor listings.
   const [storeConfigs, setStoreConfigs] = useState<Record<string, StoreConfig>>(
-    INITIAL_STORE_CONFIGS
+    import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}
   );
-  const storeConfigsRef = useRef<Record<string, StoreConfig>>(INITIAL_STORE_CONFIGS);
+  const storeConfigsRef = useRef<Record<string, StoreConfig>>(
+    import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}
+  );
   useEffect(() => {
     storeConfigsRef.current = storeConfigs;
   }, [storeConfigs]);
 
-  const [activeStoreId, setActiveStoreId] = useState<string>(() => {
-    const params = new URLSearchParams(window.location.search);
-    const storeParam = (params.get('store') || '').trim().toLowerCase();
-    if (storeParam === 'ananya.creates') {
-      return 'store-in-ananya';
-    }
-    if (storeParam === 'fatima.tech' || storeParam === 'fatimatech') {
-      return 'store-fatima-tech';
-    }
-    return 'store-fatima-tech';
-  });
+  const [activeStoreId, setActiveStoreId] = useState<string>(() =>
+    import.meta.env.DEV ? INITIAL_STORE_CONFIG.storeId : ''
+  );
   const activeStoreIdRef = useRef<string>(activeStoreId);
   useEffect(() => {
     activeStoreIdRef.current = activeStoreId;
   }, [activeStoreId]);
 
-  const config = storeConfigs[activeStoreId] || INITIAL_STORE_CONFIG;
+  const config = storeConfigs[activeStoreId] || (import.meta.env.DEV ? INITIAL_STORE_CONFIG : NEUTRAL_PUBLIC_STORE_CONFIG);
   const setConfig = (
     updater: StoreConfig | ((prev: StoreConfig) => StoreConfig),
     explicitStoreId?: string
   ) => {
     const targetId = explicitStoreId || activeStoreIdRef.current;
     setStoreConfigs((prevMap) => {
-      const current = prevMap[targetId] || INITIAL_STORE_CONFIG;
+      const current = prevMap[targetId] || NEUTRAL_PUBLIC_STORE_CONFIG;
       const next = typeof updater === 'function' ? updater(current) : updater;
       const resolvedId = next.storeId || targetId;
       const updatedMap = {
@@ -232,11 +236,9 @@ export default function App() {
       return updatedMap;
     });
   };
-  const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
-  const [selectedProductId, setSelectedProductId] = useState<string>(INITIAL_PRODUCTS[0].id);
-  const [cart, setCart] = useState<CartItem[]>([
-    { product: INITIAL_PRODUCTS[0], quantity: 1 },
-  ]);
+  const [products, setProducts] = useState<Product[]>(import.meta.env.DEV ? INITIAL_PRODUCTS : []);
+  const [selectedProductId, setSelectedProductId] = useState<string>('');
+  const [cart, setCart] = useState<CartItem[]>([]);
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<LedgerAuditEntry[]>([]);
   const [paymentSettingsMap, setPaymentSettingsMap] = useState<
@@ -333,18 +335,22 @@ export default function App() {
     });
   };
   const [gatewayStatus, setGatewayStatus] = useState<GatewayServerStatus>({
+    paidCheckoutEnabled: false,
     jazzcashConfigured: false,
     easypaisaConfigured: false,
     stripeConfigured: false,
     emailConfigured: false,
   });
 
-  const [platformStores, setPlatformStores] = useState<PlatformStore[]>(INITIAL_PLATFORM_STORES);
+  const [platformStores, setPlatformStores] = useState<PlatformStore[]>(
+    import.meta.env.DEV ? INITIAL_PLATFORM_STORES : []
+  );
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
   const [dockMinimized, setDockMinimized] = useState<boolean>(true);
   const [cartToast, setCartToast] = useState<string | null>(null);
   const cartToastTimerRef = useRef<number | null>(null);
   const isDevControlsEnabled =
+    import.meta.env.DEV &&
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('dev') === 'true';
 
@@ -409,6 +415,47 @@ export default function App() {
     };
   }, [config.storeId, activeStoreId, activeScreen, currentUser]);
 
+  // Public discovery: list only genuinely active stores returned by the backend.
+  // No seeded sample sellers, mock email addresses or pre-filled products.
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/stores', { cache: 'no-store' })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!alive || !Array.isArray(data?.stores)) return;
+        const active = data.stores.filter(
+          (s: any) => s && s.storeId && s.storeSlug && s.status === 'Active'
+        );
+        setStoreConfigs((prev) => {
+          const next = { ...prev };
+          for (const entry of active) {
+            if (next[entry.storeId]) continue;
+            next[entry.storeId] = {
+              ...NEUTRAL_PUBLIC_STORE_CONFIG,
+              storeId: String(entry.storeId),
+              ownerId: String(entry.ownerId || ''),
+              ownerEmail: '',
+              storeSlug: String(entry.storeSlug),
+              storeName: String(entry.storeName || 'Creator Store'),
+              ownerName: String(entry.ownerName || 'Creator'),
+              sellerCountry: String(entry.country || entry.sellerCountry || 'Pakistan'),
+              currency: entry.currency || 'PKR',
+              productType: String(entry.productType || 'Digital Products'),
+              socialWebsite: '',
+              announcementText: `Welcome to ${String(entry.storeName || 'Creator Store')}`,
+              heroHeadingLine1: String(entry.storeName || 'Creator Store'),
+              heroHeadingLine2: 'Digital Products',
+              heroSubheading: 'Explore products from this independent creator.',
+            };
+          }
+          storeConfigsRef.current = next;
+          return next;
+        });
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   // Purge any legacy localStorage/sessionStorage keys so stale demo data never overwrites user inputs
   useEffect(() => {
     try {
@@ -435,7 +482,7 @@ export default function App() {
         const d = docSnap.data();
         const loadedStoreId = docSnap.id;
         const loadedConfig: StoreConfig = {
-          ...(storeConfigsRef.current[loadedStoreId] || INITIAL_STORE_CONFIG),
+          ...(storeConfigsRef.current[loadedStoreId] || NEUTRAL_PUBLIC_STORE_CONFIG),
           storeId: loadedStoreId,
           ownerId: d.ownerId || '',
           storeSlug: d.storeSlug || cleanSlug,
@@ -447,18 +494,18 @@ export default function App() {
           announcementText:
             d.announcementText ||
             `Welcome to ${d.storeName || cleanSlug} — Digital Downloads & Guides ✨`,
-          heroHeadingLine1: d.heroHeadingLine1 || INITIAL_STORE_CONFIG.heroHeadingLine1,
-          heroHeadingLine2: d.heroHeadingLine2 || INITIAL_STORE_CONFIG.heroHeadingLine2,
-          heroSubheading: d.heroSubheading || INITIAL_STORE_CONFIG.heroSubheading,
-          heroButtonText: d.heroButtonText || INITIAL_STORE_CONFIG.heroButtonText,
-          heroImage: resolveStoreAssetUrl(d.heroImage, INITIAL_STORE_CONFIG.heroImage),
+          heroHeadingLine1: d.heroHeadingLine1 || NEUTRAL_PUBLIC_STORE_CONFIG.heroHeadingLine1,
+          heroHeadingLine2: d.heroHeadingLine2 || NEUTRAL_PUBLIC_STORE_CONFIG.heroHeadingLine2,
+          heroSubheading: d.heroSubheading || NEUTRAL_PUBLIC_STORE_CONFIG.heroSubheading,
+          heroButtonText: d.heroButtonText || NEUTRAL_PUBLIC_STORE_CONFIG.heroButtonText,
+          heroImage: resolveStoreAssetUrl(d.heroImage, NEUTRAL_PUBLIC_STORE_CONFIG.heroImage),
           logoUrl: resolveStoreAssetUrl(
             d.logoUrl || d.ownerAvatar,
-            INITIAL_STORE_CONFIG.logoUrl
+            NEUTRAL_PUBLIC_STORE_CONFIG.logoUrl
           ),
           ownerAvatar: resolveStoreAssetUrl(
             d.ownerAvatar || d.logoUrl,
-            INITIAL_STORE_CONFIG.ownerAvatar
+            NEUTRAL_PUBLIC_STORE_CONFIG.ownerAvatar
           ),
           theme: d.theme || 'blush-rose',
           currency: d.currency || 'PKR',
@@ -477,8 +524,8 @@ export default function App() {
           where('published', '==', true)
         );
         const prodSnap = await getDocs(qPubProds);
-        if (!prodSnap.empty) {
-          const fsProds: Product[] = prodSnap.docs.map((pDoc) => {
+        {
+          const fsProds: Product[] = prodSnap.docs.filter((pDoc) => pDoc.data().deleted !== true).map((pDoc) => {
             const pd = pDoc.data();
             return {
               id: pDoc.id,
@@ -532,7 +579,7 @@ export default function App() {
           const s = data.store;
           const loadedStoreId = s.storeId;
           const loadedConfig: StoreConfig = {
-            ...(storeConfigsRef.current[loadedStoreId] || INITIAL_STORE_CONFIG),
+            ...(storeConfigsRef.current[loadedStoreId] || NEUTRAL_PUBLIC_STORE_CONFIG),
             storeId: loadedStoreId,
             ownerId: s.ownerId || '',
             storeSlug: s.storeSlug || cleanSlug,
@@ -544,18 +591,18 @@ export default function App() {
             announcementText:
               s.announcementText ||
               `Welcome to ${s.storeName || cleanSlug} — Digital Downloads & Guides ✨`,
-            heroHeadingLine1: s.heroHeadingLine1 || INITIAL_STORE_CONFIG.heroHeadingLine1,
-            heroHeadingLine2: s.heroHeadingLine2 || INITIAL_STORE_CONFIG.heroHeadingLine2,
-            heroSubheading: s.heroSubheading || INITIAL_STORE_CONFIG.heroSubheading,
-            heroButtonText: s.heroButtonText || INITIAL_STORE_CONFIG.heroButtonText,
-            heroImage: resolveStoreAssetUrl(s.heroImage, INITIAL_STORE_CONFIG.heroImage),
+            heroHeadingLine1: s.heroHeadingLine1 || NEUTRAL_PUBLIC_STORE_CONFIG.heroHeadingLine1,
+            heroHeadingLine2: s.heroHeadingLine2 || NEUTRAL_PUBLIC_STORE_CONFIG.heroHeadingLine2,
+            heroSubheading: s.heroSubheading || NEUTRAL_PUBLIC_STORE_CONFIG.heroSubheading,
+            heroButtonText: s.heroButtonText || NEUTRAL_PUBLIC_STORE_CONFIG.heroButtonText,
+            heroImage: resolveStoreAssetUrl(s.heroImage, NEUTRAL_PUBLIC_STORE_CONFIG.heroImage),
             logoUrl: resolveStoreAssetUrl(
               s.logoUrl || s.ownerAvatar,
-              INITIAL_STORE_CONFIG.logoUrl
+              NEUTRAL_PUBLIC_STORE_CONFIG.logoUrl
             ),
             ownerAvatar: resolveStoreAssetUrl(
               s.ownerAvatar || s.logoUrl,
-              INITIAL_STORE_CONFIG.ownerAvatar
+              NEUTRAL_PUBLIC_STORE_CONFIG.ownerAvatar
             ),
             theme: s.theme || 'blush-rose',
             currency: s.currency || 'PKR',
@@ -569,19 +616,19 @@ export default function App() {
           setActiveStoreId(loadedStoreId);
 
           if (Array.isArray(data.products) && data.products.length > 0) {
-            const apiProds: Product[] = data.products.map((pd: any) => ({
+            const apiProds: Product[] = data.products.filter((pd: any) => pd.deleted !== true && pd.published === true).map((pd: any) => ({
               id: pd.id,
               storeId: pd.storeId || loadedStoreId,
               ownerId: pd.ownerId || s.ownerId,
               title: pd.title,
-              category: pd.category || 'Ebooks & Guides',
-              subtitle: pd.subtitle || 'Instant Digital Download',
-              description: pd.description || pd.subtitle || 'Digital guide',
+              category: pd.category || 'Ebooks',
+              subtitle: pd.subtitle || '',
+              description: pd.description || '',
               whatsIncluded: [
-                `Complete ${pd.fileName || 'Guide.pdf'} (${pd.fileSizeLabel || '2.4 MB'})`,
+                `Original file: ${pd.fileName || ''} (${pd.fileSizeLabel || 'size unknown'})`,
               ],
               details: [
-                { label: 'Format', value: pd.fileType || 'PDF' },
+                { label: 'Format', value: pd.fileType || '' },
                 { label: 'Delivery', value: 'Instant Digital Download' },
               ],
               price: Number(pd.priceUsd) || 0,
@@ -592,29 +639,19 @@ export default function App() {
               status: pd.status || 'Available',
               image: resolveStoreAssetUrl(pd.image),
               gallery: [resolveStoreAssetUrl(pd.image)].filter(Boolean),
-              features: INITIAL_PRODUCTS[0].features,
-              fileName: pd.fileName || 'Guide.pdf',
-              fileType: pd.fileType || 'PDF',
-              fileSizeLabel: pd.fileSizeLabel || '2.4 MB',
+              features: [],
+              fileName: pd.fileName || '',
+              fileType: pd.fileType || '',
+              fileSizeLabel: pd.fileSizeLabel || '',
             }));
             setProducts((prev) => {
               const existingIds = new Set(apiProds.map((fp) => fp.id));
-              return [...apiProds, ...prev.filter((p) => !existingIds.has(p.id))];
+              return [...apiProds, ...prev.filter((p) => p.storeId !== loadedStoreId && !existingIds.has(p.id))];
             });
-            setSelectedProductId(apiProds[0].id);
+            setSelectedProductId(apiProds[0]?.id || '');
           } else {
-            // Ensure default sample products exist for this custom store so storefront is populated
-            setProducts((prev) => {
-              const hasStoreProds = prev.some((p) => p.storeId === loadedStoreId);
-              if (hasStoreProds) return prev;
-              const cloned = INITIAL_PRODUCTS.slice(0, 3).map((base) => ({
-                ...base,
-                id: `${base.id}-${loadedStoreId.slice(-6)}`,
-                storeId: loadedStoreId,
-                ownerId: s.ownerId || 'creator',
-              }));
-              return [...cloned, ...prev];
-            });
+            // No published products means an empty storefront, not fabricated goods.
+            setProducts((prev) => prev.filter((p) => p.storeId !== loadedStoreId));
           }
           return loadedConfig;
         }
@@ -636,26 +673,35 @@ export default function App() {
         const cleanSlug = storeParam.trim().toLowerCase();
         const loaded = await loadStoreFromBackendOrFirestore(cleanSlug);
         if (!loaded) {
-          if (cleanSlug === 'ananya.creates') {
-            setActiveStoreId('store-in-ananya');
-            setSelectedProductId('prod-in-mindful-journal');
-          } else if (cleanSlug === 'fatima.tech' || cleanSlug === 'fatimatech') {
-            setActiveStoreId('store-fatima-tech');
-            setSelectedProductId('prod-30-day-reset');
-          } else {
-            const localMatch = (Object.values(storeConfigsRef.current) as StoreConfig[]).find(
-              (sc) => sc.storeSlug.toLowerCase() === cleanSlug
-            );
+          // No implicit Fatima/Ananya fallback for invalid public links.
+          if (import.meta.env.DEV) {
+            const localMatch = (Object.values(storeConfigsRef.current) as StoreConfig[])
+              .find((sc) => sc.storeSlug.toLowerCase() === cleanSlug);
             if (localMatch) {
               setActiveStoreId(localMatch.storeId);
+            } else {
+              setBlockedAccessNotice('Store not found. Check the link or explore available stores.');
+              setActiveScreen('landing');
+              return;
             }
+          } else {
+            setBlockedAccessNotice('Store not found. Check the link or explore available stores.');
+            setActiveScreen('landing');
+            return;
           }
         }
       }
 
       if (screenParam && SCREEN_TABS.some((t) => t.id === screenParam)) {
         requestedUrlScreenRef.current = screenParam;
-        if (screenParam !== 'super-admin') {
+        const sellerScreen =
+          screenParam === 'wizard' ||
+          screenParam === 'owner-dashboard' ||
+          screenParam === 'visual-editor';
+        if (sellerScreen || screenParam === 'super-admin') {
+          // Do not render a private workspace to a guest during auth restoration.
+          setActiveScreen('landing');
+        } else {
           setActiveScreen(screenParam);
         }
       } else if (storeParam && !screenParam) {
@@ -671,6 +717,7 @@ export default function App() {
       .then((data) => {
         if (data) {
           setGatewayStatus({
+            paidCheckoutEnabled: data.paidCheckoutEnabled === true,
             jazzcashConfigured: Boolean(data.jazzcashConfigured),
             easypaisaConfigured: Boolean(data.easypaisaConfigured),
             razorpayConfigured: Boolean(data.razorpayConfigured),
@@ -896,6 +943,14 @@ export default function App() {
           }
         } else if (resolvedRole === 'seller') {
           if (
+            (requestedUrlScreenRef.current === 'wizard' ||
+              requestedUrlScreenRef.current === 'owner-dashboard' ||
+              requestedUrlScreenRef.current === 'visual-editor') &&
+            activeScreenRef.current === 'landing'
+          ) {
+            setActiveScreen(requestedUrlScreenRef.current);
+          }
+          if (
             requestedUrlScreenRef.current === 'super-admin' ||
             currentUrlScreen === 'super-admin' ||
             activeScreenRef.current === 'super-admin'
@@ -924,13 +979,13 @@ export default function App() {
               storeId: userStoreId,
               email: existingEmail,
               jazzCashMerchantId: '',
-              jazzCashEnabled: true,
+              jazzCashEnabled: false,
               easypaisaStoreId: '',
-              easypaisaEnabled: true,
+              easypaisaEnabled: false,
               upiId: '',
               paymentLinkUrl: '',
               payoneerEnabled: false,
-              payoneerReceivingEmail: existingEmail,
+              payoneerReceivingEmail: '',
               payoneerRequestLink: '',
               payoneerReceivingAccountDetails: '',
               whatsappNotificationNumber: '',
@@ -1092,8 +1147,7 @@ export default function App() {
     const unsubProducts = onSnapshot(
       qProducts,
       (snap) => {
-        if (!snap.empty) {
-          const loaded: Product[] = snap.docs.map((docSnap) => {
+        const loaded: Product[] = snap.docs.filter((docSnap) => docSnap.data().deleted !== true).map((docSnap) => {
             const d = docSnap.data();
             return {
               id: docSnap.id,
@@ -1103,11 +1157,7 @@ export default function App() {
               category: d.category,
               subtitle: d.subtitle,
               description: d.description,
-              whatsIncluded: [
-                `Complete ${d.fileName} (${d.fileSizeLabel})`,
-                'Morning & Evening Gentle Routine Trackers',
-                'Printable & Tablet-Friendly Worksheets',
-              ],
+              whatsIncluded: d.fileName ? [`Original file: ${d.fileName} (${d.fileSizeLabel || 'size unknown'})`] : [],
               details: [
                 { label: 'Format', value: d.fileType },
                 { label: 'File Size', value: d.fileSizeLabel },
@@ -1120,11 +1170,8 @@ export default function App() {
               published: d.published,
               status: d.status,
               image: resolveStoreAssetUrl(d.image),
-              gallery: [
-                resolveStoreAssetUrl(d.image),
-                INITIAL_STORE_CONFIG.heroImage,
-              ].filter(Boolean),
-              features: INITIAL_PRODUCTS[0].features,
+              gallery: [resolveStoreAssetUrl(d.image)].filter(Boolean),
+              features: [],
               fileName: d.fileName,
               fileType: d.fileType,
               fileSizeLabel: d.fileSizeLabel,
@@ -1137,22 +1184,15 @@ export default function App() {
             );
             return [...loaded, ...others];
           });
-          // Ensure cart and selectedProductId use the authenticated user's real Firestore product
-          // instead of the unpersisted demo product template
           setSelectedProductId((prevId) =>
-            prevId === 'prod-30-day-reset' && loaded[0] ? loaded[0].id : prevId
+            loaded.some((p) => p.id === prevId) ? prevId : (loaded[0]?.id || '')
           );
-          setCart((prevCart) => {
-            if (
-              prevCart.length === 1 &&
-              prevCart[0].product.id === 'prod-30-day-reset' &&
-              loaded[0]
-            ) {
-              return [{ product: loaded[0], quantity: prevCart[0].quantity }];
-            }
-            return prevCart;
-          });
-        }
+          setCart((prevCart) =>
+            prevCart.filter((item) =>
+              item.product.ownerId !== currentUser.uid ||
+              loaded.some((p) => p.id === item.product.id && p.published)
+            )
+          );
       },
       (err) => reportFirestoreError(err, OperationType.LIST, 'products')
     );
@@ -1695,13 +1735,13 @@ export default function App() {
         storeId: userStoreId,
         email: cleanEmail,
         jazzCashMerchantId: '',
-        jazzCashEnabled: true,
+        jazzCashEnabled: false,
         easypaisaStoreId: '',
-        easypaisaEnabled: true,
+        easypaisaEnabled: false,
         upiId: '',
         paymentLinkUrl: '',
         payoneerEnabled: false,
-        payoneerReceivingEmail: cleanEmail,
+        payoneerReceivingEmail: '',
         payoneerRequestLink: '',
         payoneerReceivingAccountDetails: '',
         whatsappNotificationNumber: '',
@@ -1760,6 +1800,26 @@ export default function App() {
       ).slice(0, 240),
     };
 
+    if (!currentUser) {
+      throw new Error('Sign in before launching your store.');
+    }
+
+    // The server is authoritative. A network error, duplicate store slug, or
+    // rejected Firebase save must not be reported as a successful launch.
+    const authHeaders = await getAuthHeaders();
+    const saveResponse = await fetch('/api/stores/create', {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        ...fullStore,
+        ownerEmail: currentUser.email || '',
+      }),
+    });
+    const saveResult = await saveResponse.json().catch(() => ({}));
+    if (!saveResponse.ok || !saveResult.ok) {
+      throw new Error(saveResult.error || 'Could not save your store. Please retry.');
+    }
+
     setStoreConfigs((prev) => {
       const next = { ...prev, [resolvedStoreId]: fullStore };
       storeConfigsRef.current = next;
@@ -1768,75 +1828,10 @@ export default function App() {
     if (activeStoreIdRef.current !== resolvedStoreId) {
       setActiveStoreId(resolvedStoreId);
     }
+    // A new store has no products until its seller uploads real originals.
 
-    // Ensure products exist in local state for this storeId
-    setProducts((prev) => {
-      const hasProds = prev.some((p) => p.storeId === resolvedStoreId);
-      if (hasProds) return prev;
-      const seeded = INITIAL_PRODUCTS.slice(0, 3).map((base) => ({
-        ...base,
-        id: `${base.id}-${resolvedStoreId.slice(-8)}`,
-        storeId: resolvedStoreId,
-        ownerId: resolvedOwnerId,
-      }));
-      return [...seeded, ...prev];
-    });
-
-    // Save to backend persistent store registry when authenticated
-    if (currentUser) {
-      try {
-        const authHeaders = await getAuthHeaders();
-        await fetch('/api/stores/create', {
-          method: 'POST',
-          headers: authHeaders,
-          body: JSON.stringify({
-            ...fullStore,
-            ownerEmail: currentUser?.email || '',
-          }),
-        });
-      } catch {
-        // Ignore network error if offline
-      }
-    }
-
-    // Save to Firestore when authenticated via Firebase SDK
-    if (currentUser && hasFirebaseSdkSession()) {
-      const storeRef = doc(db, 'stores', resolvedStoreId);
-      try {
-        const existingSnap = await getDoc(storeRef);
-        const existingData = existingSnap.exists() ? existingSnap.data() : null;
-        await setDoc(
-          storeRef,
-          {
-            ownerId: existingData?.ownerId || currentUser.uid,
-            storeSlug: cleanSlug,
-            storeName: cleanName,
-            ownerName: fullStore.ownerName.slice(0, 100),
-            instagramHandle: (fullStore.instagramHandle || '').slice(0, 100),
-            sellerCountry: (fullStore.sellerCountry || 'Pakistan').slice(0, 80),
-            productType: (fullStore.productType || 'Ebooks & Guides').slice(0, 100),
-            announcementText: fullStore.announcementText.slice(0, 240),
-            heroHeadingLine1: (fullStore.heroHeadingLine1 || 'Small Steps').slice(0, 120),
-            heroHeadingLine2: (fullStore.heroHeadingLine2 || 'Big Changes.').slice(0, 120),
-            heroSubheading: (fullStore.heroSubheading || 'Digital products').slice(0, 500),
-            heroButtonText: (fullStore.heroButtonText || 'Shop Now').slice(0, 60),
-            heroImage: fullStore.heroImage || INITIAL_STORE_CONFIG.heroImage,
-            logoUrl: fullStore.logoUrl || INITIAL_STORE_CONFIG.logoUrl,
-            theme: fullStore.theme || 'blush-bloom',
-            customAccentColor: (fullStore.customAccentColor || '').slice(0, 20),
-            currency: fullStore.currency || 'PKR',
-            exchangeRatePkr: Number(fullStore.exchangeRatePkr) || 278,
-            status: existingData?.status || 'Active',
-            plan: existingData?.plan || 'Pro',
-            ...(existingSnap.exists() ? {} : { createdAt: serverTimestamp() }),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      } catch (err) {
-        reportFirestoreError(err, OperationType.WRITE, `stores/${resolvedStoreId}`);
-      }
-    }
+    // Store documents are committed by the verified backend before success;
+    // no conflicting browser-side second write or synthetic starter products.
 
     return fullStore;
   };
@@ -1882,7 +1877,10 @@ export default function App() {
       if (validSlug.length >= 2 && (next.storeName || '').trim().length >= 1) {
         try {
           const existingSnap = await getDoc(storeRef);
-          const existingData = existingSnap.exists() ? existingSnap.data() : null;
+          // Wizard inputs are local drafts. Never create an Active public store
+          // until the final Launch action has been durably accepted by the backend.
+          if (!existingSnap.exists()) return;
+          const existingData = existingSnap.data();
           await setDoc(
             storeRef,
             {
@@ -1900,14 +1898,14 @@ export default function App() {
               heroHeadingLine2: (next.heroHeadingLine2 || 'Big Changes.').slice(0, 120),
               heroSubheading: (next.heroSubheading || 'Digital products').slice(0, 500),
               heroButtonText: (next.heroButtonText || 'Shop Now').slice(0, 60),
-              heroImage: next.heroImage || INITIAL_STORE_CONFIG.heroImage,
-              logoUrl: next.logoUrl || INITIAL_STORE_CONFIG.logoUrl,
+              heroImage: next.heroImage || NEUTRAL_PUBLIC_STORE_CONFIG.heroImage,
+              logoUrl: next.logoUrl || NEUTRAL_PUBLIC_STORE_CONFIG.logoUrl,
               theme: next.theme || 'blush-bloom',
               customAccentColor: (next.customAccentColor || '').slice(0, 20),
               currency: next.currency || 'PKR',
               exchangeRatePkr: Number(next.exchangeRatePkr) || 278,
               status: existingData?.status || 'Active',
-              plan: existingData?.plan || 'Pro',
+              plan: existingData?.plan || 'Free',
               ...(existingSnap.exists() ? {} : { createdAt: serverTimestamp() }),
               updatedAt: serverTimestamp(),
             },
@@ -1941,39 +1939,22 @@ export default function App() {
   };
 
   const handleAddProduct = async (newProduct: Product) => {
-    setProducts((prev) => [newProduct, ...prev]);
-    if (currentUser) {
-      try {
-        const authHeaders = await getAuthHeaders();
-        fetch('/api/products/upsert', {
-          method: 'POST',
-          headers: authHeaders,
-          body: JSON.stringify({
-            id: newProduct.id,
-            storeId: config.storeId,
-            title: newProduct.title,
-            category: newProduct.category,
-            subtitle: newProduct.subtitle,
-            description: newProduct.description,
-            isFree: Boolean(newProduct.isFree),
-            priceUsd: newProduct.isFree ? 0 : Math.max(1, Number(newProduct.priceUsd)),
-            pricePkr: newProduct.isFree ? 0 : Math.max(100, Number(newProduct.pricePkr)),
-            published: Boolean(newProduct.published),
-            image: newProduct.image,
-            fileName: newProduct.fileName,
-            fileType: newProduct.fileType,
-            fileSizeLabel: newProduct.fileSizeLabel,
-            fileDataUrl: newProduct.fileDataUrl,
-          }),
-        }).catch(() => {});
-      } catch {
-        // Ignore network error if offline
-      }
+    const fileDataUrl = String(newProduct.fileDataUrl || '');
+    if (newProduct.published && !fileDataUrl.startsWith('storage://')) {
+      throw new Error('Upload the original file before publishing a digital product.');
+    }
+    if (fileDataUrl.startsWith('data:') && fileDataUrl.length >= 700000) {
+      throw new Error('Original file is too large for beta storage. The product was not published.');
+    }
+    if (!currentUser) {
+      throw new Error('Please sign in before publishing products.');
+    }
 
-      if (!hasFirebaseSdkSession()) return;
-      const prodRef = doc(db, 'products', newProduct.id);
+    // Firebase accounts stage the draft in Firestore. Authenticated server-email
+    // accounts stage private file metadata through /api/uploads/product.
+    if (hasFirebaseSdkSession()) {
       try {
-        await setDoc(prodRef, {
+        await setDoc(doc(db, 'products', newProduct.id), {
           storeId: config.storeId,
           ownerId: currentUser.uid,
           title: newProduct.title.slice(0, 160),
@@ -1983,8 +1964,8 @@ export default function App() {
           priceUsd: newProduct.isFree ? 0 : Math.max(1, Number(newProduct.priceUsd)),
           pricePkr: newProduct.isFree ? 0 : Math.max(100, Number(newProduct.pricePkr)),
           isFree: Boolean(newProduct.isFree),
-          published: Boolean(newProduct.published),
-          status: newProduct.status,
+          published: false,
+          status: 'Draft',
           image: newProduct.image,
           fileName: newProduct.fileName.slice(0, 255),
           fileType: newProduct.fileType.slice(0, 100),
@@ -1992,91 +1973,129 @@ export default function App() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-
-        await setDoc(doc(db, 'products', newProduct.id, 'deliverables', 'main'), {
-          productId: newProduct.id,
-          ownerId: currentUser.uid,
-          fileName: newProduct.fileName.slice(0, 255),
-          fileMimeType: 'text/plain',
-          fileDataUrl: (
-            newProduct.fileDataUrl ||
-            createSampleGuideDataUrl(newProduct.title, newProduct.subtitle)
-          ).slice(0, 790000),
-          updatedAt: serverTimestamp(),
-        });
+        if (fileDataUrl) {
+          await setDoc(doc(db, 'products', newProduct.id, 'deliverables', 'main'), {
+            productId: newProduct.id,
+            ownerId: currentUser.uid,
+            fileName: newProduct.fileName.slice(0, 255),
+            fileMimeType: newProduct.fileType.slice(0, 100) || 'application/octet-stream',
+            fileDataUrl,
+            updatedAt: serverTimestamp(),
+          });
+        }
       } catch (err) {
         reportFirestoreError(err, OperationType.CREATE, `products/${newProduct.id}`);
+        throw new Error('Product could not be saved to Firebase. Please try again.');
       }
     }
+
+    const authHeaders = await getAuthHeaders();
+    const response = await fetch('/api/products/upsert', {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        id: newProduct.id,
+        storeId: config.storeId,
+        title: newProduct.title,
+        category: newProduct.category,
+        subtitle: newProduct.subtitle,
+        description: newProduct.description,
+        isFree: Boolean(newProduct.isFree),
+        priceUsd: newProduct.isFree ? 0 : Math.max(1, Number(newProduct.priceUsd)),
+        pricePkr: newProduct.isFree ? 0 : Math.max(100, Number(newProduct.pricePkr)),
+        published: Boolean(newProduct.published),
+        image: newProduct.image,
+        fileName: newProduct.fileName,
+        fileType: newProduct.fileType,
+        fileSizeLabel: newProduct.fileSizeLabel,
+        fileDataUrl,
+      }),
+    });
+    if (!response.ok) {
+      const details = await response.json().catch(() => ({}));
+      throw new Error(details.error || 'The server could not publish this product. Please try again.');
+    }
+    setProducts((prev) => [newProduct, ...prev]);
   };
 
   const handleUpdateProduct = async (productId: string, partial: Partial<Product>) => {
     const target = products.find((p) => p.id === productId);
-    if (!target) return;
+    if (!target) throw new Error('Product no longer exists.');
+    if (!currentUser) {
+      throw new Error('Sign in before editing products.');
+    }
     const merged: Product = { ...target, ...partial };
-    setProducts((prev) => prev.map((p) => (p.id === productId ? merged : p)));
+    if (merged.ownerId !== currentUser.uid && !isSuperAdminVerified) {
+      throw new Error('You cannot edit another seller’s product.');
+    }
 
-    if (currentUser && (merged.ownerId === currentUser.uid || isSuperAdminVerified)) {
+    // Store the replacement private file reference before the server verifies
+    // the object and publishes a new version of this listing.
+    if (hasFirebaseSdkSession() &&
+        merged.fileDataUrl?.startsWith('storage://') &&
+        merged.fileDataUrl !== target.fileDataUrl) {
       try {
-        const authHeaders = await getAuthHeaders();
-        fetch('/api/products/upsert', {
-          method: 'POST',
-          headers: authHeaders,
-          body: JSON.stringify({
-            id: merged.id,
-            storeId: merged.storeId || config.storeId,
-            title: merged.title,
-            category: merged.category,
-            subtitle: merged.subtitle,
-            description: merged.description,
-            isFree: Boolean(merged.isFree),
-            priceUsd: merged.isFree ? 0 : Math.max(1, Number(merged.priceUsd)),
-            pricePkr: merged.isFree ? 0 : Math.max(100, Number(merged.pricePkr)),
-            published: Boolean(merged.published),
-            image: merged.image,
-            fileName: merged.fileName,
-            fileType: merged.fileType,
-            fileSizeLabel: merged.fileSizeLabel,
-            fileDataUrl: merged.fileDataUrl,
-          }),
-        }).catch(() => {});
-      } catch {
-        // Ignore network error if offline
-      }
-
-      if (!hasFirebaseSdkSession()) return;
-      try {
-        await updateDoc(doc(db, 'products', productId), {
-          title: merged.title.slice(0, 160),
-          category: merged.category,
-          subtitle: merged.subtitle.slice(0, 300),
-          description: merged.description.slice(0, 3000),
-          priceUsd: merged.isFree ? 0 : Math.max(1, Number(merged.priceUsd)),
-          pricePkr: merged.isFree ? 0 : Math.max(100, Number(merged.pricePkr)),
-          isFree: Boolean(merged.isFree),
-          published: Boolean(merged.published),
-          status: merged.status,
-          image: merged.image,
+        await setDoc(doc(db, 'products', productId, 'deliverables', 'main'), {
+          productId,
+          ownerId: merged.ownerId,
           fileName: merged.fileName.slice(0, 255),
-          fileType: merged.fileType.slice(0, 100),
-          fileSizeLabel: merged.fileSizeLabel.slice(0, 60),
+          fileMimeType: merged.fileType.slice(0, 100) || 'application/octet-stream',
+          fileDataUrl: merged.fileDataUrl,
           updatedAt: serverTimestamp(),
-        });
+        }, { merge: true });
       } catch (err) {
-        reportFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
+        reportFirestoreError(err, OperationType.UPDATE, `products/${productId}/deliverables/main`);
+        throw new Error('Replacement file was not saved. Product was not updated.');
       }
     }
+
+    const authHeaders = await getAuthHeaders();
+    const response = await fetch('/api/products/upsert', {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        id: merged.id,
+        storeId: merged.storeId || config.storeId,
+        title: merged.title,
+        category: merged.category,
+        subtitle: merged.subtitle,
+        description: merged.description,
+        isFree: Boolean(merged.isFree),
+        priceUsd: merged.isFree ? 0 : Math.max(1, Number(merged.priceUsd)),
+        pricePkr: merged.isFree ? 0 : Math.max(100, Number(merged.pricePkr)),
+        published: Boolean(merged.published),
+        status: merged.status,
+        image: merged.image,
+        fileName: merged.fileName,
+        fileType: merged.fileType,
+        fileSizeLabel: merged.fileSizeLabel,
+        fileDataUrl: merged.fileDataUrl,
+      }),
+    });
+    if (!response.ok) {
+      const details = await response.json().catch(() => ({}));
+      throw new Error(details.error || 'Product update was rejected by the server.');
+    }
+    setProducts((prev) => prev.map((p) => (p.id === productId ? merged : p)));
   };
 
   const handleDeleteProduct = async (productId: string) => {
-    setProducts((prev) => prev.filter((p) => p.id !== productId));
-    if (currentUser && hasFirebaseSdkSession()) {
-      try {
-        await deleteDoc(doc(db, 'products', productId));
-      } catch (err) {
-        reportFirestoreError(err, OperationType.DELETE, `products/${productId}`);
-      }
+    if (!currentUser) throw new Error('Sign in to manage products.');
+    const headers = await getAuthHeaders();
+    const response = await fetch('/api/products/delete', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ productId }),
+    });
+    if (!response.ok) {
+      const details = await response.json().catch(() => ({}));
+      throw new Error(details.error || 'Product could not be removed. Please try again.');
     }
+    // Keep original files and purchase history for existing buyers.
+    // Only remove the item from visible catalog after the durable server write.
+    setProducts((prev) => prev.filter((p) => p.id !== productId));
+    setCart((prev) => prev.filter((item) => item.product.id !== productId));
+    if (selectedProductId === productId) setSelectedProductId('');
   };
 
   const handleSavePaymentSettings = async (settings: SellerPaymentSettings) => {
@@ -2263,15 +2282,14 @@ export default function App() {
       return c;
     });
 
-    let primaryProduct = resolvedCart[0].product;
-    const rawBuyerUid = params.buyerUid || currentUser?.uid || 'sandbox-test-buyer-uid';
-    const targetSellerId =
-      (primaryProduct.ownerId &&
-      primaryProduct.ownerId !== 'demo-owner' &&
-      primaryProduct.ownerId !== 'seller-pk-fatima' &&
-      primaryProduct.ownerId !== 'seller-in-ananya'
-        ? primaryProduct.ownerId
-        : config.ownerId) || 'seller-pk-fatima';
+    if (!currentUser) throw new Error('Sign in before placing an order.');
+    if (resolvedCart.length === 0) throw new Error('Your bag is empty. Choose a product before checkout.');
+    const primaryProduct = resolvedCart[0].product;
+    const rawBuyerUid = currentUser.uid;
+    const targetSellerId = String(primaryProduct.ownerId || '');
+    if (!targetSellerId || !config.storeId) {
+      throw new Error('Seller or store is unavailable. Refresh the product page.');
+    }
     const serverBuyerId = rawBuyerUid;
     const cartSig = resolvedCart.map((c) => `${c.product.id}:${c.quantity}`).join('|');
     const refSig = (params.paymentReference || 'free').trim();
@@ -2315,128 +2333,18 @@ export default function App() {
       .slice(0, 1000);
     const totalCount = resolvedCart.reduce((s, c) => s + c.quantity, 0);
 
-    let sellerId =
-      data.sellerId ||
-      (primaryProduct.ownerId &&
-      primaryProduct.ownerId !== 'demo-owner' &&
-      primaryProduct.ownerId !== 'seller-pk-fatima' &&
-      primaryProduct.ownerId !== 'seller-in-ananya'
-        ? primaryProduct.ownerId
-        : config.ownerId || currentUser?.uid || 'seller-pk-fatima');
-
-    let storeId =
-      data.storeId ||
-      (primaryProduct.storeId &&
-      primaryProduct.storeId !== 'store-fatima-tech' &&
-      primaryProduct.storeId !== 'store-in-ananya'
-        ? primaryProduct.storeId
-        : config.storeId || (currentUser ? `store-${currentUser.uid.slice(0, 20)}` : 'store-fatima-tech'));
-
-    let primaryProductId = primaryProduct.id;
-
-    // Atomic Firestore Transaction when authenticated with Firebase SDK
-    if (currentUser && hasFirebaseSdkSession()) {
-      try {
-        const storeDocRef = doc(db, 'stores', storeId);
-        const storeSnap = await getDoc(storeDocRef);
-        if (storeSnap.exists()) {
-          const storeData = storeSnap.data();
-          if (storeData?.ownerId) {
-            sellerId = storeData.ownerId;
-          }
-        }
-      } catch {
-        // Proceed to transaction
-      }
+    // Order/ledger records are now committed atomically by the verified backend.
+    // The browser must never write financial ledger entries or duplicate orders.
+    const sellerId = String(data.sellerId || '');
+    const storeId = String(data.storeId || '');
+    const primaryProductId = String(primaryProduct.id);
+    if (!sellerId || !storeId) {
+      throw new Error('Server did not confirm a verified seller and store.');
     }
-
-    const orderRef = doc(db, 'orders', orderId);
-    const ledgerRef = doc(db, 'ledger', data.orderNumber);
-    const auditId = `aud-${Date.now()}`;
-    const auditRef = doc(db, 'ledger_audit', auditId);
-
     const verificationMode: VerificationMode =
-      data.verificationMode ||
-      (data.calculatedTotal === 0 ? 'Instant Free' : 'Unverified');
+      data.verificationMode || (data.calculatedTotal === 0 ? 'Instant Free' : 'Unverified');
     const commissionStatus: CommissionStatus =
-      data.commissionStatus ||
-      (data.calculatedTotal === 0 ? 'not_applicable' : 'outstanding');
-
-    // Atomic Firestore Transaction when authenticated with Firebase SDK
-    if (currentUser && hasFirebaseSdkSession()) {
-      try {
-        await runTransaction(db, async (tx) => {
-          const existingLedger = await tx.get(ledgerRef);
-          if (existingLedger.exists()) {
-            throw new Error(`Duplicate ledger entry prevented for ${data.orderNumber}`);
-          }
-
-          tx.set(orderRef, {
-            orderNumber: data.orderNumber,
-            storeId,
-            sellerId,
-            buyerId: currentUser.uid,
-            primaryProductId,
-            customerName: params.customerName.slice(0, 120),
-            customerEmail: params.customerEmail.slice(0, 254),
-            currency: params.currency,
-            subtotal: data.calculatedSubtotal,
-            totalAmount: data.calculatedTotal,
-            paymentMethod: params.paymentMethod,
-            paymentStatus: data.initialPaymentStatus,
-            paymentReference: params.paymentReference.slice(0, 200),
-            itemTitlesSummary,
-            itemCount: totalCount,
-            downloadToken: data.downloadToken,
-            downloadCount: 0,
-            maxDownloads: data.maxDownloads,
-            expiresAtMs: data.expiresAtMs,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          tx.set(ledgerRef, {
-            orderId,
-            orderNumber: data.orderNumber,
-            storeId,
-            sellerId,
-            buyerId: currentUser.uid,
-            currency: params.currency,
-            commissionRateBps: 500,
-            grossAmountMinor: data.commissionBreakdown.grossAmountMinor,
-            platformCommissionMinor: data.commissionBreakdown.platformCommissionMinor,
-            sellerShareBeforeFeesMinor: data.commissionBreakdown.sellerShareBeforeFeesMinor,
-            gatewayFeeMinor: data.commissionBreakdown.gatewayFeeMinor,
-            sellerNetEarningsMinor: data.commissionBreakdown.sellerNetEarningsMinor,
-            paymentMethod: params.paymentMethod,
-            paymentStatus: data.initialPaymentStatus,
-            verificationMode,
-            commissionStatus,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-
-          tx.set(auditRef, {
-            auditId,
-            orderNumber: data.orderNumber,
-            orderId,
-            sellerId,
-            actorUid: currentUser.uid,
-            action: 'ORDER_CREATED',
-            previousStatus: 'None',
-            newStatus: data.initialPaymentStatus,
-            verificationMode,
-            detail:
-              data.calculatedTotal === 0
-                ? 'Free order created atomically with instant download token.'
-                : `Order created (${params.currency} ${data.calculatedTotal}) via ${params.paymentMethod}. Pending seller statement confirmation.`,
-            createdAt: serverTimestamp(),
-          });
-        });
-      } catch (err) {
-        reportFirestoreError(err, OperationType.CREATE, `orders/${orderId}`);
-      }
-    }
+      data.commissionStatus || (data.calculatedTotal === 0 ? 'not_applicable' : 'outstanding');
 
     if (data.auditEntry) {
       setAuditLogs((prev) => [data.auditEntry, ...prev]);
@@ -2519,6 +2427,10 @@ export default function App() {
             orderNumber: target.orderNumber,
           }),
         });
+        if (!refRes.ok) {
+          const details = await refRes.json().catch(() => ({}));
+          throw new Error(details.error || 'Refund was not confirmed by the server.');
+        }
         updatedToken = 'REVOKED-REFUNDED';
         updatedCommissionStatus = 'reversed';
         updatedPayoutStatus = 'Reversed (Refunded)';
@@ -2538,6 +2450,10 @@ export default function App() {
             statementConfirmed: true,
           }),
         });
+        if (!verifyRes.ok) {
+          const details = await verifyRes.json().catch(() => ({}));
+          throw new Error(details.error || 'Payment status could not be verified.');
+        }
         if (verifyRes.ok) {
           const vData = await verifyRes.json();
           if (vData.downloadToken) {
@@ -2560,8 +2476,8 @@ export default function App() {
           }
         }
       }
-    } catch {
-      // Server sync best-effort
+    } catch (err) {
+      throw err instanceof Error ? err : new Error('Order update failed. Please try again.');
     }
 
     setOrders((prev) =>
@@ -2585,128 +2501,9 @@ export default function App() {
       )
     );
 
-    if (!currentUser || !hasFirebaseSdkSession()) return;
+    // Financial status, order document and download access are server-authoritative.
+    // The browser does not independently write verification, refunds or entitlements.
 
-    const orderRef = doc(db, 'orders', orderId);
-    const ledgerRef = doc(db, 'ledger', target.orderNumber);
-    const auditId = `aud-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`;
-    const auditRef = doc(db, 'ledger_audit', auditId);
-
-    try {
-      await runTransaction(db, async (tx) => {
-        const [orderSnap, ledgerSnap] = await Promise.all([
-          tx.get(orderRef),
-          tx.get(ledgerRef),
-        ]);
-
-        // If the order only exists in Express memory (e.g. guest checkout prior to sign-in),
-        // skip Firestore document update so tx.update never runs against a null resource.
-        if (!orderSnap.exists()) {
-          return;
-        }
-
-        const ordData = orderSnap.data();
-        const ordSellerId = String(ordData.sellerId || target.sellerId || '');
-        if (!isSuperAdminVerified && ordSellerId !== currentUser.uid) {
-          return;
-        }
-
-        const fsProductId = String(ordData.primaryProductId || target.primaryProductId || '');
-        const fsBuyerId = String(ordData.buyerId || target.buyerId || '');
-        const validIdRegex = /^[a-zA-Z0-9_-]+$/;
-        const canWriteEntitlement =
-          validIdRegex.test(fsProductId) && validIdRegex.test(fsBuyerId);
-        const entRef = canWriteEntitlement
-          ? doc(db, 'products', fsProductId, 'entitlements', fsBuyerId)
-          : null;
-        const entSnap = entRef ? await tx.get(entRef) : null;
-
-        const safePaymentRef = String(
-          target.paymentReference || ordData.paymentReference || 'VERIFIED-REF'
-        ).slice(0, 200);
-        const safeToken = String(
-          updatedToken || ordData.downloadToken || 'LOCKED-PENDING-VERIFICATION'
-        ).slice(0, 128);
-
-        tx.update(orderRef, {
-          paymentStatus: newStatus,
-          paymentReference: safePaymentRef,
-          downloadToken: safeToken,
-          updatedAt: serverTimestamp(),
-        });
-
-        if (
-          ledgerSnap.exists() &&
-          (isSuperAdminVerified || ledgerSnap.data().sellerId === currentUser.uid)
-        ) {
-          const ledgerUpdate: Record<string, unknown> = {
-            paymentStatus: newStatus,
-            verificationMode: updatedVerificationMode,
-            commissionStatus: updatedCommissionStatus,
-            updatedAt: serverTimestamp(),
-          };
-          if (newStatus === 'Refunded') {
-            ledgerUpdate.platformCommissionMinor = 0;
-            ledgerUpdate.sellerShareBeforeFeesMinor = 0;
-            ledgerUpdate.sellerNetEarningsMinor = 0;
-          }
-          tx.update(ledgerRef, ledgerUpdate);
-        }
-
-        tx.set(auditRef, {
-          auditId,
-          orderNumber: String(ordData.orderNumber || target.orderNumber).slice(0, 40),
-          orderId: orderRef.id,
-          sellerId: ordSellerId || currentUser.uid,
-          actorUid: currentUser.uid,
-          action:
-            newStatus === 'Paid'
-              ? 'MANUAL_PAYMENT_VERIFIED'
-              : newStatus === 'Refunded'
-              ? 'ORDER_REFUNDED_REVERSED'
-              : 'PAYMENT_REJECTED',
-          previousStatus: String(ordData.paymentStatus || target.paymentStatus || 'Pending').slice(
-            0,
-            40
-          ),
-          newStatus,
-          verificationMode: String(updatedVerificationMode || 'Unverified').slice(0, 80),
-          detail: (
-            newStatus === 'Paid'
-              ? `Manually verified by seller against statement (Ref: ${safePaymentRef}).`
-              : newStatus === 'Refunded'
-              ? 'Order refunded and 5% commission reversed.'
-              : 'Payment reference rejected by seller.'
-          ).slice(0, 500),
-          createdAt: serverTimestamp(),
-        });
-
-        if (entRef && entSnap) {
-          const safeExpiresAtMs = Number(
-            ordData.expiresAtMs || target.expiresAtMs || Date.now() + 7 * 24 * 60 * 60 * 1000
-          );
-          if (entSnap.exists()) {
-            tx.update(entRef, {
-              status: newStatus === 'Paid' ? 'Active' : 'Revoked',
-              expiresAtMs: safeExpiresAtMs,
-              updatedAt: serverTimestamp(),
-            });
-          } else {
-            tx.set(entRef, {
-              productId: fsProductId,
-              buyerId: fsBuyerId,
-              sellerId: ordSellerId || currentUser.uid,
-              orderId: orderRef.id,
-              status: newStatus === 'Paid' ? 'Active' : 'Revoked',
-              expiresAtMs: safeExpiresAtMs,
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-      });
-    } catch (err) {
-      reportFirestoreError(err, OperationType.UPDATE, `orders/${orderId}`);
-    }
   };
 
   // Commission Status Handler (outstanding, paid, reversed, disputed)
@@ -2774,67 +2571,23 @@ export default function App() {
       };
     }
 
-    // Fetch protected deliverable from Firestore
-    let fileDataUrl = '';
-    let fileName = 'DreamStore-Digital-Guide.txt';
-    const matchingProd = products.find((p) => p.id === order.primaryProductId);
-    if (matchingProd) {
-      fileName = matchingProd.fileName;
-      fileDataUrl =
-        matchingProd.fileDataUrl ||
-        createSampleGuideDataUrl(matchingProd.title, matchingProd.subtitle);
+    // Download the actual authorized original supplied by the server. Never fabricate a sample.
+    const fileDataUrl = String(verifyData.fileDataUrl || '');
+    const fileName = String(verifyData.fileName || 'Digital-Download').slice(0, 255);
+    if (!/^data:[a-z0-9.+/-]+(?:;[a-z0-9=+\-]+)*[,;]/i.test(fileDataUrl)) {
+      return {
+        ok: false,
+        message: 'Original product file is unavailable. Please contact the seller.',
+      };
     }
 
-    try {
-      const delivSnap = await getDoc(
-        doc(db, 'products', order.primaryProductId, 'deliverables', 'main')
-      );
-      if (delivSnap.exists()) {
-        const d = delivSnap.data();
-        fileName = d.fileName || fileName;
-        fileDataUrl = d.fileDataUrl || fileDataUrl;
-      }
-    } catch {
-      // Fallback to generated verified text if deliverable doc not yet seeded
-    }
-
-    if (!fileDataUrl) {
-      fileDataUrl = createSampleGuideDataUrl(order.itemTitlesSummary, 'Verified Order');
-    }
-
-    // Increment downloadCount in local UI state & Firestore
-    const nextDownloadCount = (verifyData.downloadCount as number) || order.downloadCount + 1;
+    const nextDownloadCount = Number(verifyData.downloadCount) || order.downloadCount + 1;
     setOrders((prev) =>
       prev.map((o) =>
         o.id === order.id ? { ...o, downloadCount: nextDownloadCount } : o
       )
     );
 
-    if (currentUser) {
-      try {
-        const orderDocRef = doc(db, 'orders', order.id);
-        const orderSnap = await getDoc(orderDocRef);
-        if (orderSnap.exists()) {
-          const ordData = orderSnap.data();
-          const currentFsCount = Number(ordData.downloadCount || 0);
-          const maxFsCount = Number(ordData.maxDownloads || 5);
-          if (
-            ordData.paymentStatus === 'Paid' &&
-            currentFsCount + 1 <= maxFsCount &&
-            (ordData.buyerId === currentUser.uid || isSuperAdminVerified)
-          ) {
-            await updateDoc(orderDocRef, {
-              downloadCount: currentFsCount + 1,
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-      } catch (err) {
-        reportFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
-      }
-    }
-
-    // Trigger browser download
     const a = document.createElement('a');
     a.href = fileDataUrl;
     a.download = fileName;
@@ -2844,7 +2597,7 @@ export default function App() {
 
     return {
       ok: true,
-      message: `Downloading "${fileName}" (${order.downloadCount + 1}/${order.maxDownloads} downloads used).`,
+      message: `Downloading "${fileName}" (${nextDownloadCount}/${order.maxDownloads} downloads used).`,
     };
   };
 
@@ -2896,6 +2649,11 @@ export default function App() {
   };
 
   const handleNavigate = (screen: ScreenId, productId?: string) => {
+    if (!currentUser && (screen === 'wizard' || screen === 'owner-dashboard' || screen === 'visual-editor')) {
+      setAuthModalMode('signup');
+      setAuthModalOpen(true);
+      return;
+    }
     // Role-based navigation enforcement
     if (screen === 'super-admin' && !isSuperAdminVerified) {
       setBlockedAccessNotice(
@@ -2950,11 +2708,10 @@ export default function App() {
   const handleSwitchSellerStore = (targetStoreId: string) => {
     setActiveStoreId(targetStoreId);
     const targetConfig = storeConfigs[targetStoreId];
-    const storeProds = products.filter((p) => p.storeId === targetStoreId);
-    if (storeProds.length > 0) {
-      setSelectedProductId(storeProds[0].id);
-      setCart([{ product: storeProds[0], quantity: 1 }]);
-    }
+    const storeProds = products.filter((p) => p.storeId === targetStoreId && p.published);
+    setSelectedProductId(storeProds[0]?.id || '');
+    // Switching stores never auto-adds a product or carries across seller carts.
+    setCart([]);
     try {
       const url = new URL(window.location.href);
       if (targetConfig?.storeSlug) {
@@ -2989,10 +2746,8 @@ export default function App() {
     setActiveStoreId(targetStoreId);
     activeStoreIdRef.current = targetStoreId;
     const storeProds = products.filter((p) => p.storeId === targetStoreId);
-    if (storeProds.length > 0) {
-      setSelectedProductId(storeProds[0].id);
-      setCart([{ product: storeProds[0], quantity: 1 }]);
-    }
+    setSelectedProductId(storeProds[0]?.id || '');
+    setCart([]);
     setActiveScreen(targetScreen);
     try {
       const targetConfig = storeConfigsRef.current[targetStoreId];
@@ -3071,7 +2826,7 @@ export default function App() {
           easypaisaStoreId: '',
           upiId: '',
           paymentLinkUrl: '',
-          payoneerReceivingEmail: currentUser.email || '',
+          payoneerReceivingEmail: '',
           payoneerRequestLink: '',
           payoneerReceivingAccountDetails: '',
           whatsappNotificationNumber: '',
@@ -3082,8 +2837,7 @@ export default function App() {
 
   const currentProduct =
     activeStoreProducts.find((p) => p.id === selectedProductId) ||
-    activeStoreProducts[0] ||
-    products[0];
+    activeStoreProducts[0] || null;
   const totalCartItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
@@ -3199,12 +2953,24 @@ export default function App() {
             const match = (Object.values(storeConfigs) as StoreConfig[]).find(
               (sc) => sc.storeId === slugOrId || sc.storeSlug === slugOrId
             );
-            if (match) {
-              handleSwitchSellerStore(match.storeId);
-            }
-            if (navigateToStorefront) {
-              handleNavigate('storefront');
-            }
+            if (!match) return;
+            // Fetch real products/branding before opening the chosen public store.
+            void loadStoreFromBackendOrFirestore(match.storeSlug).then((loaded) => {
+              if (!loaded) {
+                setBlockedAccessNotice('This store is not available right now.');
+                return;
+              }
+              setCart([]);
+              setSelectedProductId('');
+              if (navigateToStorefront) {
+                setActiveScreen('storefront');
+                const u = new URL(window.location.href);
+                u.searchParams.set('screen', 'storefront');
+                u.searchParams.set('store', loaded.storeSlug);
+                window.history.pushState({ screen: 'storefront', storeSlug: loaded.storeSlug }, '', u.toString());
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            });
           }}
           onAddToCart={handleAddToCart}
           isAuthenticated={Boolean(currentUser)}
@@ -3238,10 +3004,11 @@ export default function App() {
           ''
         }
         defaultEmail={currentUser?.email || ''}
+        emailVerified={currentUser?.emailVerified !== false}
         onCompleteOnboarding={handleCompleteRoleOnboarding}
       />
 
-      {activeScreen === 'wizard' && userProfile?.role !== 'buyer' && (
+      {activeScreen === 'wizard' && currentUser && (userProfile?.role === 'seller' || userProfile?.role === 'super_admin') && (
         <StoreSetupWizard
           config={config}
           onUpdateConfig={handleUpdateConfig}
@@ -3255,7 +3022,7 @@ export default function App() {
         />
       )}
 
-      {activeScreen === 'owner-dashboard' && userProfile?.role !== 'buyer' && (
+      {activeScreen === 'owner-dashboard' && currentUser && (userProfile?.role === 'seller' || userProfile?.role === 'super_admin') && (
         <StoreOwnerDashboard
           config={config}
           onUpdateConfig={handleUpdateConfig}
@@ -3310,7 +3077,7 @@ export default function App() {
         />
       )}
 
-      {activeScreen === 'product-detail' && (
+      {activeScreen === 'product-detail' && currentProduct && (
         <ProductDetailPage
           product={currentProduct}
           allProducts={activeStoreProducts}
@@ -3328,7 +3095,16 @@ export default function App() {
         />
       )}
 
-      {activeScreen === 'visual-editor' && userProfile?.role !== 'buyer' && (
+      {activeScreen === 'product-detail' && !currentProduct && (
+        <div className="mx-auto max-w-xl p-8 text-center text-[#50352F]">
+          <h2 className="text-xl font-bold">This store has no published products yet.</h2>
+          <button type="button" className="candy-btn-pink mt-4 px-5 py-2" onClick={() => handleNavigate('shop')}>
+            Explore Store
+          </button>
+        </div>
+      )}
+
+      {activeScreen === 'visual-editor' && currentUser && (userProfile?.role === 'seller' || userProfile?.role === 'super_admin') && (
         <VisualStoreEditor
           config={config}
           onUpdateConfig={handleUpdateConfig}
@@ -3385,7 +3161,7 @@ export default function App() {
           orders={orders}
           currentUserUid={currentUser?.uid || null}
           currentUserName={userProfile?.displayName || currentUser?.displayName || null}
-          currentUserEmail={userProfile?.email || currentUser?.email || null}
+          currentUserEmail={currentUser?.email || userProfile?.email || null}
           onSignInGoogle={handleSignInGoogle}
           gatewayStatus={gatewayStatus}
           sellerPaymentSettings={sellerPaymentSettings}

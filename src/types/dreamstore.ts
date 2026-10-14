@@ -379,6 +379,7 @@ export function getConfiguredSellerPaymentMethods(
 }
 
 export interface GatewayServerStatus {
+  paidCheckoutEnabled?: boolean;
   jazzcashConfigured: boolean;
   easypaisaConfigured: boolean;
   razorpayConfigured?: boolean;
@@ -896,7 +897,7 @@ export const INITIAL_STORE_CONFIG: StoreConfig = {
   storeName: 'Fatima.tech',
   ownerName: 'Fatima',
   ownerRole: 'Store Owner',
-  ownerEmail: 'fatima@email.com',
+  ownerEmail: '',
   ownerAvatar: INITIAL_ASSETS.avatarFatima,
   logoUrl: INITIAL_ASSETS.avatarFatima,
   sellerCountry: 'Pakistan',
@@ -942,7 +943,7 @@ export const INDIA_STORE_CONFIG: StoreConfig = {
   storeName: 'Ananya Creates',
   ownerName: 'Ananya Sharma',
   ownerRole: 'Store Owner (India)',
-  ownerEmail: 'ananya@in-seller.dreamstore.test',
+  ownerEmail: '',
   ownerAvatar: INITIAL_ASSETS.avatarFatima,
   logoUrl: INITIAL_ASSETS.avatarFatima,
   sellerCountry: 'India',
@@ -1273,60 +1274,8 @@ export const INDIA_SELLER_PAYMENT_SETTINGS: SellerPaymentSettings = {
 
 export const INITIAL_SELLER_PAYMENT_SETTINGS_BY_STORE: Record<string, SellerPaymentSettings> = {};
 
-export const INITIAL_PLATFORM_STORES: PlatformStore[] = [
-  {
-    id: 'store-fatima-tech',
-    ownerId: 'seller-pk-fatima',
-    storeSlug: 'fatima.tech',
-    storeName: 'Fatima.tech',
-    ownerEmail: 'fatima@pk-seller.dreamstore.test',
-    country: 'Pakistan',
-    currency: 'PKR',
-    instagramHandle: '@fatima.tech',
-    status: 'Active',
-    plan: 'Pro',
-    created: 'Oct 20, 2024',
-  },
-  {
-    id: 'store-in-ananya',
-    ownerId: 'seller-in-ananya',
-    storeSlug: 'ananya.creates',
-    storeName: 'Ananya Creates',
-    ownerEmail: 'ananya@in-seller.dreamstore.test',
-    country: 'India',
-    currency: 'INR',
-    instagramHandle: '@ananya.creates',
-    status: 'Active',
-    plan: 'Pro',
-    created: 'Oct 21, 2024',
-  },
-  {
-    id: 'store-2',
-    ownerId: 'seller-uk-creative',
-    storeSlug: 'creativestudio.store',
-    storeName: 'Creative Studio',
-    ownerEmail: 'owner2@email.com',
-    country: 'United Kingdom',
-    currency: 'GBP',
-    instagramHandle: '@creativestudio',
-    status: 'Active',
-    plan: 'Basic',
-    created: 'Oct 18, 2024',
-  },
-  {
-    id: 'store-3',
-    ownerId: 'seller-ae-digital',
-    storeSlug: 'digitalplans.pk',
-    storeName: 'Digital Plans',
-    ownerEmail: 'owner3@email.com',
-    country: 'UAE',
-    currency: 'AED',
-    instagramHandle: '@digitalplans',
-    status: 'Pending',
-    plan: 'Basic',
-    created: 'Oct 15, 2024',
-  },
-];
+// Always load platform stores from verified Firestore/server data.
+export const INITIAL_PLATFORM_STORES: PlatformStore[] = [];
 
 export function convertPriceToCurrency(
   product: Pick<Product, 'isFree' | 'priceUsd' | 'pricePkr'>,
