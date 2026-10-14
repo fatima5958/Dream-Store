@@ -81,3 +81,22 @@ test('seller catalog never silently assigns fake prices or files to a paid produ
   assert.doesNotMatch(upsert, /Math\.max\(1, Number\(productPayload\.priceUsd\) \|\| 1\)/);
   assert.doesNotMatch(upsert, /fileSizeLabel: String\(productPayload\.fileSizeLabel \|\| '2\.4 MB'\)/);
 });
+
+test('verified user role is durably saved and reloaded from Firestore across Cloud Run restarts', () => {
+  const readStart = server.indexOf('const handleGetUserProfile = async');
+  const saveStart = server.indexOf('const handleSaveUserProfile = async');
+  assert.ok(readStart > -1 && saveStart > readStart);
+  const readProfile = server.slice(readStart, saveStart);
+  const hydrateIdx = readProfile.indexOf("adminFirestoreDb.collection('users').doc(user.uid).get()");
+  const fallbackIdx = readProfile.indexOf('const existingMem = serverUserProfiles.get(user.uid)');
+  assert.ok(hydrateIdx >= 0 && fallbackIdx > hydrateIdx,
+    'Firestore role must be checked before the server-local profile cache');
+  const saveProfile = server.slice(saveStart, server.indexOf('function buildRolePermissions', saveStart));
+  assert.match(saveProfile, /adminFirestoreDb\.runTransaction/);
+  assert.match(saveProfile, /serverUserProfiles\.set\(user\.uid, savedProfile\)/);
+  assert.ok(saveProfile.indexOf('await adminFirestoreDb.runTransaction') <
+    saveProfile.indexOf('serverUserProfiles.set(user.uid, savedProfile)'));
+  assert.match(saveProfile, /String\(user\.email \|\| ''\)/);
+  assert.doesNotMatch(saveProfile, /body\.email \|\| user\.email/);
+  assert.match(saveProfile, /Your account role could not be saved securely/);
+});
