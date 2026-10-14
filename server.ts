@@ -7954,6 +7954,7 @@ async function startServer() {
   app.post('/api/delivery/verify-download', async (req, res) => {
     const verifiedUser = await requireAuthenticatedUser(req, res);
     if (!verifiedUser) return;
+    if (!(await ensureFinancialDatabaseReady(res))) return;
 
     const {
       orderNumber,
@@ -8177,17 +8178,50 @@ async function startServer() {
       return;
     }
 
-    ledgerEntry.downloadCount += 1;
+    // The download limit is financial-access state. Commit the counter with a
+    // Firestore transaction so retries, concurrent downloads, and server
+    // restarts cannot reset the entitlement limit.
+    let committedDownloadCount: number;
+    try {
+      const ledgerRef = adminFirestoreDb!.collection('ledger').doc(ledgerEntry.orderNumber);
+      const orderRef = adminFirestoreDb!.collection('orders').doc(ledgerEntry.orderId);
+      committedDownloadCount = await adminFirestoreDb!.runTransaction(async (tx) => {
+        const snap = await tx.get(ledgerRef);
+        if (!snap.exists) throw new Error('Order is not present in the verified ledger.');
+        const saved = snap.data() as LedgerEntry;
+        const count = Number(saved.downloadCount);
+        const max = Number(saved.maxDownloads);
+        if (
+          saved.buyerId !== requestedBuyerId ||
+          saved.sellerId !== ledgerEntry.sellerId ||
+          saved.primaryProductId !== String(productId) ||
+          saved.paymentStatus !== 'Paid' ||
+          saved.downloadToken !== effectiveToken ||
+          !Number.isInteger(count) || count < 0 ||
+          !Number.isInteger(max) || max < 1 || count >= max ||
+          Date.now() > Number(saved.expiresAtMs)
+        ) {
+          throw new Error('Order access changed, expired, or download limit reached. Refresh and try again.');
+        }
+        const next = count + 1;
+        const now = new Date();
+        tx.update(ledgerRef, { downloadCount: next, updatedAtIso: now.toISOString() });
+        tx.set(orderRef, { downloadCount: next, updatedAt: now }, { merge: true });
+        return next;
+      });
+    } catch (err) {
+      res.status(409).json({
+        allowed: false,
+        error: err instanceof Error ? err.message : 'Could not securely reserve a download. Please retry.',
+      });
+      return;
+    }
+    ledgerEntry.downloadCount = committedDownloadCount;
     ledgerEntry.updatedAtIso = new Date().toISOString();
-    syncFirestoreDoc(
-      'ledger',
-      ledgerEntry.orderNumber,
-      ledgerEntry as unknown as Record<string, unknown>
-    );
 
     res.json({
       allowed: true,
-      downloadCount: ledgerEntry.downloadCount,
+      downloadCount: committedDownloadCount,
       maxDownloads: effectiveMax,
       verificationMode: ledgerEntry?.verificationMode || 'Instant Free',
       fileName: protectedDeliverable?.fileName,
