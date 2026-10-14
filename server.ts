@@ -5920,21 +5920,40 @@ async function startServer() {
         return;
       }
 
-      const pkrRate = Number(exchangeRatePkr) > 0 ? Number(exchangeRatePkr) : 278;
+      // Refresh the published catalog once on a cache miss. Never trust buyer-supplied prices.
+      if (items.some((item) => !serverProducts.has(String(item.id)))) {
+        await hydratePublishedProductsFromFirestore();
+      }
 
       let calculatedTotal = 0;
       const targetStoreRecord = storeId ? await resolveVerifiedStoreRecord(String(storeId)) : undefined;
-      let resolvedStoreId = targetStoreRecord?.storeId || String(storeId || '').trim();
-      // Strictly resolve sellerId from the verified store record (or product owner), never from buyerId
-      let resolvedSellerId = targetStoreRecord?.ownerId || String(sellerId || '').trim();
+      if (storeId && !targetStoreRecord) {
+        res.status(404).json({ error: 'Store not found. Checkout was not created.' });
+        return;
+      }
+      let resolvedStoreId = targetStoreRecord?.storeId || '';
+      let resolvedSellerId = targetStoreRecord?.ownerId || '';
 
       for (const item of items) {
         const qty = Math.max(1, Math.min(10, Number(item.quantity) || 1));
 
         // Cross-check against authoritative server product catalog if registered
-        const serverProd = serverProducts.get(item.id);
+        const serverProd = serverProducts.get(String(item.id));
+        if (!serverProd) {
+          res.status(404).json({ error: 'Product not found in the verified catalog. Checkout was not created.' });
+          return;
+        }
+        if (
+          (resolvedStoreId && serverProd.storeId !== resolvedStoreId) ||
+          (resolvedSellerId && serverProd.ownerId !== resolvedSellerId)
+        ) {
+          res.status(403).json({ error: 'Products from different stores cannot be checked out together.' });
+          return;
+        }
+        resolvedStoreId = serverProd.storeId;
+        resolvedSellerId = serverProd.ownerId;
         if (serverProd) {
-          if (!serverProd.published) {
+          if (!serverProd.published || serverProd.status !== 'Available') {
             res.status(400).json({
               error: `Product "${serverProd.title}" is unpublished and cannot be purchased.`,
             });
@@ -5972,24 +5991,6 @@ async function startServer() {
           } else {
             unitInTarget =
               Math.round(serverProd.priceUsd * SUPPORTED_CURRENCIES[currency] * 100) / 100;
-          }
-          calculatedTotal += unitInTarget * qty;
-        } else {
-          // Custom user-created product validation
-          if (item.isFree) continue;
-          const usd = Number(item.priceUsd) || 0;
-          const pkr = Number(item.pricePkr) || Math.round(usd * pkrRate);
-          if (usd <= 0 || pkr <= 0) {
-            res.status(400).json({ error: `Invalid price on paid product "${item.title}".` });
-            return;
-          }
-          let unitInTarget = usd;
-          if (currency === 'PKR') {
-            unitInTarget = pkr;
-          } else if (currency === 'USD') {
-            unitInTarget = usd;
-          } else {
-            unitInTarget = Math.round(usd * SUPPORTED_CURRENCIES[currency] * 100) / 100;
           }
           calculatedTotal += unitInTarget * qty;
         }
@@ -7850,6 +7851,10 @@ async function startServer() {
     } = req.body || {};
 
     const ledgerEntry = persistentLedger.get(String(orderNumber));
+    if (!ledgerEntry) {
+      res.status(404).json({ allowed: false, error: 'Verified order not found. Download denied.' });
+      return;
+    }
     const requestedBuyerId = String(buyerId || '').trim();
     const isSuper = isStrictSuperAdminUser(verifiedUser);
 
@@ -7880,16 +7885,11 @@ async function startServer() {
     }
 
     // Authoritative server ledger check first (prevents client spoofing paymentStatus: "Paid")
-    const effectivePaymentStatus = ledgerEntry ? ledgerEntry.paymentStatus : paymentStatus;
-    const effectiveToken = String(downloadToken || (ledgerEntry ? ledgerEntry.downloadToken : ''));
-    const effectiveCount = ledgerEntry ? ledgerEntry.downloadCount : Number(downloadCount) || 0;
-    const effectiveMax = ledgerEntry ? ledgerEntry.maxDownloads : Number(maxDownloads) || 5;
-    const effectiveExpires =
-      expiresAtMs !== undefined
-        ? Number(expiresAtMs)
-        : ledgerEntry
-        ? ledgerEntry.expiresAtMs
-        : 0;
+    const effectivePaymentStatus = ledgerEntry.paymentStatus;
+    const effectiveToken = String(downloadToken || ledgerEntry.downloadToken);
+    const effectiveCount = ledgerEntry.downloadCount;
+    const effectiveMax = ledgerEntry.maxDownloads;
+    const effectiveExpires = ledgerEntry.expiresAtMs;
 
     if (ledgerEntry && ledgerEntry.buyerId !== requestedBuyerId) {
       res.status(403).json({
@@ -7947,16 +7947,6 @@ async function startServer() {
       return;
     }
 
-    if (ledgerEntry) {
-      ledgerEntry.downloadCount += 1;
-      ledgerEntry.updatedAtIso = new Date().toISOString();
-      syncFirestoreDoc(
-        'ledger',
-        ledgerEntry.orderNumber,
-        ledgerEntry as unknown as Record<string, unknown>
-      );
-    }
-
     let protectedDeliverable = serverProductDeliverables.get(String(productId));
     if (!protectedDeliverable && FIREBASE_PROJECT_ID && FIREBASE_API_KEY && productId) {
       try {
@@ -7992,9 +7982,25 @@ async function startServer() {
       }
     }
 
+    if (!protectedDeliverable?.fileDataUrl || !protectedDeliverable.fileDataUrl.startsWith('data:')) {
+      res.status(404).json({
+        allowed: false,
+        error: 'Original product file is unavailable. No sample file was substituted or download counted.',
+      });
+      return;
+    }
+
+    ledgerEntry.downloadCount += 1;
+    ledgerEntry.updatedAtIso = new Date().toISOString();
+    syncFirestoreDoc(
+      'ledger',
+      ledgerEntry.orderNumber,
+      ledgerEntry as unknown as Record<string, unknown>
+    );
+
     res.json({
       allowed: true,
-      downloadCount: ledgerEntry ? ledgerEntry.downloadCount : effectiveCount + 1,
+      downloadCount: ledgerEntry.downloadCount,
       maxDownloads: effectiveMax,
       verificationMode: ledgerEntry?.verificationMode || 'Instant Free',
       fileName: protectedDeliverable?.fileName,
