@@ -125,6 +125,11 @@ const HAS_DURABLE_PRODUCTION_SIGNING_SECRET =
   !['default', 'placeholder', 'change_me'].some((bad) =>
     PROVIDED_SIGNING_SECRET.toLowerCase().includes(bad)
   );
+// No real-money checkout in an unverified production deployment. Staging may
+// test paid flows; production requires a deliberate operator-controlled switch.
+const PAID_CHECKOUT_ENABLED =
+  process.env.NODE_ENV !== 'production' ||
+  process.env.DREAMSTORE_PAID_CHECKOUT_ENABLED === 'true';
 
 const SIGNING_SECRET = initializeStableServerSigningSecret();
 
@@ -4237,6 +4242,7 @@ async function startServer() {
       payoneerEnvVarsOptional: true,
       payoneerDummyCredentialsRequired: false,
       payoneerManualVerificationPreserved: true,
+      paidCheckoutEnabled: PAID_CHECKOUT_ENABLED,
       payoneerMode: payoneerConfigured ? 'live_api' : 'manual_settlement',
       emailConfigured,
       platformCommissionBps,
@@ -6263,6 +6269,13 @@ async function startServer() {
       }
 
       if (!(await ensureFinancialDatabaseReady(res))) return;
+      const confirmedBuyerEmail = String(verifiedBuyer.email || '').trim().toLowerCase();
+      if (!confirmedBuyerEmail || confirmedBuyerEmail !== String(customerEmail || '').trim().toLowerCase()) {
+        res.status(403).json({
+          error: 'Use the verified email address of your signed-in buyer account for digital delivery.',
+        });
+        return;
+      }
 
       const scopedIdempotencyKey = `${verifiedBuyer.uid}:${String(idempotencyKey)}`;
       if (processedIdempotencyKeys.has(scopedIdempotencyKey)) {
@@ -6360,6 +6373,13 @@ async function startServer() {
       }
 
       calculatedTotal = Math.round(calculatedTotal * 100) / 100;
+      if (calculatedTotal > 0 && !PAID_CHECKOUT_ENABLED) {
+        res.status(503).json({
+          error: 'Paid checkout is temporarily unavailable while DreamStore completes payment verification testing. No payment has been requested or recorded.',
+          paidCheckoutDisabled: true,
+        });
+        return;
+      }
 
       const orderNumber = `DS-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 899)}`;
       const orderId = `order-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`;
