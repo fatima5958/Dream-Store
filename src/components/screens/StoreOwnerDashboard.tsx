@@ -1609,7 +1609,14 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onDeleteProduct(prod.id)}
+                        onClick={async () => {
+                          try {
+                            await onDeleteProduct(prod.id);
+                            showToast('Product removed from your store. Existing purchases remain accessible.');
+                          } catch (err) {
+                            showToast(err instanceof Error ? err.message : 'Could not remove the product.');
+                          }
+                        }}
                         title="Delete product"
                         aria-label={`Delete ${prod.title}`}
                         className="w-11 h-11 rounded-full candy-btn-white text-[#7A5A52] hover:text-[#C93B5B] flex items-center justify-center cursor-pointer shrink-0"
