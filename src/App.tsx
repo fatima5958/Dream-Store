@@ -106,42 +106,44 @@ const LEGACY_STORAGE_KEYS = [
   'dreamstore_wizard_step_v1',
 ];
 
+// Neutral presentation before a real seller/store is selected.
+// Demo creator names, payment accounts and product data must never be defaults in production.
+const NEUTRAL_PUBLIC_STORE_CONFIG: StoreConfig = {
+  ...INITIAL_STORE_CONFIG,
+  storeId: '',
+  ownerId: '',
+  ownerEmail: '',
+  storeSlug: '',
+  storeName: '',
+  ownerName: 'Creator',
+  ownerRole: 'Store Owner',
+  ownerAvatar: '',
+  logoUrl: '',
+  socialWebsite: '',
+  instagramHandle: '',
+  sellerCountry: 'Pakistan',
+  productType: 'Digital Products',
+  announcementText: 'Welcome to your store',
+  heroHeadingLine1: 'Your Store',
+  heroHeadingLine2: 'Your Style',
+  heroSubheading: 'Digital products from independent creators.',
+  heroButtonText: 'Explore Products',
+  heroImage: '',
+};
+
 function buildFreshUserStoreConfig(user: {
   uid: string;
   displayName?: string | null;
   email?: string | null;
 }): StoreConfig {
   const userStoreId = `store-${user.uid.slice(0, 20)}`;
-  const rawName =
-    user.displayName?.trim() ||
-    (user.email ? user.email.split('@')[0].replace(/[^a-zA-Z0-9 ]/g, ' ').trim() : '') ||
-    'Creator';
-  const cleanSlug =
-    rawName
-      .toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/[^a-z0-9_.-]/g, '')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 32) || `store-${user.uid.slice(0, 8).toLowerCase()}`;
-  const slugWithSuffix =
-    cleanSlug === 'fatima.tech' || cleanSlug === 'ananya.creates' || cleanSlug.length < 2
-      ? `creator-${user.uid.slice(0, 8).toLowerCase()}`
-      : cleanSlug;
-  const displayStoreName = `${rawName}'s Studio`.slice(0, 100);
-
+  const rawName = user.displayName?.trim() || 'Creator';
   return {
-    ...INITIAL_STORE_CONFIG,
+    ...NEUTRAL_PUBLIC_STORE_CONFIG,
     storeId: userStoreId,
     ownerId: user.uid,
     ownerEmail: user.email || '',
-    socialWebsite: '',
-    storeName: displayStoreName,
-    storeSlug: slugWithSuffix,
     ownerName: rawName.slice(0, 100),
-    instagramHandle: `@${slugWithSuffix}`,
-    sellerCountry: 'Pakistan',
-    productType: 'Ebooks & Guides',
-    announcementText: `Welcome to ${displayStoreName} — Digital Downloads & Guides ✨`,
   };
 }
 
@@ -208,30 +210,22 @@ export default function App() {
     storeConfigsRef.current = storeConfigs;
   }, [storeConfigs]);
 
-  const [activeStoreId, setActiveStoreId] = useState<string>(() => {
-    const params = new URLSearchParams(window.location.search);
-    const storeParam = (params.get('store') || '').trim().toLowerCase();
-    if (storeParam === 'ananya.creates') {
-      return 'store-in-ananya';
-    }
-    if (storeParam === 'fatima.tech' || storeParam === 'fatimatech') {
-      return 'store-fatima-tech';
-    }
-    return 'store-fatima-tech';
-  });
+  const [activeStoreId, setActiveStoreId] = useState<string>(() =>
+    import.meta.env.DEV ? INITIAL_STORE_CONFIG.storeId : ''
+  );
   const activeStoreIdRef = useRef<string>(activeStoreId);
   useEffect(() => {
     activeStoreIdRef.current = activeStoreId;
   }, [activeStoreId]);
 
-  const config = storeConfigs[activeStoreId] || INITIAL_STORE_CONFIG;
+  const config = storeConfigs[activeStoreId] || (import.meta.env.DEV ? INITIAL_STORE_CONFIG : NEUTRAL_PUBLIC_STORE_CONFIG);
   const setConfig = (
     updater: StoreConfig | ((prev: StoreConfig) => StoreConfig),
     explicitStoreId?: string
   ) => {
     const targetId = explicitStoreId || activeStoreIdRef.current;
     setStoreConfigs((prevMap) => {
-      const current = prevMap[targetId] || INITIAL_STORE_CONFIG;
+      const current = prevMap[targetId] || NEUTRAL_PUBLIC_STORE_CONFIG;
       const next = typeof updater === 'function' ? updater(current) : updater;
       const resolvedId = next.storeId || targetId;
       const updatedMap = {
@@ -436,7 +430,7 @@ export default function App() {
           for (const entry of active) {
             if (next[entry.storeId]) continue;
             next[entry.storeId] = {
-              ...INITIAL_STORE_CONFIG,
+              ...NEUTRAL_PUBLIC_STORE_CONFIG,
               storeId: String(entry.storeId),
               ownerId: String(entry.ownerId || ''),
               ownerEmail: '',
@@ -487,7 +481,7 @@ export default function App() {
         const d = docSnap.data();
         const loadedStoreId = docSnap.id;
         const loadedConfig: StoreConfig = {
-          ...(storeConfigsRef.current[loadedStoreId] || INITIAL_STORE_CONFIG),
+          ...(storeConfigsRef.current[loadedStoreId] || NEUTRAL_PUBLIC_STORE_CONFIG),
           storeId: loadedStoreId,
           ownerId: d.ownerId || '',
           storeSlug: d.storeSlug || cleanSlug,
@@ -499,18 +493,18 @@ export default function App() {
           announcementText:
             d.announcementText ||
             `Welcome to ${d.storeName || cleanSlug} — Digital Downloads & Guides ✨`,
-          heroHeadingLine1: d.heroHeadingLine1 || INITIAL_STORE_CONFIG.heroHeadingLine1,
-          heroHeadingLine2: d.heroHeadingLine2 || INITIAL_STORE_CONFIG.heroHeadingLine2,
-          heroSubheading: d.heroSubheading || INITIAL_STORE_CONFIG.heroSubheading,
-          heroButtonText: d.heroButtonText || INITIAL_STORE_CONFIG.heroButtonText,
-          heroImage: resolveStoreAssetUrl(d.heroImage, INITIAL_STORE_CONFIG.heroImage),
+          heroHeadingLine1: d.heroHeadingLine1 || NEUTRAL_PUBLIC_STORE_CONFIG.heroHeadingLine1,
+          heroHeadingLine2: d.heroHeadingLine2 || NEUTRAL_PUBLIC_STORE_CONFIG.heroHeadingLine2,
+          heroSubheading: d.heroSubheading || NEUTRAL_PUBLIC_STORE_CONFIG.heroSubheading,
+          heroButtonText: d.heroButtonText || NEUTRAL_PUBLIC_STORE_CONFIG.heroButtonText,
+          heroImage: resolveStoreAssetUrl(d.heroImage, NEUTRAL_PUBLIC_STORE_CONFIG.heroImage),
           logoUrl: resolveStoreAssetUrl(
             d.logoUrl || d.ownerAvatar,
-            INITIAL_STORE_CONFIG.logoUrl
+            NEUTRAL_PUBLIC_STORE_CONFIG.logoUrl
           ),
           ownerAvatar: resolveStoreAssetUrl(
             d.ownerAvatar || d.logoUrl,
-            INITIAL_STORE_CONFIG.ownerAvatar
+            NEUTRAL_PUBLIC_STORE_CONFIG.ownerAvatar
           ),
           theme: d.theme || 'blush-rose',
           currency: d.currency || 'PKR',
@@ -584,7 +578,7 @@ export default function App() {
           const s = data.store;
           const loadedStoreId = s.storeId;
           const loadedConfig: StoreConfig = {
-            ...(storeConfigsRef.current[loadedStoreId] || INITIAL_STORE_CONFIG),
+            ...(storeConfigsRef.current[loadedStoreId] || NEUTRAL_PUBLIC_STORE_CONFIG),
             storeId: loadedStoreId,
             ownerId: s.ownerId || '',
             storeSlug: s.storeSlug || cleanSlug,
@@ -596,18 +590,18 @@ export default function App() {
             announcementText:
               s.announcementText ||
               `Welcome to ${s.storeName || cleanSlug} — Digital Downloads & Guides ✨`,
-            heroHeadingLine1: s.heroHeadingLine1 || INITIAL_STORE_CONFIG.heroHeadingLine1,
-            heroHeadingLine2: s.heroHeadingLine2 || INITIAL_STORE_CONFIG.heroHeadingLine2,
-            heroSubheading: s.heroSubheading || INITIAL_STORE_CONFIG.heroSubheading,
-            heroButtonText: s.heroButtonText || INITIAL_STORE_CONFIG.heroButtonText,
-            heroImage: resolveStoreAssetUrl(s.heroImage, INITIAL_STORE_CONFIG.heroImage),
+            heroHeadingLine1: s.heroHeadingLine1 || NEUTRAL_PUBLIC_STORE_CONFIG.heroHeadingLine1,
+            heroHeadingLine2: s.heroHeadingLine2 || NEUTRAL_PUBLIC_STORE_CONFIG.heroHeadingLine2,
+            heroSubheading: s.heroSubheading || NEUTRAL_PUBLIC_STORE_CONFIG.heroSubheading,
+            heroButtonText: s.heroButtonText || NEUTRAL_PUBLIC_STORE_CONFIG.heroButtonText,
+            heroImage: resolveStoreAssetUrl(s.heroImage, NEUTRAL_PUBLIC_STORE_CONFIG.heroImage),
             logoUrl: resolveStoreAssetUrl(
               s.logoUrl || s.ownerAvatar,
-              INITIAL_STORE_CONFIG.logoUrl
+              NEUTRAL_PUBLIC_STORE_CONFIG.logoUrl
             ),
             ownerAvatar: resolveStoreAssetUrl(
               s.ownerAvatar || s.logoUrl,
-              INITIAL_STORE_CONFIG.ownerAvatar
+              NEUTRAL_PUBLIC_STORE_CONFIG.ownerAvatar
             ),
             theme: s.theme || 'blush-rose',
             currency: s.currency || 'PKR',
@@ -1181,7 +1175,7 @@ export default function App() {
               image: resolveStoreAssetUrl(d.image),
               gallery: [
                 resolveStoreAssetUrl(d.image),
-                INITIAL_STORE_CONFIG.heroImage,
+                NEUTRAL_PUBLIC_STORE_CONFIG.heroImage,
               ].filter(Boolean),
               features: INITIAL_PRODUCTS[0].features,
               fileName: d.fileName,
@@ -1917,8 +1911,8 @@ export default function App() {
               heroHeadingLine2: (next.heroHeadingLine2 || 'Big Changes.').slice(0, 120),
               heroSubheading: (next.heroSubheading || 'Digital products').slice(0, 500),
               heroButtonText: (next.heroButtonText || 'Shop Now').slice(0, 60),
-              heroImage: next.heroImage || INITIAL_STORE_CONFIG.heroImage,
-              logoUrl: next.logoUrl || INITIAL_STORE_CONFIG.logoUrl,
+              heroImage: next.heroImage || NEUTRAL_PUBLIC_STORE_CONFIG.heroImage,
+              logoUrl: next.logoUrl || NEUTRAL_PUBLIC_STORE_CONFIG.logoUrl,
               theme: next.theme || 'blush-bloom',
               customAccentColor: (next.customAccentColor || '').slice(0, 20),
               currency: next.currency || 'PKR',
