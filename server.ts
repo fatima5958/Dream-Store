@@ -4437,19 +4437,6 @@ async function startServer() {
       return;
     }
 
-    // 2. Check server profile registry
-    const existingMem = serverUserProfiles.get(user.uid);
-    if (existingMem && existingMem.onboardingCompleted) {
-      res.json({
-        ok: true,
-        exists: true,
-        needsOnboarding: false,
-        profile: existingMem,
-        permissions: buildRolePermissions(existingMem.role),
-      });
-      return;
-    }
-
     // Cloud instances do not share /tmp. Load authoritative user role from
     // Firebase Admin Firestore before guessing role from local caches/orders.
     if (adminFirestoreDb) {
@@ -4483,6 +4470,20 @@ async function startServer() {
         res.status(503).json({ error: 'Account details are temporarily unavailable. Please retry.' });
         return;
       }
+    }
+
+    // 2. Migrate a verified legacy in-memory profile only if Firestore has
+    // no authoritative saved profile. Never let stale /tmp override Firebase.
+    const existingMem = serverUserProfiles.get(user.uid);
+    if (existingMem && existingMem.onboardingCompleted) {
+      res.json({
+        ok: true,
+        exists: true,
+        needsOnboarding: false,
+        profile: existingMem,
+        permissions: buildRolePermissions(existingMem.role),
+      });
+      return;
     }
 
     // 3. Preserve existing sellers who already have an active store in serverStores, sellerSettings cache, or Firestore
