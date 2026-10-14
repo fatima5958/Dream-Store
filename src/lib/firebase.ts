@@ -1084,7 +1084,8 @@ testConnection();
 
 // Retrieve cryptographically signed Firebase ID token (or server-verified Email session token) for authenticated backend API calls
 export async function getAuthHeaders(
-  extraHeaders: Record<string, string> = {}
+  extraHeaders: Record<string, string> = {},
+  options: { forceRefresh?: boolean; requireAuth?: boolean } = {}
 ): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -1092,19 +1093,40 @@ export async function getAuthHeaders(
   };
   if (auth.currentUser) {
     try {
-      const idToken = await auth.currentUser.getIdToken();
+      // Sensitive mutations can request a newly refreshed Firebase ID token.
+      const idToken = await auth.currentUser.getIdToken(options.forceRefresh === true);
       if (idToken) {
         headers.Authorization = `Bearer ${idToken}`;
         return headers;
       }
     } catch {
-      // Ignore token retrieval error
+      if (options.requireAuth) {
+        throw new Error('Your Firebase sign-in needs refreshing. Please sign in again.');
+      }
     }
+    // Never fall back to a potentially stale legacy session while a Firebase
+    // SDK identity is present. Two different accounts must not be mixed.
+    if (options.requireAuth) {
+      throw new Error('Your Firebase sign-in needs refreshing. Please sign in again.');
+    }
+    return headers;
   }
   if (currentServerEmailSession && Date.now() < currentServerEmailSession.expiresAtMs) {
     headers.Authorization = `Bearer ${currentServerEmailSession.token}`;
   }
+  if (options.requireAuth && !headers.Authorization) {
+    throw new Error('Your login session has expired. Please sign in again.');
+  }
   return headers;
+}
+
+// A legacy email session stored in the browser can become invalid when a
+// Cloud Run instance restarts. On a verified 401, discard ONLY that stale
+// local session, so the user can sign in again without weakening backend auth.
+export function invalidateRejectedLegacyEmailSession(): boolean {
+  if (auth.currentUser || !currentServerEmailSession) return false;
+  setServerEmailSession(null);
+  return true;
 }
 
 export {
