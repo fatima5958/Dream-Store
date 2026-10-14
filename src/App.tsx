@@ -1937,13 +1937,15 @@ export default function App() {
 
   const handleAddProduct = async (newProduct: Product) => {
     const fileDataUrl = String(newProduct.fileDataUrl || '');
-    if (newProduct.published && !fileDataUrl.startsWith('data:') && !fileDataUrl.startsWith('storage://')) {
+    if (newProduct.published && !fileDataUrl.startsWith('storage://')) {
       throw new Error('Upload the original file before publishing a digital product.');
     }
     if (fileDataUrl.startsWith('data:') && fileDataUrl.length >= 700000) {
       throw new Error('Original file is too large for beta storage. The product was not published.');
     }
-    if (!currentUser) throw new Error('Sign in before adding a product.');
+    if (!currentUser || !hasFirebaseSdkSession()) {
+      throw new Error('Please sign in with a verified Firebase account before publishing.');
+    }
 
     if (hasFirebaseSdkSession()) {
       try {
@@ -1957,8 +1959,8 @@ export default function App() {
           priceUsd: newProduct.isFree ? 0 : Math.max(1, Number(newProduct.priceUsd)),
           pricePkr: newProduct.isFree ? 0 : Math.max(100, Number(newProduct.pricePkr)),
           isFree: Boolean(newProduct.isFree),
-          published: Boolean(newProduct.published),
-          status: newProduct.status,
+          published: false,
+          status: 'Draft',
           image: newProduct.image,
           fileName: newProduct.fileName.slice(0, 255),
           fileType: newProduct.fileType.slice(0, 100),
@@ -2005,78 +2007,70 @@ export default function App() {
       }),
     });
     if (!response.ok) {
-      throw new Error('The server could not publish this product. Please try again.');
+      const details = await response.json().catch(() => ({}));
+      throw new Error(details.error || 'The server could not publish this product. Please try again.');
     }
     setProducts((prev) => [newProduct, ...prev]);
   };
 
   const handleUpdateProduct = async (productId: string, partial: Partial<Product>) => {
     const target = products.find((p) => p.id === productId);
-    if (!target) return;
+    if (!target) throw new Error('Product no longer exists.');
+    if (!currentUser || !hasFirebaseSdkSession()) {
+      throw new Error('Please sign in with a verified Firebase account before editing products.');
+    }
     const merged: Product = { ...target, ...partial };
-    setProducts((prev) => prev.map((p) => (p.id === productId ? merged : p)));
+    if (merged.ownerId !== currentUser.uid && !isSuperAdminVerified) {
+      throw new Error('You cannot edit another seller’s product.');
+    }
 
-    if (currentUser && (merged.ownerId === currentUser.uid || isSuperAdminVerified)) {
+    // Store the replacement private file reference before the server verifies
+    // the object and publishes a new version of this listing.
+    if (merged.fileDataUrl?.startsWith('storage://') &&
+        merged.fileDataUrl !== target.fileDataUrl) {
       try {
-        const authHeaders = await getAuthHeaders();
-        fetch('/api/products/upsert', {
-          method: 'POST',
-          headers: authHeaders,
-          body: JSON.stringify({
-            id: merged.id,
-            storeId: merged.storeId || config.storeId,
-            title: merged.title,
-            category: merged.category,
-            subtitle: merged.subtitle,
-            description: merged.description,
-            isFree: Boolean(merged.isFree),
-            priceUsd: merged.isFree ? 0 : Math.max(1, Number(merged.priceUsd)),
-            pricePkr: merged.isFree ? 0 : Math.max(100, Number(merged.pricePkr)),
-            published: Boolean(merged.published),
-            image: merged.image,
-            fileName: merged.fileName,
-            fileType: merged.fileType,
-            fileSizeLabel: merged.fileSizeLabel,
-            fileDataUrl: merged.fileDataUrl,
-          }),
-        }).catch(() => {});
-      } catch {
-        // Ignore network error if offline
-      }
-
-      if (!hasFirebaseSdkSession()) return;
-      try {
-        await updateDoc(doc(db, 'products', productId), {
-          title: merged.title.slice(0, 160),
-          category: merged.category,
-          subtitle: merged.subtitle.slice(0, 300),
-          description: merged.description.slice(0, 3000),
-          priceUsd: merged.isFree ? 0 : Math.max(1, Number(merged.priceUsd)),
-          pricePkr: merged.isFree ? 0 : Math.max(100, Number(merged.pricePkr)),
-          isFree: Boolean(merged.isFree),
-          published: Boolean(merged.published),
-          status: merged.status,
-          image: merged.image,
+        await setDoc(doc(db, 'products', productId, 'deliverables', 'main'), {
+          productId,
+          ownerId: merged.ownerId,
           fileName: merged.fileName.slice(0, 255),
-          fileType: merged.fileType.slice(0, 100),
-          fileSizeLabel: merged.fileSizeLabel.slice(0, 60),
+          fileMimeType: merged.fileType.slice(0, 100) || 'application/octet-stream',
+          fileDataUrl: merged.fileDataUrl,
           updatedAt: serverTimestamp(),
-        });
-        // Replacement files must remain available after the browser/server restarts.
-        if (merged.fileDataUrl?.startsWith('storage://')) {
-          await setDoc(doc(db, 'products', productId, 'deliverables', 'main'), {
-            productId,
-            ownerId: currentUser.uid,
-            fileName: merged.fileName.slice(0, 255),
-            fileMimeType: merged.fileType.slice(0, 100),
-            fileDataUrl: merged.fileDataUrl,
-            updatedAt: serverTimestamp(),
-          }, { merge: true });
-        }
+        }, { merge: true });
       } catch (err) {
-        reportFirestoreError(err, OperationType.UPDATE, `products/${productId}`);
+        reportFirestoreError(err, OperationType.UPDATE, `products/${productId}/deliverables/main`);
+        throw new Error('Replacement file was not saved. Product was not updated.');
       }
     }
+
+    const authHeaders = await getAuthHeaders();
+    const response = await fetch('/api/products/upsert', {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        id: merged.id,
+        storeId: merged.storeId || config.storeId,
+        title: merged.title,
+        category: merged.category,
+        subtitle: merged.subtitle,
+        description: merged.description,
+        isFree: Boolean(merged.isFree),
+        priceUsd: merged.isFree ? 0 : Math.max(1, Number(merged.priceUsd)),
+        pricePkr: merged.isFree ? 0 : Math.max(100, Number(merged.pricePkr)),
+        published: Boolean(merged.published),
+        status: merged.status,
+        image: merged.image,
+        fileName: merged.fileName,
+        fileType: merged.fileType,
+        fileSizeLabel: merged.fileSizeLabel,
+        fileDataUrl: merged.fileDataUrl,
+      }),
+    });
+    if (!response.ok) {
+      const details = await response.json().catch(() => ({}));
+      throw new Error(details.error || 'Product update was rejected by the server.');
+    }
+    setProducts((prev) => prev.map((p) => (p.id === productId ? merged : p)));
   };
 
   const handleDeleteProduct = async (productId: string) => {
