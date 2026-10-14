@@ -1819,6 +1819,26 @@ export default function App() {
       ).slice(0, 240),
     };
 
+    if (!currentUser) {
+      throw new Error('Sign in before launching your store.');
+    }
+
+    // The server is authoritative. A network error, duplicate store slug, or
+    // rejected Firebase save must not be reported as a successful launch.
+    const authHeaders = await getAuthHeaders();
+    const saveResponse = await fetch('/api/stores/create', {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        ...fullStore,
+        ownerEmail: currentUser.email || '',
+      }),
+    });
+    const saveResult = await saveResponse.json().catch(() => ({}));
+    if (!saveResponse.ok || !saveResult.ok) {
+      throw new Error(saveResult.error || 'Could not save your store. Please retry.');
+    }
+
     setStoreConfigs((prev) => {
       const next = { ...prev, [resolvedStoreId]: fullStore };
       storeConfigsRef.current = next;
@@ -1827,36 +1847,7 @@ export default function App() {
     if (activeStoreIdRef.current !== resolvedStoreId) {
       setActiveStoreId(resolvedStoreId);
     }
-
-    // Ensure products exist in local state for this storeId
-    setProducts((prev) => {
-      const hasProds = prev.some((p) => p.storeId === resolvedStoreId);
-      if (hasProds) return prev;
-      const seeded = INITIAL_PRODUCTS.slice(0, 3).map((base) => ({
-        ...base,
-        id: `${base.id}-${resolvedStoreId.slice(-8)}`,
-        storeId: resolvedStoreId,
-        ownerId: resolvedOwnerId,
-      }));
-      return [...seeded, ...prev];
-    });
-
-    // Save to backend persistent store registry when authenticated
-    if (currentUser) {
-      try {
-        const authHeaders = await getAuthHeaders();
-        await fetch('/api/stores/create', {
-          method: 'POST',
-          headers: authHeaders,
-          body: JSON.stringify({
-            ...fullStore,
-            ownerEmail: currentUser?.email || '',
-          }),
-        });
-      } catch {
-        // Ignore network error if offline
-      }
-    }
+    // A new store has no products until its seller uploads real originals.
 
     // Save to Firestore when authenticated via Firebase SDK
     if (currentUser && hasFirebaseSdkSession()) {
