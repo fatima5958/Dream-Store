@@ -5175,10 +5175,68 @@ async function startServer() {
       status: isSuper && body.status ? body.status : existingById?.status || 'Active',
     };
 
-    serverStores.set(storeId, record);
-    syncFirestoreDoc('stores', storeId, record as unknown as Record<string, unknown>, user.rawToken);
-    const statusCode = body.sellerCountry && !body.country ? 200 : 201;
-    res.status(statusCode).json({ ok: true, store: record });
+    // Never report a published store from a memory-only write. A store must
+    // survive server restarts and must have unique verified ownership.
+    if (!adminFirestoreDb) {
+      res.status(503).json({ error: 'Secure store database is unavailable. Your store was not launched.' });
+      return;
+    }
+    try {
+      const storeCollection = adminFirestoreDb.collection('stores');
+      const storeRef = storeCollection.doc(storeId);
+      const [existingDoc, slugMatches] = await Promise.all([
+        storeRef.get(),
+        storeCollection.where('storeSlug', '==', rawSlug).limit(10).get(),
+      ]);
+      if (existingDoc.exists && String(existingDoc.get('ownerId') || '') !== ownerId) {
+        res.status(403).json({ error: 'This store belongs to another seller.' });
+        return;
+      }
+      if (slugMatches.docs.some((doc) => doc.id !== storeId)) {
+        res.status(409).json({ error: 'That store URL is already taken. Choose another name.' });
+        return;
+      }
+      // Preserve an existing reviewed plan/status. Client-supplied Pro values
+      // never upgrade sellers; public store documents contain no owner email.
+      record.plan = isSuper && body.plan === 'Pro'
+        ? 'Pro'
+        : String(existingDoc.get('plan') || existingById?.plan || 'Free') === 'Pro' ? 'Pro' : 'Free';
+      record.status = isSuper && body.status
+        ? body.status
+        : String(existingDoc.get('status') || existingById?.status || 'Active');
+      const now = new Date();
+      const storeDocument = {
+        ownerId,
+        storeSlug: rawSlug,
+        storeName: record.storeName,
+        ownerName: record.ownerName,
+        instagramHandle: record.instagramHandle || '',
+        sellerCountry: country,
+        productType: record.productType || 'Digital Products',
+        announcementText: record.announcementText || 'Welcome',
+        heroHeadingLine1: record.heroHeadingLine1 || storeName,
+        heroHeadingLine2: record.heroHeadingLine2 || 'Digital Products',
+        heroSubheading: record.heroSubheading || 'Explore our products.',
+        heroButtonText: record.heroButtonText || 'Shop Now',
+        heroImage: record.heroImage || '',
+        logoUrl: record.logoUrl || '',
+        theme: record.theme || 'blush-rose',
+        customAccentColor: String(body.customAccentColor || ''),
+        currency,
+        exchangeRatePkr: record.exchangeRatePkr,
+        status: record.status,
+        plan: record.plan,
+        createdAt: existingDoc.exists ? existingDoc.get('createdAt') || now : now,
+        updatedAt: now,
+      };
+      await storeRef.set(storeDocument);
+      serverStores.set(storeId, record);
+      const statusCode = existingDoc.exists ? 200 : 201;
+      res.status(statusCode).json({ ok: true, store: record });
+    } catch (err) {
+      console.error('Verified store creation failed:', err);
+      res.status(503).json({ error: 'Store could not be saved securely. Please retry.' });
+    }
   };
 
   app.post('/api/stores/create', handleCreateOrUpsertStore);
