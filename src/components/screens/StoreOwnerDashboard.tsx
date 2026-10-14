@@ -55,7 +55,8 @@ import {
   StoreConfig,
   StoreThemeId,
 } from '../../types/dreamstore';
-import { getAuthHeaders } from '../../lib/firebase';
+import { auth, getAuthHeaders, storage } from '../../lib/firebase';
+import { ref as storageRef, uploadBytesResumable } from 'firebase/storage';
 import { EditableText, EmptyOrdersGiftBoxSVG, PastelImage } from '../EditableText';
 import {
   CandyButton,
@@ -135,6 +136,8 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
   const [imageUploadStatus, setImageUploadStatus] = useState<string | null>(null);
   const [fileUploadStatus, setFileUploadStatus] = useState<string | null>(null);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [isUploadingDigitalFile, setIsUploadingDigitalFile] = useState(false);
+  const [draftProductId, setDraftProductId] = useState(() => `prod-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
 
   const [statementCheckedByOrder, setStatementCheckedByOrder] = useState<Record<string, boolean>>(
     {}
@@ -399,6 +402,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
       return;
     }
     setEditingProductId(null);
+    setDraftProductId(`prod-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
     setProductFormError(null);
     setImageUploadStatus(null);
     setFileUploadStatus(null);
@@ -456,54 +460,86 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
     reader.readAsDataURL(file);
   };
 
-  const handleDigitalFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDigitalFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setProdFileDataUrl('');
     setProductFormError(null);
-    // Current Firestore document storage supports only small beta files.
-    // Never silently replace a larger buyer deliverable with sample content.
-    const MAX_BETA_FILE_BYTES = 450 * 1024;
-    if (file.size === 0 || file.size > MAX_BETA_FILE_BYTES) {
-      const message = file.size === 0
-        ? 'The selected file is empty. Please choose a valid file.'
-        : 'This file is too large for beta uploads (450 KB maximum). Larger-file storage is coming soon.';
-      setProdFileName('');
-      setProdFileType('');
-      setProdFileSize('');
+    const MAX_FILE_BYTES = 5 * 1024 * 1024;
+    const supportedTypes: Record<string, string> = {
+      pdf: 'application/pdf',
+      zip: 'application/zip',
+      epub: 'application/epub+zip',
+      txt: 'text/plain',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+    const extension = file.name.split('.').pop()?.toLowerCase() || '';
+    const contentType = supportedTypes[extension];
+    if (!contentType || file.size < 1 || file.size > MAX_FILE_BYTES) {
+      const message = !contentType
+        ? 'Choose a PDF, EPUB, ZIP, TXT, DOC or DOCX file.'
+        : file.size < 1
+        ? 'The file is empty. Please choose a valid file.'
+        : 'Maximum file size is 5 MB. Choose a smaller original file.';
       setFileUploadStatus(message);
       setProductFormError(message);
       return;
     }
-    setFileUploadStatus('Preparing digital file...');
-    setProdFileName(file.name);
-    setProdFileType(file.type || 'application/octet-stream');
-    const kb = Math.max(1, Math.round(file.size / 1024));
-    const sizeLabel = kb > 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`;
-    setProdFileSize(sizeLabel);
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result !== 'string' || !reader.result.startsWith('data:') || reader.result.length >= 700000) {
-        setProdFileDataUrl('');
-        setFileUploadStatus('Upload failed: file cannot be stored safely. Select a smaller file.');
-        setProductFormError('The original product file was not saved. Please choose a smaller file.');
-        return;
-      }
-      setProdFileDataUrl(reader.result);
-      setFileUploadStatus(`File ready: ${file.name} (${sizeLabel})`);
-    };
-    reader.onerror = () => {
+    const sellerUid = auth.currentUser?.uid;
+    if (!sellerUid || sellerUid !== currentUserUid || !auth.currentUser?.emailVerified) {
+      setProductFormError('Sign in with a verified Firebase account to upload files securely.');
+      setFileUploadStatus('Secure upload requires verified Firebase sign-in.');
+      return;
+    }
+
+    setIsUploadingDigitalFile(true);
+    setFileUploadStatus('Uploading original file (0%)...');
+    const productId = editingProductId || draftProductId;
+    const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
+    const objectPath = `deliverables/${sellerUid}/${productId}/${Date.now()}-${safeName}`;
+    try {
+      const task = uploadBytesResumable(storageRef(storage, objectPath), file, { contentType });
+      await new Promise<void>((resolve, reject) => {
+        task.on(
+          'state_changed',
+          (snapshot) => {
+            const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+            setFileUploadStatus(`Uploading original file (${pct}%)...`);
+          },
+          reject,
+          resolve
+        );
+      });
+      const sizeLabel = file.size >= 1024 * 1024
+        ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
+        : `${Math.ceil(file.size / 1024)} KB`;
+      setProdFileName(file.name);
+      setProdFileType(contentType);
+      setProdFileSize(sizeLabel);
+      // Private object reference, NOT a public download URL or a Firestore base64 blob.
+      setProdFileDataUrl(`storage://${objectPath}`);
+      setFileUploadStatus(`Original file securely uploaded: ${file.name} (${sizeLabel})`);
+    } catch {
       setProdFileDataUrl('');
-      setFileUploadStatus('Could not read the original digital file. Please try again.');
-      setProductFormError('Upload failed. Your product was not published.');
-    };
-    reader.readAsDataURL(file);
+      setProdFileName('');
+      setProdFileType('');
+      setProdFileSize('');
+      setProductFormError('Upload failed. Your product has not been published. Check Firebase Storage access.');
+      setFileUploadStatus('Secure file upload failed. Please try again.');
+    } finally {
+      setIsUploadingDigitalFile(false);
+    }
   };
 
   const handleSaveProductForm = async (e: React.FormEvent) => {
     e.preventDefault();
     setProductFormError(null);
-    if (prodPublished && !editingProductId && !prodFileDataUrl.startsWith('data:')) {
+    if (isUploadingDigitalFile) {
+      setProductFormError('Wait until the original file finishes uploading.');
+      return;
+    }
+    if (prodPublished && !editingProductId && !prodFileDataUrl.startsWith('storage://') && !prodFileDataUrl.startsWith('data:')) {
       setProductFormError('Upload a real digital file before publishing this product. Demo files are never substituted.');
       return;
     }
@@ -523,7 +559,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
           );
 
       const payload: Product = {
-        id: editingProductId || `prod-${Date.now()}`,
+        id: editingProductId || draftProductId,
         storeId: config.storeId,
         ownerId: currentUserUid || config.ownerId,
         title: prodTitle.trim(),
@@ -574,6 +610,8 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
         setTimeout(() => setPublishSparkleBanner(null), 6000);
       }
       setShowProductModal(false);
+    } catch (err) {
+      setProductFormError(err instanceof Error ? err.message : 'Product could not be saved. Please retry.');
     } finally {
       setIsSavingProduct(false);
     }
@@ -3298,7 +3336,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                 <FileText className="w-5 h-5 text-[#6B4EA2] mb-1.5" />
                 <span className="text-[14px] font-extrabold text-[#50352F]">Digital File</span>
                 <span className="ds-helper text-[#6B4EA2] font-bold truncate max-w-full mt-0.5">
-                  {fileUploadStatus || (prodFileName ? `${prodFileName} (${prodFileSize})` : 'Choose PDF, EPUB, ZIP or document (max 450 KB)')}
+                  {fileUploadStatus || (prodFileName ? `${prodFileName} (${prodFileSize})` : 'Choose PDF, EPUB, ZIP or document (max 5 MB)')}
                 </span>
                 <input
                   type="file"
@@ -3373,7 +3411,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                 data-testid="publish-product-btn"
                 variant="pink"
                 size="md"
-                loading={isSavingProduct}
+                loading={isSavingProduct || isUploadingDigitalFile}
                 className="w-full md:w-auto px-5 py-3 min-h-[44px]"
               >
                 <span>{editingProductId ? 'Update Product' : 'Publish Product'}</span>
