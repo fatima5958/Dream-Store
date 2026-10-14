@@ -694,16 +694,17 @@ service cloud.firestore {
 
       // 4. Protected Digital Deliverables Subcollection
       match /deliverables/{deliverableId} {
-        allow get: if isValidId(productId) && isValidId(deliverableId) && (
-          (isSignedIn() && get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid) ||
-          get(/databases/$(database)/documents/products/$(productId)).data.isFree == true ||
+        // Never allow buyers (even of free/entitled products) to read the private
+        // blob or storage:// path through Firestore. Every buyer download
+        // must go through the verified server route to enforce token, status,
+        // expiry, product isolation and durable download limits.
+        allow get: if isValidId(productId) && isValidId(deliverableId) &&
+          isVerifiedUser() &&
+          exists(/databases/$(database)/documents/products/$(productId)) &&
           (
-            isSignedIn() &&
-            exists(/databases/$(database)/documents/products/$(productId)/entitlements/$(request.auth.uid)) &&
-            get(/databases/$(database)/documents/products/$(productId)/entitlements/$(request.auth.uid)).data.status == 'Active'
-          ) ||
-          isAdmin()
-        );
+            get(/databases/$(database)/documents/products/$(productId)).data.ownerId == request.auth.uid ||
+            isAdmin()
+          );
 
         allow list: if false;
 
