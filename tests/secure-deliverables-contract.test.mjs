@@ -73,3 +73,10 @@ test('public users see no fabricated products, cart, stores or hardcoded admin c
   assert.doesNotMatch(server, /mateenfatima5958@gmail\.com/);
   assert.doesNotMatch(server, /03359379024|0342126300/);
 });
+
+test('production refuses financial operations without a durable download signing secret', () => {
+  assert.match(server, /HAS_DURABLE_PRODUCTION_SIGNING_SECRET/);
+  assert.match(server, /process\.env\.NODE_ENV === 'production' && !HAS_DURABLE_PRODUCTION_SIGNING_SECRET/);
+  assert.match(server, /configure a durable SERVER_SIGNING_SECRET before enabling orders/);
+  assert.match(server, /async function ensureFinancialDatabaseReady\(/);
+});
