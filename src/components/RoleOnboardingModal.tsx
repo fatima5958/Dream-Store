@@ -8,6 +8,7 @@ export interface RoleOnboardingModalProps {
   isOpen: boolean;
   defaultName: string;
   defaultEmail: string;
+  emailVerified?: boolean;
   onCompleteOnboarding: (payload: {
     role: OnboardingUserRole;
     displayName: string;
@@ -19,6 +20,7 @@ export const RoleOnboardingModal: React.FC<RoleOnboardingModalProps> = ({
   isOpen,
   defaultName,
   defaultEmail,
+  emailVerified = true,
   onCompleteOnboarding,
 }) => {
   const [selectedRole, setSelectedRole] = useState<OnboardingUserRole | null>(null);
@@ -132,6 +134,12 @@ export const RoleOnboardingModal: React.FC<RoleOnboardingModalProps> = ({
         <p className="text-sm font-bold text-[#7A5A52] leading-relaxed mb-6">
           Choose your path below. We’ll tailor your account experience and save your role securely.
         </p>
+        {!emailVerified && (
+          <div role="status" className="mb-5 rounded-2xl bg-[#FFF2DF] border-2 border-[#FFD47B] px-4 py-3 text-sm font-semibold text-[#50352F]">
+            Check your email for a Firebase verification link. You can explore the platform now,
+            but uploads and private seller tools require a verified email. After verifying, sign in again.
+          </div>
+        )}
 
         {/* Two Role Choice Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
