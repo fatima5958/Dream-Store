@@ -419,6 +419,8 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
           onNavigate('owner-dashboard');
         }
       }
+    } catch (err) {
+      setValidationError(err instanceof Error ? err.message : 'Could not save your store. Please retry.');
     } finally {
       setIsSubmittingStep(false);
     }
@@ -655,12 +657,12 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
                     1. Store Identity — What would you like to do today?
                   </h2>
                   <p className="ds-body text-[#7A5A52] mt-1">
-                    Name your digital storefront and claim your shareable bio link, or jump straight to your Seller Dashboard.
+                    Choose your store name, link and design. Your new store is saved after the final step.
                   </p>
                 </div>
 
                 {/* Quick Action Mode Cards */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4">
                   <button
                     type="button"
                     onClick={() => setWelcomeChoice('create')}
@@ -685,39 +687,12 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
                         )}
                       </div>
                       <p className="text-xs font-semibold text-[#50352F]/80 mt-0.5">
-                        Set up name, link & theme in 5 quick steps
+                        Choose a name and shareable link to begin
                       </p>
                     </div>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setWelcomeChoice('manage')}
-                    className={`p-4 rounded-[24px] text-left transition-all flex items-center gap-3.5 cursor-pointer min-h-[84px] ${
-                      welcomeChoice === 'manage'
-                        ? 'candy-card-lilac text-[#50352F]'
-                        : 'candy-card-white hover:border-[#BBA0EA]'
-                    }`}
-                  >
-                    <ClayIcon tone="lilac" size="md">
-                      <Folder className="w-5 h-5" />
-                    </ClayIcon>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-candy font-bold text-base text-[#50352F]">
-                          Manage existing store
-                        </span>
-                        {welcomeChoice === 'manage' && (
-                          <span className="w-6 h-6 rounded-full bg-[#FFFDF8] flex items-center justify-center shrink-0 animate-candy-check">
-                            <Check className="w-3.5 h-3.5 text-[#50352F]" />
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs font-semibold text-[#50352F]/80 mt-0.5">
-                        Open your Seller Dashboard & products
-                      </p>
-                    </div>
-                  </button>
+
                 </div>
 
                 {/* Creamy Form Card for Store Name, Custom Slug & Instagram */}
@@ -1225,16 +1200,16 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
             {currentStep === 5 && (
               <div className="space-y-5 max-w-2xl">
                 <div className="inline-flex items-center gap-2 text-xs font-extrabold text-[#50352F] candy-btn-mint px-4 py-1.5 rounded-full">
-                  <ShieldCheck className="w-4 h-4" /> Store Ready to Publish
+                  <ShieldCheck className="w-4 h-4" /> Final Review
                 </div>
 
                 <div>
                   <h2 className="ds-page-title font-candy font-bold text-[#50352F]">
-                    5. Your DreamStore is Ready to Launch! ✨
+                    5. Review Your Store ✨
                   </h2>
                   <p className="ds-body text-[#7A5A52] mt-1">
-                    Review your storefront summary below, preview your live shop, or click{' '}
-                    <strong className="text-[#50352F]">Launch My Store</strong> to open your Seller Dashboard.
+                    Check the name and link. Click{' '}
+                    <strong className="text-[#50352F]">Launch My Store</strong> to save securely, then add your first product in the Dashboard.
                   </p>
                 </div>
 
@@ -1263,23 +1238,15 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
                       </div>
                     </div>
 
-                    <CandyButton
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      icon={<Eye className="w-4 h-4 text-[#D66795]" />}
-                      onClick={() => onNavigate('storefront')}
-                    >
-                      Preview Storefront
-                    </CandyButton>
+                    <span className="text-xs font-semibold text-[#6E4F47]">Public link becomes available after saving.</span>
                   </div>
                 </div>
 
                 {/* Delightful Checkmark Readiness Grid */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {[
-                    { title: 'Bio Link Claimed', desc: `/?store=${slugTrimmed || config.storeSlug}` },
-                    { title: 'Theme Applied', desc: `${STORE_THEMES.find((t) => t.id === normalizeStoreThemeId(config.theme))?.name || 'Blush Bloom'}` },
+                    { title: 'Bio Link Preview', desc: `/?store=${slugTrimmed || config.storeSlug}` },
+                    { title: 'Theme Selected', desc: `${STORE_THEMES.find((t) => t.id === normalizeStoreThemeId(config.theme))?.name || 'Blush Bloom'}` },
                     { title: 'Keep 95% Share', desc: '5% fee only on verified sales' },
                   ].map((item) => (
                     <div
