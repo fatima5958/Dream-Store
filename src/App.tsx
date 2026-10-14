@@ -2413,6 +2413,10 @@ export default function App() {
             orderNumber: target.orderNumber,
           }),
         });
+        if (!refRes.ok) {
+          const details = await refRes.json().catch(() => ({}));
+          throw new Error(details.error || 'Refund was not confirmed by the server.');
+        }
         updatedToken = 'REVOKED-REFUNDED';
         updatedCommissionStatus = 'reversed';
         updatedPayoutStatus = 'Reversed (Refunded)';
@@ -2432,6 +2436,10 @@ export default function App() {
             statementConfirmed: true,
           }),
         });
+        if (!verifyRes.ok) {
+          const details = await verifyRes.json().catch(() => ({}));
+          throw new Error(details.error || 'Payment status could not be verified.');
+        }
         if (verifyRes.ok) {
           const vData = await verifyRes.json();
           if (vData.downloadToken) {
@@ -2454,8 +2462,8 @@ export default function App() {
           }
         }
       }
-    } catch {
-      // Server sync best-effort
+    } catch (err) {
+      throw err instanceof Error ? err : new Error('Order update failed. Please try again.');
     }
 
     setOrders((prev) =>
@@ -2479,106 +2487,9 @@ export default function App() {
       )
     );
 
-    if (!currentUser || !hasFirebaseSdkSession()) return;
+    // Financial status, order document and download access are server-authoritative.
+    // The browser does not independently write verification, refunds or entitlements.
 
-    const orderRef = doc(db, 'orders', orderId);
-    const auditId = `aud-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`;
-    const auditRef = doc(db, 'ledger_audit', auditId);
-
-    try {
-      await runTransaction(db, async (tx) => {
-        const orderSnap = await tx.get(orderRef);
-
-        // If the order only exists in Express memory (e.g. guest checkout prior to sign-in),
-        // skip Firestore document update so tx.update never runs against a null resource.
-        if (!orderSnap.exists()) {
-          return;
-        }
-
-        const ordData = orderSnap.data();
-        const ordSellerId = String(ordData.sellerId || target.sellerId || '');
-        if (!isSuperAdminVerified && ordSellerId !== currentUser.uid) {
-          return;
-        }
-
-        const fsProductId = String(ordData.primaryProductId || target.primaryProductId || '');
-        const fsBuyerId = String(ordData.buyerId || target.buyerId || '');
-        const validIdRegex = /^[a-zA-Z0-9_-]+$/;
-        const canWriteEntitlement =
-          validIdRegex.test(fsProductId) && validIdRegex.test(fsBuyerId);
-        const entRef = canWriteEntitlement
-          ? doc(db, 'products', fsProductId, 'entitlements', fsBuyerId)
-          : null;
-        const entSnap = entRef ? await tx.get(entRef) : null;
-
-        const safePaymentRef = String(
-          target.paymentReference || ordData.paymentReference || 'VERIFIED-REF'
-        ).slice(0, 200);
-        const safeToken = String(
-          updatedToken || ordData.downloadToken || 'LOCKED-PENDING-VERIFICATION'
-        ).slice(0, 128);
-
-        tx.update(orderRef, {
-          paymentStatus: newStatus,
-          paymentReference: safePaymentRef,
-          downloadToken: safeToken,
-          updatedAt: serverTimestamp(),
-        });
-
-        tx.set(auditRef, {
-          auditId,
-          orderNumber: String(ordData.orderNumber || target.orderNumber).slice(0, 40),
-          orderId: orderRef.id,
-          sellerId: ordSellerId || currentUser.uid,
-          actorUid: currentUser.uid,
-          action:
-            newStatus === 'Paid'
-              ? 'MANUAL_PAYMENT_VERIFIED'
-              : newStatus === 'Refunded'
-              ? 'ORDER_REFUNDED_REVERSED'
-              : 'PAYMENT_REJECTED',
-          previousStatus: String(ordData.paymentStatus || target.paymentStatus || 'Pending').slice(
-            0,
-            40
-          ),
-          newStatus,
-          verificationMode: String(updatedVerificationMode || 'Unverified').slice(0, 80),
-          detail: (
-            newStatus === 'Paid'
-              ? `Manually verified by seller against statement (Ref: ${safePaymentRef}).`
-              : newStatus === 'Refunded'
-              ? 'Order refunded and 5% commission reversed.'
-              : 'Payment reference rejected by seller.'
-          ).slice(0, 500),
-          createdAt: serverTimestamp(),
-        });
-
-        if (entRef && entSnap) {
-          const safeExpiresAtMs = Number(
-            ordData.expiresAtMs || target.expiresAtMs || Date.now() + 7 * 24 * 60 * 60 * 1000
-          );
-          if (entSnap.exists()) {
-            tx.update(entRef, {
-              status: newStatus === 'Paid' ? 'Active' : 'Revoked',
-              expiresAtMs: safeExpiresAtMs,
-              updatedAt: serverTimestamp(),
-            });
-          } else {
-            tx.set(entRef, {
-              productId: fsProductId,
-              buyerId: fsBuyerId,
-              sellerId: ordSellerId || currentUser.uid,
-              orderId: orderRef.id,
-              status: newStatus === 'Paid' ? 'Active' : 'Revoked',
-              expiresAtMs: safeExpiresAtMs,
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-      });
-    } catch (err) {
-      reportFirestoreError(err, OperationType.UPDATE, `orders/${orderId}`);
-    }
   };
 
   // Commission Status Handler (outstanding, paid, reversed, disputed)
