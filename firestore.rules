@@ -533,6 +533,7 @@ service cloud.firestore {
         incoming().ownerId == request.auth.uid &&
         incoming().status == 'Active' &&
         incoming().plan in ['Free', 'Pro', 'Basic'] &&
+        (isAdmin() || incoming().plan == 'Free') &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
 
