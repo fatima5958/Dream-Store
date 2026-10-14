@@ -22,7 +22,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
-const SUPER_ADMIN_EMAIL = 'mateenfatima5958@gmail.com';
+// Admin identity must come from a verified Firebase token, never a source-code email.
+const SUPER_ADMIN_EMAIL = '';
 // Strictly read SUPER_ADMIN_UID from environment configuration — NEVER fall back to any hardcoded UID
 const SUPER_ADMIN_UID = (process.env.SUPER_ADMIN_UID || '').trim();
 const SUPER_ADMIN_BOOTSTRAP_SECRET = (process.env.SUPER_ADMIN_BOOTSTRAP_SECRET || '').trim();
@@ -382,15 +383,12 @@ function getOrInitStoreVisits(storeId: string): {
 } {
   const existing = storeVisitsRegistry.get(storeId);
   if (existing) return existing;
-  // Deterministic baseline seed from storeId hash so existing active stores show realistic initial traffic
-  let hash = 0;
-  for (let i = 0; i < storeId.length; i++) {
-    hash = (hash * 31 + storeId.charCodeAt(i)) % 997;
-  }
+  // New stores begin at real zero. Never fabricate visits or checkout activity.
+  // In-memory counts are not durable analytics; show them as session activity only.
   const initial = {
-    visitsCount: 18 + (hash % 64),
-    checkoutViewsCount: 4 + (hash % 15),
-    lastVisitedAtIso: new Date().toISOString(),
+    visitsCount: 0,
+    checkoutViewsCount: 0,
+    lastVisitedAtIso: '',
   };
   storeVisitsRegistry.set(storeId, initial);
   return initial;
@@ -615,6 +613,9 @@ const LEGACY_DEMO_PAYMENT_SUBSTRINGS = [
   'rzp.io/l/ananya-creates-demo',
   'fatima.payouts@example.com',
   'payoneer.com/demo',
+  // Previously bundled receiving numbers must not silently be used by new stores.
+  '03359379024',
+  '0342126300',
 ];
 
 function stripLegacyDemoPaymentValue(rawVal: unknown, maxLen: number): string {
@@ -743,38 +744,9 @@ function cacheVerifiedSellerPaymentSettings(
 }
 
 function initVerifiedSellerSettingsCache(): void {
-  // Seed verified owner settings for configured Super Admin store owner from verified Firestore snapshot
-  if (SUPER_ADMIN_UID) {
-    const adminStoreId = `store-${SUPER_ADMIN_UID.slice(0, 20)}`;
-    const initialVerifiedAdminRecord = normalizeSellerPaymentSettingsRecord(
-      {
-        ownerId: SUPER_ADMIN_UID,
-        storeId: adminStoreId,
-        email: SUPER_ADMIN_EMAIL,
-        jazzCashMerchantId: '03359379024',
-        jazzCashEnabled: true,
-        easypaisaStoreId: '0342126300',
-        easypaisaEnabled: true,
-        upiId: '',
-        paymentLinkUrl: '',
-        payoneerEnabled: false,
-        stripeEnabled: false,
-        bankTransferInstructions: '',
-      },
-      adminStoreId,
-      SUPER_ADMIN_UID
-    );
-    firestoreVerifiedSellerSettingsByOwner.set(SUPER_ADMIN_UID, initialVerifiedAdminRecord);
-    firestoreVerifiedSellerSettingsByStore.set(adminStoreId, initialVerifiedAdminRecord);
-    firestoreVerifiedSellerSettingsByStore.set(
-      'store-fatima-tech',
-      normalizeSellerPaymentSettingsRecord(
-        initialVerifiedAdminRecord,
-        'store-fatima-tech',
-        SUPER_ADMIN_UID
-      )
-    );
-  }
+  // Never seed personal or receiving payment details from source code.
+  // Load previously saved seller settings; authoritative values come from the seller's
+  // protected Firestore records after identity checks.
 
   try {
     if (fs.existsSync(VERIFIED_SELLER_SETTINGS_TMP_PATH)) {
@@ -7078,7 +7050,7 @@ async function startServer() {
         storeSlug: st.storeSlug,
         ownerId: st.ownerId,
         ownerName: st.ownerName || st.storeName,
-        ownerEmail: st.ownerEmail || 'verified-seller@dreamstore.app',
+        ownerEmail: st.ownerEmail || '',
         country: st.country || st.sellerCountry || 'Pakistan',
         currency: st.currency || 'PKR',
         theme: st.theme || 'blush-bloom',
