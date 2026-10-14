@@ -17,9 +17,12 @@ service firebase.storage {
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
-    // Strict Single Super Admin UID — NO email fallback, NO custom claim trust
+    // Trust only signed Firebase custom claims provisioned by the Admin SDK.
+    // Personal/admin UIDs must not be embedded in public security rules.
     function isSuperAdmin() {
-      return isVerified() && request.auth.uid == 'V2Yxrm20XFWYscGUtHcBN8E9wA62';
+      return isVerified() &&
+        request.auth.token.role == 'super_admin' &&
+        request.auth.token.superAdmin == true;
     }
 
     function isValidId(id) {
