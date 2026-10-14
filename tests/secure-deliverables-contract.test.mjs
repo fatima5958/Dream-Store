@@ -20,7 +20,9 @@ test('5 MiB file size limit is enforced before upload and in Storage rules', () 
 test('upload uses owner/product-scoped private Firebase Storage without sample substitution', () => {
   assert.match(firebase, /export const storage = getStorage\(app\)/);
   assert.match(seller, /uploadBytesResumable\(/);
-  assert.match(seller, /deliverables\/\$\{sellerUid\}\/\$\{productId\}\//);
+  assert.match(seller, /deliverables\/\$\{sdkUid\}\/\$\{productId\}\//);
+  assert.match(server, /app.post\('\/api\/uploads\/product'/);
+  assert.match(server, /resolveOwnedStoreForUser\(user.uid\)/);
   assert.match(seller, /setProdFileDataUrl\(`storage:\/\//);
   assert.doesNotMatch(seller, /createSampleGuideDataUrl/);
   assert.match(rules, /request\.auth\.uid == ownerId \|\| isSuperAdmin\(\)/);
