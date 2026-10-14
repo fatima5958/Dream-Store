@@ -613,10 +613,13 @@ const LEGACY_DEMO_PAYMENT_SUBSTRINGS = [
   'rzp.io/l/ananya-creates-demo',
   'fatima.payouts@example.com',
   'payoneer.com/demo',
-  // Previously bundled receiving numbers must not silently be used by new stores.
-  '03359379024',
-  '0342126300',
 ];
+
+const LEGACY_RECEIVING_NUMBER_HASHES = new Set([
+  // SHA-256 identifiers for obsolete seeded wallet numbers (no personal number literals).
+  'b0fd9f2b4ad93144bc025d117a6148960a2f55f8e419185dd14e95fd3ebed84a',
+  '8a0ca943236a164475fec186bd798e7ba412597347e931337a03c3935db8b431',
+]);
 
 function stripLegacyDemoPaymentValue(rawVal: unknown, maxLen: number): string {
   const str = String(rawVal || '').trim().slice(0, maxLen);
@@ -625,6 +628,15 @@ function stripLegacyDemoPaymentValue(rawVal: unknown, maxLen: number): string {
   for (const demoSub of LEGACY_DEMO_PAYMENT_SUBSTRINGS) {
     if (lower.includes(demoSub)) {
       return '';
+    }
+  }
+  // Sanitize historical seeded payment numbers without publishing them again.
+  const normalizedDigits = str.replace(/[^0-9]/g, '');
+  for (const length of [10, 11]) {
+    for (let i = 0; i + length <= normalizedDigits.length; i++) {
+      const digitsHash = crypto.createHash('sha256')
+        .update(normalizedDigits.slice(i, i + length)).digest('hex');
+      if (LEGACY_RECEIVING_NUMBER_HASHES.has(digitsHash)) return '';
     }
   }
   return str;
