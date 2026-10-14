@@ -420,6 +420,47 @@ export default function App() {
     };
   }, [config.storeId, activeStoreId, activeScreen, currentUser]);
 
+  // Public discovery: list only genuinely active stores returned by the backend.
+  // No seeded sample sellers, mock email addresses or pre-filled products.
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/stores', { cache: 'no-store' })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!alive || !Array.isArray(data?.stores)) return;
+        const active = data.stores.filter(
+          (s: any) => s && s.storeId && s.storeSlug && s.status === 'Active'
+        );
+        setStoreConfigs((prev) => {
+          const next = { ...prev };
+          for (const entry of active) {
+            if (next[entry.storeId]) continue;
+            next[entry.storeId] = {
+              ...INITIAL_STORE_CONFIG,
+              storeId: String(entry.storeId),
+              ownerId: String(entry.ownerId || ''),
+              ownerEmail: '',
+              storeSlug: String(entry.storeSlug),
+              storeName: String(entry.storeName || 'Creator Store'),
+              ownerName: String(entry.ownerName || 'Creator'),
+              sellerCountry: String(entry.country || entry.sellerCountry || 'Pakistan'),
+              currency: entry.currency || 'PKR',
+              productType: String(entry.productType || 'Digital Products'),
+              socialWebsite: '',
+              announcementText: `Welcome to ${String(entry.storeName || 'Creator Store')}`,
+              heroHeadingLine1: String(entry.storeName || 'Creator Store'),
+              heroHeadingLine2: 'Digital Products',
+              heroSubheading: 'Explore products from this independent creator.',
+            };
+          }
+          storeConfigsRef.current = next;
+          return next;
+        });
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   // Purge any legacy localStorage/sessionStorage keys so stale demo data never overwrites user inputs
   useEffect(() => {
     try {
@@ -2965,12 +3006,24 @@ export default function App() {
             const match = (Object.values(storeConfigs) as StoreConfig[]).find(
               (sc) => sc.storeId === slugOrId || sc.storeSlug === slugOrId
             );
-            if (match) {
-              handleSwitchSellerStore(match.storeId);
-            }
-            if (navigateToStorefront) {
-              handleNavigate('storefront');
-            }
+            if (!match) return;
+            // Fetch real products/branding before opening the chosen public store.
+            void loadStoreFromBackendOrFirestore(match.storeSlug).then((loaded) => {
+              if (!loaded) {
+                setBlockedAccessNotice('This store is not available right now.');
+                return;
+              }
+              setCart([]);
+              setSelectedProductId('');
+              if (navigateToStorefront) {
+                setActiveScreen('storefront');
+                const u = new URL(window.location.href);
+                u.searchParams.set('screen', 'storefront');
+                u.searchParams.set('store', loaded.storeSlug);
+                window.history.pushState({ screen: 'storefront', storeSlug: loaded.storeSlug }, '', u.toString());
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            });
           }}
           onAddToCart={handleAddToCart}
           isAuthenticated={Boolean(currentUser)}
