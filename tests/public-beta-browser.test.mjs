@@ -86,3 +86,12 @@ test('Production visitor never sees seeded seller identities or account email', 
     assert.equal(await page.getByTestId('navbar-user-email').count(), 0);
   } finally { await page.close(); }
 });
+
+test('Production checkout does not offer test-buyer identity or payment instructions while locked', async () => {
+  const page = await visit('/?screen=checkout');
+  try {
+    await page.getByTestId('buyer-cart-section').waitFor({ state: 'visible', timeout: 30000 });
+    assert.equal(await page.getByTestId('enable-sandbox-buyer-btn').count(), 0);
+    assert.doesNotMatch(await page.locator('body').innerText(), /Amina Test Buyer|Use Sandbox Buyer/i);
+  } finally { await page.close(); }
+});
