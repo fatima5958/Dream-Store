@@ -1004,9 +1004,52 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "ConsumedResetToken": {
+      "title": "ConsumedResetToken",
+      "description": "Restart-safe immutable log of consumed single-use password reset token hashes.",
+      "type": "object",
+      "properties": {
+        "tokenHash": {
+          "type": "string",
+          "description": "SHA-256 hash of the consumed password reset token.",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the target account.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "uid": {
+          "type": "string",
+          "description": "UID of the account whose password was reset.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "consumedAtMs": {
+          "type": "number",
+          "description": "Timestamp in milliseconds when the token was consumed."
+        },
+        "consumedAtIso": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp when the token was consumed."
+        }
+      },
+      "required": [
+        "tokenHash",
+        "consumedAtMs"
+      ]
     }
   },
   "firestore": {
+    "/consumedResetTokens/{tokenHash}": {
+      "schema": { "$ref": "#/entities/ConsumedResetToken" },
+      "description": "Restart-safe immutable log of consumed password reset token hashes."
+    },
     "/stores/{storeId}": {
       "schema": { "$ref": "#/entities/Store" },
       "description": "Publicly viewable storefronts owned by authenticated sellers."

@@ -8,4 +8,11 @@ coverage/
 !.env.example
 *.key
 .server-signing-secret*
-
+.persistent-email-accounts*
+*.accounts.json
+*email-accounts*.json
+*.session.json
+*sessions*.json
+*auth-accounts*
+*.auth.json
+.persistent-*

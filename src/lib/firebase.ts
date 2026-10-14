@@ -945,7 +945,31 @@ export async function signInWithEmailAccount(
   }
 }
 
-export async function resetEmailAccountPassword(email: string): Promise<void> {
+export async function resetEmailAccountPassword(
+  email: string,
+  options?: { resetToken?: string; newPassword?: string }
+): Promise<void> {
+  if (options?.resetToken !== undefined || options?.newPassword !== undefined) {
+    const res = await fetch('/api/auth/email/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        resetToken: options.resetToken,
+        newPassword: options.newPassword,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data?.ok) {
+      const errorObj = new Error(data?.error || 'Password reset failed.') as Error & {
+        code?: string;
+      };
+      errorObj.code = data?.code || 'auth/invalid-reset-token';
+      throw errorObj;
+    }
+    return;
+  }
+
   try {
     await sendPasswordResetEmail(auth, email);
   } catch (err: unknown) {

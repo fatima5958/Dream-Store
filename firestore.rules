@@ -1301,5 +1301,15 @@ service cloud.firestore {
 
       allow update, delete: if false;
     }
+
+    // 16. Consumed Password Reset Tokens Collection (Restart-safe, immutable single-use hash records)
+    match /consumedResetTokens/{tokenHash} {
+      allow get: if isValidId(tokenHash);
+      allow list: if isAdmin();
+      allow create: if isValidId(tokenHash) &&
+        incoming().tokenHash == tokenHash &&
+        incoming().consumedAtMs is number;
+      allow update, delete: if false; // strictly immutable append-only
+    }
   }
 }

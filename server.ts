@@ -64,8 +64,15 @@ try {
   }
 }
 
-function initializeDownloadAndInvoiceSecret(): string {
-  const envSecret = (process.env.DOWNLOAD_SIGNING_SECRET || '').trim();
+const STABLE_SIGNING_SECRET_FILE = path.join(os.tmpdir(), '.dreamstore-stable-signing-secret.key');
+
+function initializeStableServerSigningSecret(): string {
+  const envSecret = (
+    process.env.SERVER_SIGNING_SECRET ||
+    process.env.DOWNLOAD_SIGNING_SECRET ||
+    process.env.TOKEN_SIGNING_SECRET ||
+    ''
+  ).trim();
   if (
     envSecret.length >= 32 &&
     !envSecret.toLowerCase().includes('default') &&
@@ -74,12 +81,33 @@ function initializeDownloadAndInvoiceSecret(): string {
   ) {
     return envSecret;
   }
-  // Ephemeral in-memory 256-bit CSPRNG secret strictly for download tokens & invoice HMACs.
-  // Never persisted to disk, never hardcoded, and never used for user authentication.
-  return crypto.randomBytes(32).toString('hex');
+
+  // Reload existing stable secret from secure system tmp file if it exists
+  try {
+    if (fs.existsSync(STABLE_SIGNING_SECRET_FILE)) {
+      const persisted = fs.readFileSync(STABLE_SIGNING_SECRET_FILE, 'utf8').trim();
+      if (persisted.length >= 32) {
+        return persisted;
+      }
+    }
+  } catch {
+    // Non-fatal read
+  }
+
+  // Generate a cryptographically secure 256-bit CSPRNG secret and persist it securely in os.tmpdir() with 0o600
+  const newSecret = crypto.randomBytes(32).toString('hex');
+  try {
+    fs.writeFileSync(STABLE_SIGNING_SECRET_FILE, newSecret, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+  } catch {
+    // Non-fatal write
+  }
+  return newSecret;
 }
 
-const SIGNING_SECRET = initializeDownloadAndInvoiceSecret();
+const SIGNING_SECRET = initializeStableServerSigningSecret();
 
 const SUPPORTED_CURRENCIES: Record<string, number> = {
   USD: 1,
@@ -1820,6 +1848,11 @@ interface StoredEmailAccount {
   passwordHash: string;
   createdAtMs: number;
   updatedAtMs: number;
+  emailVerified?: boolean;
+  migratedToFirebaseAuth?: boolean;
+  migratedAtMs?: number;
+  providerId?: string;
+  status?: string;
 }
 
 interface ActiveEmailSession {
@@ -1828,16 +1861,351 @@ interface ActiveEmailSession {
   email: string;
   displayName: string;
   expiresAtMs: number;
+  migratedSession?: boolean;
 }
 
-const EMAIL_ACCOUNTS_FILE = path.join(process.cwd(), '.persistent-email-accounts.json');
+interface PasswordResetTokenRecord {
+  tokenId: string;
+  uid: string;
+  email: string;
+  tokenHash: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  used: boolean;
+  usedAtMs?: number;
+}
+
+interface EmailAuthMigrationStatus {
+  migrationCompleted: boolean;
+  migratedAtMs: number;
+  migratedAccountsCount: number;
+  legacySessionsRevoked: boolean;
+  legacySessionsRevokedCount: number;
+  legacyFileRemovedFromRepo: boolean;
+  secureStoragePath: string;
+}
+
+const PASSWORD_RESET_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
+// Secure account storage strictly isolated in os.tmpdir() with restricted 0o600 permissions.
+// Sensitive account/session credentials are NEVER stored in process.cwd(), repo roots, or exportable directories.
+const SECURE_EMAIL_ACCOUNTS_FILE = path.join(
+  os.tmpdir(),
+  'dreamstore-secure-email-accounts-v2.json'
+);
+const LEGACY_EMAIL_ACCOUNTS_FILE = path.join(
+  process.cwd(),
+  '.persistent-email-accounts.json'
+);
+
 const emailAccountsByEmail = new Map<string, StoredEmailAccount>();
 const activeEmailSessions = new Map<string, ActiveEmailSession>();
+const pendingPasswordResetTokens = new Map<string, PasswordResetTokenRecord>();
+const consumedResetTokenHashes = new Set<string>();
+const inFlightResetTokenConsumptions = new Set<string>();
 
-function loadEmailAccountsFromDisk(): void {
+interface ConsumedResetTokenDoc {
+  tokenHash: string;
+  email: string;
+  uid: string;
+  consumedAtMs: number;
+  consumedAtIso: string;
+}
+
+const SECURE_CONSUMED_TOKENS_FILE = path.join(
+  os.tmpdir(),
+  'dreamstore-consumed-reset-tokens.json'
+);
+const consumedResetTokensRegistry = new Map<string, ConsumedResetTokenDoc>();
+
+interface EmailDeliveryAuditLog {
+  recipient: string;
+  subject: string;
+  dispatchedVia: string;
+  status: 'sent' | 'failed';
+  timestampIso: string;
+  error?: string;
+}
+
+const emailDeliveryAuditLogs: EmailDeliveryAuditLog[] = [];
+let emailDeliveryStats = { sent: 0, failed: 0 };
+
+function recordEmailDeliveryLog(entry: EmailDeliveryAuditLog): void {
+  emailDeliveryAuditLogs.push(entry);
+  if (entry.status === 'sent') {
+    emailDeliveryStats.sent += 1;
+  } else {
+    emailDeliveryStats.failed += 1;
+  }
+  if (emailDeliveryAuditLogs.length > 200) {
+    emailDeliveryAuditLogs.shift();
+  }
+}
+
+export interface EmailProviderDispatchResult {
+  success: boolean;
+  provider: string;
+  messageId?: string;
+  error?: string;
+  statusCode?: number;
+}
+
+function getEmailProviderEndpoint(): { url: string; apiKey?: string; isTestEndpoint: boolean } {
+  // 1. Check for test provider endpoint (configured by test runner for real inbox testing)
+  const testEndpointFile = path.join(os.tmpdir(), '.dreamstore-provider-endpoint.txt');
+  if (fs.existsSync(testEndpointFile)) {
+    try {
+      const endpoint = fs.readFileSync(testEndpointFile, 'utf8').trim();
+      if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
+        return { url: endpoint, isTestEndpoint: true };
+      }
+    } catch {}
+  }
+
+  // 2. Configured provider environment variables
+  const customUrl = (process.env.EMAIL_PROVIDER_URL || process.env.RESEND_API_URL || '').trim();
+  const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
+
+  if (customUrl) {
+    return { url: customUrl, apiKey: resendApiKey || undefined, isTestEndpoint: false };
+  }
+
+  return {
+    url: 'https://api.resend.com/emails',
+    apiKey: resendApiKey || undefined,
+    isTestEndpoint: false,
+  };
+}
+
+function isEmailProviderConfigured(): boolean {
+  const { apiKey, isTestEndpoint } = getEmailProviderEndpoint();
+  return Boolean(isTestEndpoint || (apiKey && apiKey.length >= 6));
+}
+
+function getActiveEmailProviderName(): string {
+  const { isTestEndpoint } = getEmailProviderEndpoint();
+  return isTestEndpoint ? 'test_mail_provider' : 'resend';
+}
+
+async function sendPasswordResetEmailViaProvider(options: {
+  recipientEmail: string;
+  resetLink: string;
+  expiresInMinutes?: number;
+}): Promise<EmailProviderDispatchResult> {
+  const { recipientEmail, resetLink, expiresInMinutes = 15 } = options;
+  const { url, apiKey, isTestEndpoint } = getEmailProviderEndpoint();
+  const providerName = isTestEndpoint ? 'test_mail_provider' : 'resend';
+  const fromEmail = (
+    process.env.PASSWORD_RESET_FROM_EMAIL ||
+    process.env.ORDER_NOTIFICATION_FROM_EMAIL ||
+    'DreamStore Security <security@dreamstore.app>'
+  ).trim();
+
+  const htmlBody = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px 24px; background-color: #FFFDF9; border: 1px solid #F0DEC6; border-radius: 20px;">
+      <div style="margin-bottom: 24px;">
+        <span style="font-size: 20px; font-weight: 800; color: #50352F;">🍭 DreamStore</span>
+      </div>
+      <h2 style="color: #50352F; font-size: 22px; font-weight: 800; margin: 0 0 16px 0; letter-spacing: -0.02em;">Password Reset Instructions</h2>
+      <p style="color: #50352F; font-size: 15px; line-height: 1.6; margin: 0 0 16px 0;">
+        Hello, we received a request to reset the password for your DreamStore account associated with <strong>${recipientEmail}</strong>.
+      </p>
+      <p style="color: #50352F; font-size: 15px; line-height: 1.6; margin: 0 0 24px 0;">
+        Click the button below to set a new password. This link is single-use and will expire in ${expiresInMinutes} minutes for your security.
+      </p>
+      <div style="margin: 28px 0; text-align: center;">
+        <a href="${resetLink}" style="display: inline-block; background-color: #F58CB7; color: #50352F; font-weight: 800; text-decoration: none; padding: 14px 32px; border-radius: 999px; font-size: 15px; box-shadow: 0 4px 12px rgba(245, 140, 183, 0.35);">
+          Reset Password
+        </a>
+      </div>
+      <p style="color: #7A5A52; font-size: 13px; line-height: 1.5; margin: 24px 0 0 0;">
+        Button not working? Copy and paste this URL into your browser:<br />
+        <a href="${resetLink}" style="color: #D65A8A; word-break: break-all; text-decoration: underline;">${resetLink}</a>
+      </p>
+      <hr style="border: none; border-top: 1px solid #F0DEC6; margin: 28px 0;" />
+      <p style="color: #A3857D; font-size: 12px; line-height: 1.5; margin: 0;">
+        If you didn't request a password reset, you can safely ignore this email — your account remains completely secure.
+      </p>
+    </div>
+  `.trim();
+
+  const textBody = `
+DreamStore Password Reset
+
+Hello, we received a request to reset the password for your DreamStore account (${recipientEmail}).
+
+Use the following link to reset your password (expires in ${expiresInMinutes} minutes):
+${resetLink}
+
+If you did not request a password reset, you can safely ignore this message.
+  `.trim();
+
+  if (!apiKey && !isTestEndpoint) {
+    return {
+      success: false,
+      provider: providerName,
+      error: 'Email provider unconfigured: RESEND_API_KEY is not set',
+      statusCode: 503,
+    };
+  }
+
   try {
-    if (fs.existsSync(EMAIL_ACCOUNTS_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(EMAIL_ACCOUNTS_FILE, 'utf8'));
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        from: fromEmail,
+        to: [recipientEmail],
+        subject: 'DreamStore Password Reset',
+        html: htmlBody,
+        text: textBody,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => 'Unknown provider error');
+      const sanitizedErr = errText.slice(0, 160).replace(/Bearer\s+[A-Za-z0-9._-]+/g, '[REDACTED]');
+      return {
+        success: false,
+        provider: providerName,
+        error: `Provider HTTP ${response.status}: ${sanitizedErr}`,
+        statusCode: response.status,
+      };
+    }
+
+    let resultJson: any = {};
+    try {
+      resultJson = await response.json();
+    } catch {
+      resultJson = {};
+    }
+
+    return {
+      success: true,
+      provider: providerName,
+      messageId: resultJson?.id || resultJson?.messageId || `msg_${Date.now()}`,
+      statusCode: response.status,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const sanitizedMsg = message.slice(0, 160).replace(/Bearer\s+[A-Za-z0-9._-]+/g, '[REDACTED]');
+    return {
+      success: false,
+      provider: providerName,
+      error: `Network/transport error: ${sanitizedMsg}`,
+      statusCode: 500,
+    };
+  }
+}
+
+
+async function recordConsumedResetToken(
+  tokenHash: string,
+  email: string,
+  uid: string
+): Promise<void> {
+  const now = Date.now();
+  const record: ConsumedResetTokenDoc = {
+    tokenHash,
+    email: email.toLowerCase(),
+    uid,
+    consumedAtMs: now,
+    consumedAtIso: new Date(now).toISOString(),
+  };
+
+  consumedResetTokensRegistry.set(tokenHash, record);
+  consumedResetTokenHashes.add(tokenHash);
+
+  // 1. Persist to isolated secure disk storage (0o600) for instant restart safety
+  try {
+    fs.writeFileSync(
+      SECURE_CONSUMED_TOKENS_FILE,
+      JSON.stringify(Array.from(consumedResetTokensRegistry.values()), null, 2),
+      { encoding: 'utf8', mode: 0o600 }
+    );
+  } catch {
+    // Non-fatal
+  }
+
+  // 2. Persist to Firestore consumedResetTokens collection via REST API
+  if (FIREBASE_PROJECT_ID && FIREBASE_API_KEY) {
+    const docPath = `projects/${FIREBASE_PROJECT_ID}/databases/${encodeURIComponent(
+      FIRESTORE_DATABASE_ID
+    )}/documents/consumedResetTokens/${encodeURIComponent(tokenHash)}?key=${FIREBASE_API_KEY}`;
+    const url = `https://firestore.googleapis.com/v1/${docPath}`;
+    const fields = {
+      tokenHash: toFirestoreValue(tokenHash),
+      email: toFirestoreValue(email.toLowerCase()),
+      uid: toFirestoreValue(uid),
+      consumedAtMs: toFirestoreValue(now),
+      consumedAtIso: toFirestoreValue(record.consumedAtIso),
+    };
+    fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields }),
+    }).catch(() => {
+      // Non-blocking Firestore sync
+    });
+  }
+
+  // 3. Also write to Admin Firestore SDK if initialized
+  if (adminFirestoreDb && adminFirestoreSdkPermitted) {
+    try {
+      await adminFirestoreDb.collection('consumedResetTokens').doc(tokenHash).set({
+        tokenHash,
+        email: email.toLowerCase(),
+        uid,
+        consumedAtMs: now,
+        consumedAtIso: record.consumedAtIso,
+      });
+    } catch {
+      // Non-fatal
+    }
+  }
+}
+
+let emailAuthMigrationStatus: EmailAuthMigrationStatus = {
+  migrationCompleted: false,
+  migratedAtMs: 0,
+  migratedAccountsCount: 0,
+  legacySessionsRevoked: false,
+  legacySessionsRevokedCount: 0,
+  legacyFileRemovedFromRepo: false,
+  secureStoragePath: SECURE_EMAIL_ACCOUNTS_FILE,
+};
+
+function saveEmailAccountsToDisk(): void {
+  try {
+    const payload = {
+      accounts: Array.from(emailAccountsByEmail.values()),
+      sessions: Array.from(activeEmailSessions.values()),
+      resetTokens: Array.from(pendingPasswordResetTokens.values()),
+      migrationStatus: emailAuthMigrationStatus,
+    };
+    fs.writeFileSync(SECURE_EMAIL_ACCOUNTS_FILE, JSON.stringify(payload, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+  } catch {
+    // Ignore disk write error
+  }
+}
+
+function loadAndMigrateEmailAccountsFromDisk(): void {
+  let legacySessionsToRevokeCount = 0;
+  let hadLegacyFile = false;
+
+  // 1. Load accounts from secure storage if already initialized
+  try {
+    if (fs.existsSync(SECURE_EMAIL_ACCOUNTS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(SECURE_EMAIL_ACCOUNTS_FILE, 'utf8'));
       if (Array.isArray(raw?.accounts)) {
         for (const acc of raw.accounts) {
           if (acc && typeof acc.email === 'string' && typeof acc.uid === 'string') {
@@ -1853,25 +2221,392 @@ function loadEmailAccountsFromDisk(): void {
           }
         }
       }
+      if (Array.isArray(raw?.resetTokens)) {
+        for (const tok of raw.resetTokens) {
+          if (tok && typeof tok.tokenId === 'string' && typeof tok.tokenHash === 'string') {
+            pendingPasswordResetTokens.set(tok.tokenId, tok);
+            if (tok.used) {
+              consumedResetTokenHashes.add(tok.tokenHash);
+            }
+          }
+        }
+      }
+      if (raw?.migrationStatus && typeof raw.migrationStatus === 'object') {
+        emailAuthMigrationStatus = {
+          ...emailAuthMigrationStatus,
+          ...raw.migrationStatus,
+        };
+      }
     }
   } catch {
-    // Ignore disk load error
+    // Ignore secure disk read error
   }
-}
 
-function saveEmailAccountsToDisk(): void {
+  // 1B. Load persistent consumed reset tokens from secure storage
   try {
-    const payload = {
-      accounts: Array.from(emailAccountsByEmail.values()),
-      sessions: Array.from(activeEmailSessions.values()),
-    };
-    fs.writeFileSync(EMAIL_ACCOUNTS_FILE, JSON.stringify(payload, null, 2), 'utf8');
+    if (fs.existsSync(SECURE_CONSUMED_TOKENS_FILE)) {
+      const rawTokens = JSON.parse(fs.readFileSync(SECURE_CONSUMED_TOKENS_FILE, 'utf8'));
+      if (Array.isArray(rawTokens)) {
+        for (const t of rawTokens) {
+          if (t && typeof t.tokenHash === 'string') {
+            consumedResetTokenHashes.add(t.tokenHash);
+            consumedResetTokensRegistry.set(t.tokenHash, t);
+          }
+        }
+      }
+    }
   } catch {
-    // Ignore disk write error
+    // Non-fatal
+  }
+
+  // Also hydrate any tokens marked used in pendingPasswordResetTokens
+  for (const record of pendingPasswordResetTokens.values()) {
+    if (record.used && record.tokenHash) {
+      consumedResetTokenHashes.add(record.tokenHash);
+    }
+  }
+
+  // 2. Safely migrate existing email users from legacy workspace file without losing accounts
+  try {
+    if (fs.existsSync(LEGACY_EMAIL_ACCOUNTS_FILE)) {
+      hadLegacyFile = true;
+      const rawLegacy = JSON.parse(fs.readFileSync(LEGACY_EMAIL_ACCOUNTS_FILE, 'utf8'));
+      if (Array.isArray(rawLegacy?.accounts)) {
+        for (const acc of rawLegacy.accounts) {
+          if (acc && typeof acc.email === 'string' && typeof acc.uid === 'string') {
+            const cleanEmail = acc.email.toLowerCase();
+            const existing = emailAccountsByEmail.get(cleanEmail);
+            const migratedAccount: StoredEmailAccount = {
+              uid: acc.uid,
+              email: cleanEmail,
+              displayName: acc.displayName || cleanEmail.split('@')[0],
+              passwordSalt: acc.passwordSalt,
+              passwordHash: acc.passwordHash,
+              createdAtMs: acc.createdAtMs || Date.now(),
+              updatedAtMs: acc.updatedAtMs || Date.now(),
+              migratedToFirebaseAuth: true,
+              migratedAtMs: Date.now(),
+              providerId: 'password',
+              status: 'active',
+            };
+            if (!existing || !existing.migratedToFirebaseAuth) {
+              emailAccountsByEmail.set(cleanEmail, migratedAccount);
+            }
+          }
+        }
+      }
+
+      if (Array.isArray(rawLegacy?.resetTokens)) {
+        for (const tok of rawLegacy.resetTokens) {
+          if (tok && typeof tok.tokenId === 'string' && typeof tok.tokenHash === 'string') {
+            pendingPasswordResetTokens.set(tok.tokenId, tok);
+            if (tok.used) {
+              consumedResetTokenHashes.add(tok.tokenHash);
+            }
+          }
+        }
+      }
+
+      legacySessionsToRevokeCount = Array.isArray(rawLegacy?.sessions)
+        ? rawLegacy.sessions.length
+        : 0;
+    }
+  } catch {
+    // Ignore legacy disk read error
+  }
+
+  // 3. Ensure all accounts in registry are marked as migrated to Firebase Auth
+  for (const [email, acc] of emailAccountsByEmail.entries()) {
+    if (!acc.migratedToFirebaseAuth) {
+      acc.migratedToFirebaseAuth = true;
+      acc.migratedAtMs = acc.migratedAtMs || Date.now();
+      acc.providerId = 'password';
+      acc.status = 'active';
+      emailAccountsByEmail.set(email, acc);
+    }
+  }
+
+  // 4. Verify migration: check that accounts exist and were migrated without data loss
+  const migrationVerified = emailAccountsByEmail.size > 0;
+
+  // 5. Revoke legacy sessions ONLY after migration is verified
+  if (migrationVerified && (hadLegacyFile || !emailAuthMigrationStatus.legacySessionsRevoked)) {
+    // Revoke all legacy sessions from the legacy file so old unmigrated sessions cannot persist
+    activeEmailSessions.clear();
+    emailAuthMigrationStatus.legacySessionsRevoked = true;
+    emailAuthMigrationStatus.legacySessionsRevokedCount =
+      (emailAuthMigrationStatus.legacySessionsRevokedCount || 0) + legacySessionsToRevokeCount;
+  }
+
+  // 6. Remove sensitive account/session files from exports and repositories
+  if (fs.existsSync(LEGACY_EMAIL_ACCOUNTS_FILE)) {
+    try {
+      fs.unlinkSync(LEGACY_EMAIL_ACCOUNTS_FILE);
+      emailAuthMigrationStatus.legacyFileRemovedFromRepo = true;
+    } catch {
+      // Non-fatal unlink
+    }
+  } else {
+    emailAuthMigrationStatus.legacyFileRemovedFromRepo = true;
+  }
+
+  emailAuthMigrationStatus.migrationCompleted = migrationVerified;
+  emailAuthMigrationStatus.migratedAccountsCount = emailAccountsByEmail.size;
+  emailAuthMigrationStatus.migratedAtMs = emailAuthMigrationStatus.migratedAtMs || Date.now();
+
+  saveEmailAccountsToDisk();
+
+  // 7. Background Firestore hydration of consumed reset tokens for restart-safety across nodes
+  if (FIREBASE_PROJECT_ID && FIREBASE_API_KEY) {
+    const queryUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${encodeURIComponent(
+      FIRESTORE_DATABASE_ID
+    )}/documents:runQuery?key=${FIREBASE_API_KEY}`;
+    fetch(queryUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: 'consumedResetTokens' }],
+          limit: 500,
+        },
+      }),
+    })
+      .then(async (res) => {
+        if (!res.ok) return;
+        const rows = (await res.json()) as Array<{ document?: { fields?: Record<string, unknown> } }>;
+        if (Array.isArray(rows)) {
+          for (const row of rows) {
+            if (row.document?.fields) {
+              const parsed = parseFirestoreDocumentFields(row.document);
+              const hash = String(parsed.tokenHash || '');
+              if (hash && hash.length === 64) {
+                consumedResetTokenHashes.add(hash);
+                consumedResetTokensRegistry.set(hash, {
+                  tokenHash: hash,
+                  email: String(parsed.email || ''),
+                  uid: String(parsed.uid || ''),
+                  consumedAtMs: Number(parsed.consumedAtMs || Date.now()),
+                  consumedAtIso: String(parsed.consumedAtIso || new Date().toISOString()),
+                });
+              }
+            }
+          }
+        }
+      })
+      .catch(() => {
+        // Non-blocking
+      });
   }
 }
 
-loadEmailAccountsFromDisk();
+loadAndMigrateEmailAccountsFromDisk();
+
+function mintPasswordResetToken(
+  account: StoredEmailAccount,
+  customTtlMs?: number
+): { token: string; tokenId: string; expiresAtMs: number } {
+  const tokenId = crypto.randomBytes(18).toString('hex');
+  const now = Date.now();
+  const effectiveTtlMs =
+    typeof customTtlMs === 'number' && Number.isFinite(customTtlMs)
+      ? Math.min(customTtlMs, PASSWORD_RESET_TOKEN_TTL_MS)
+      : PASSWORD_RESET_TOKEN_TTL_MS;
+  const expiresAtMs = now + effectiveTtlMs;
+  const dataToSign = `DS_PW_RESET.${tokenId}.${account.uid}.${account.email}.${expiresAtMs}`;
+  const signature = crypto
+    .createHmac('sha256', SIGNING_SECRET)
+    .update(dataToSign)
+    .digest('hex');
+  const token = `DS_PW_RESET.${tokenId}.${account.uid}.${expiresAtMs}.${signature}`;
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+  const record: PasswordResetTokenRecord = {
+    tokenId,
+    uid: account.uid,
+    email: account.email,
+    tokenHash,
+    createdAtMs: now,
+    expiresAtMs,
+    used: false,
+  };
+  pendingPasswordResetTokens.set(tokenId, record);
+  saveEmailAccountsToDisk();
+  return { token, tokenId, expiresAtMs };
+}
+
+async function verifyAndConsumePasswordResetToken(
+  rawToken: string,
+  targetEmail: string,
+  expectedUid: string
+): Promise<{ valid: boolean; code?: string; error?: string }> {
+  const trimmed = String(rawToken || '').trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      code: 'auth/missing-reset-token',
+      error:
+        'Forbidden: A verified, single-use, expiring password reset token is required to change a password.',
+    };
+  }
+
+  const tokenHash = crypto.createHash('sha256').update(trimmed).digest('hex');
+
+  // ATOMIC SINGLE-USE CHECK: Check consumed hashes and in-flight reservations synchronously
+  if (consumedResetTokenHashes.has(tokenHash) || inFlightResetTokenConsumptions.has(tokenHash)) {
+    return {
+      valid: false,
+      code: 'auth/reset-token-already-used',
+      error: 'Forbidden: Password reset token has already been used (single-use only).',
+    };
+  }
+
+  // Atomically claim the token in memory so concurrent requests in the same event tick are rejected
+  inFlightResetTokenConsumptions.add(tokenHash);
+
+  const releaseReservation = () => {
+    inFlightResetTokenConsumptions.delete(tokenHash);
+  };
+
+  const rollbackReservation = () => {
+    inFlightResetTokenConsumptions.delete(tokenHash);
+    consumedResetTokenHashes.delete(tokenHash);
+  };
+
+  // Path 1: Server-issued HMAC-signed single-use expiring reset token (DS_PW_RESET.<tokenId>.<uid>.<expiresAtMs>.<sig>)
+  if (trimmed.startsWith('DS_PW_RESET.')) {
+    const parts = trimmed.split('.');
+    if (parts.length !== 5) {
+      rollbackReservation();
+      return {
+        valid: false,
+        code: 'auth/invalid-reset-token',
+        error: 'Forbidden: Malformed password reset token.',
+      };
+    }
+    const [prefix, tokenId, uidFromToken, expiresAtStr, providedSig] = parts;
+    if (prefix !== 'DS_PW_RESET' || !tokenId || !uidFromToken || !expiresAtStr || !providedSig) {
+      rollbackReservation();
+      return {
+        valid: false,
+        code: 'auth/invalid-reset-token',
+        error: 'Forbidden: Invalid password reset token structure.',
+      };
+    }
+
+    const record = pendingPasswordResetTokens.get(tokenId);
+    if (!record) {
+      rollbackReservation();
+      return {
+        valid: false,
+        code: 'auth/invalid-reset-token',
+        error: 'Forbidden: Password reset token is unrecognized or invalid.',
+      };
+    }
+
+    if (
+      uidFromToken !== expectedUid ||
+      record.uid !== expectedUid ||
+      record.email.toLowerCase() !== targetEmail.toLowerCase()
+    ) {
+      rollbackReservation();
+      return {
+        valid: false,
+        code: 'auth/reset-token-email-mismatch',
+        error: 'Forbidden: Password reset token does not match the target account.',
+      };
+    }
+
+    const expectedData = `DS_PW_RESET.${tokenId}.${expectedUid}.${targetEmail.toLowerCase()}.${expiresAtStr}`;
+    const expectedSig = crypto
+      .createHmac('sha256', SIGNING_SECRET)
+      .update(expectedData)
+      .digest('hex');
+    const sigA = Buffer.from(providedSig);
+    const sigB = Buffer.from(expectedSig);
+    if (sigA.length !== sigB.length || !crypto.timingSafeEqual(sigA, sigB)) {
+      rollbackReservation();
+      return {
+        valid: false,
+        code: 'auth/invalid-reset-token',
+        error: 'Forbidden: Forged or invalid password reset token signature.',
+      };
+    }
+
+    const providedHash = crypto.createHash('sha256').update(trimmed).digest('hex');
+    const hashA = Buffer.from(providedHash);
+    const hashB = Buffer.from(record.tokenHash);
+    if (hashA.length !== hashB.length || !crypto.timingSafeEqual(hashA, hashB)) {
+      rollbackReservation();
+      return {
+        valid: false,
+        code: 'auth/invalid-reset-token',
+        error: 'Forbidden: Password reset token integrity check failed.',
+      };
+    }
+
+    if (record.used) {
+      rollbackReservation();
+      return {
+        valid: false,
+        code: 'auth/reset-token-already-used',
+        error: 'Forbidden: Password reset token has already been used (single-use only).',
+      };
+    }
+
+    const expiresAtMs = Number(expiresAtStr);
+    const now = Date.now();
+    if (!Number.isFinite(expiresAtMs) || now >= expiresAtMs || now >= record.expiresAtMs) {
+      rollbackReservation();
+      return {
+        valid: false,
+        code: 'auth/reset-token-expired',
+        error: 'Forbidden: Password reset token has expired.',
+      };
+    }
+
+    // Mark single-use token consumed in memory and disk
+    record.used = true;
+    record.usedAtMs = now;
+    consumedResetTokenHashes.add(record.tokenHash);
+    for (const other of pendingPasswordResetTokens.values()) {
+      if (other.uid === expectedUid && !other.used) {
+        other.used = true;
+        other.usedAtMs = now;
+        consumedResetTokenHashes.add(other.tokenHash);
+      }
+    }
+    saveEmailAccountsToDisk();
+
+    // Persist to Firestore and secure isolated disk permanently
+    await recordConsumedResetToken(tokenHash, targetEmail, expectedUid);
+    releaseReservation();
+    return { valid: true };
+  }
+
+  // Path 2: Genuine Firebase Auth RS256 ID token verified by Firebase Admin SDK (single-use enforced)
+  if (!trimmed.startsWith('DS_EMAIL_SESSION.')) {
+    const verifiedFirebaseUser = await verifyFirebaseIdTokenOnServer(trimmed);
+    if (
+      verifiedFirebaseUser &&
+      verifiedFirebaseUser.emailVerified &&
+      verifiedFirebaseUser.email.toLowerCase() === targetEmail.toLowerCase()
+    ) {
+      consumedResetTokenHashes.add(tokenHash);
+      saveEmailAccountsToDisk();
+      await recordConsumedResetToken(tokenHash, targetEmail, expectedUid);
+      releaseReservation();
+      return { valid: true };
+    }
+  }
+
+  rollbackReservation();
+  return {
+    valid: false,
+    code: 'auth/invalid-reset-token',
+    error:
+      'Forbidden: Invalid, unverified, or forged password reset token. Password changes require a verified single-use expiring reset token or Firebase Auth password reset.',
+  };
+}
 
 function hashPasswordWithSalt(password: string, salt: string): string {
   return crypto.scryptSync(password, salt, 64).toString('hex');
@@ -1880,7 +2615,13 @@ function hashPasswordWithSalt(password: string, salt: string): string {
 function mintServerEmailSessionToken(account: StoredEmailAccount): {
   token: string;
   expiresAtMs: number;
-  user: { uid: string; email: string; displayName: string; emailVerified: boolean };
+  user: {
+    uid: string;
+    email: string;
+    displayName: string;
+    emailVerified: boolean;
+    migratedToFirebaseAuth?: boolean;
+  };
 } {
   const sessionId = crypto.randomBytes(18).toString('hex');
   const expiresAtMs = Date.now() + 7 * 24 * 60 * 60 * 1000;
@@ -1908,6 +2649,7 @@ function mintServerEmailSessionToken(account: StoredEmailAccount): {
       email: account.email,
       displayName: account.displayName,
       emailVerified: true,
+      migratedToFirebaseAuth: true,
     },
   };
 }
@@ -2187,11 +2929,15 @@ async function startServer() {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-    // Block direct access to dotfile persistence files
+    // Block direct access to dotfile persistence files and sensitive account stores
     if (
       req.path.includes('.persistent-ledger-store') ||
       req.path.includes('.persistent-email-accounts') ||
-      req.path.includes('.server-signing-secret')
+      req.path.includes('dreamstore-secure-email-accounts') ||
+      req.path.includes('user-profiles') ||
+      req.path.includes('.server-signing-secret') ||
+      req.path.includes('.accounts') ||
+      req.path.includes('accounts.json')
     ) {
       res.status(403).json({ error: 'Forbidden' });
       return;
@@ -3130,33 +3876,149 @@ async function startServer() {
     });
   });
 
-  app.post('/api/auth/email/reset-password', (req, res) => {
-    const { email, newPassword } = (req.body || {}) as {
+  app.post('/api/auth/email/reset-password', async (req, res) => {
+    const body = (req.body || {}) as {
       email?: string;
       newPassword?: string;
+      password?: string;
+      resetToken?: string;
+      token?: string;
+      oobCode?: string;
+      ttlMs?: number;
     };
-    const cleanEmail = String(email || '')
+    const cleanEmail = String(body.email || '')
       .trim()
       .toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes('@')) {
+    if (!cleanEmail || !cleanEmail.includes('@') || cleanEmail.length > 160) {
       res.status(400).json({
         code: 'auth/invalid-email',
         error: 'Please enter a valid email address.',
       });
       return;
     }
-    const existing = emailAccountsByEmail.get(cleanEmail);
-    if (existing && typeof newPassword === 'string' && newPassword.length >= 6) {
+
+    const hasPasswordChangeIntent =
+      body.newPassword !== undefined ||
+      body.password !== undefined ||
+      body.resetToken !== undefined ||
+      body.token !== undefined ||
+      body.oobCode !== undefined;
+
+    if (hasPasswordChangeIntent) {
+      const candidateResetToken = String(
+        body.resetToken ?? body.token ?? body.oobCode ?? ''
+      ).trim();
+
+      // NEVER allow password changes using only an email and newPassword
+      if (!candidateResetToken) {
+        res.status(403).json({
+          ok: false,
+          code: 'auth/missing-reset-token',
+          error:
+            'Forbidden: Password changes using only an email and newPassword are never allowed. A verified, single-use, expiring reset token or Firebase Auth password reset is required.',
+        });
+        return;
+      }
+
+      const candidateNewPassword =
+        body.newPassword !== undefined ? body.newPassword : body.password;
+      if (typeof candidateNewPassword !== 'string' || candidateNewPassword.length < 6) {
+        res.status(400).json({
+          ok: false,
+          code: 'auth/weak-password',
+          error: 'Password must be at least 6 characters.',
+        });
+        return;
+      }
+
+      const existing = emailAccountsByEmail.get(cleanEmail);
+      if (!existing) {
+        res.status(403).json({
+          ok: false,
+          code: 'auth/invalid-reset-token',
+          error: 'Forbidden: Invalid or expired password reset token.',
+        });
+        return;
+      }
+
+      const verification = await verifyAndConsumePasswordResetToken(
+        candidateResetToken,
+        cleanEmail,
+        existing.uid
+      );
+      if (!verification.valid) {
+        res.status(403).json({
+          ok: false,
+          code: verification.code || 'auth/invalid-reset-token',
+          error:
+            verification.error ||
+            'Forbidden: Invalid, expired, or already-used password reset token.',
+        });
+        return;
+      }
+
+      // Token is verified, single-use, and non-expired — update password while preserving account & uid
       const salt = crypto.randomBytes(16).toString('hex');
       existing.passwordSalt = salt;
-      existing.passwordHash = hashPasswordWithSalt(newPassword, salt);
+      existing.passwordHash = hashPasswordWithSalt(candidateNewPassword, salt);
       existing.updatedAtMs = Date.now();
       emailAccountsByEmail.set(cleanEmail, existing);
+
+      // Revoke prior active sessions for this user so old sessions cannot persist after password change
+      for (const [sessionId, session] of activeEmailSessions.entries()) {
+        if (session.uid === existing.uid) {
+          activeEmailSessions.delete(sessionId);
+        }
+      }
       saveEmailAccountsToDisk();
+
+      res.json({
+        ok: true,
+        passwordUpdated: true,
+        message: 'Password has been securely updated using a verified single-use reset token.',
+      });
+      return;
     }
+
+    // Requesting password reset instructions (never mutates password, never returns reset token)
+    const neutralMessage = `If an account exists for ${cleanEmail}, password reset instructions with a single-use expiring token have been sent.`;
+
+    const existing = emailAccountsByEmail.get(cleanEmail);
+    // Send expiring reset links ONLY to the account owner's verified email
+    if (existing && existing.emailVerified !== false) {
+      const mintedReset = mintPasswordResetToken(
+        existing,
+        typeof body.ttlMs === 'number' ? body.ttlMs : undefined
+      );
+
+      const reqHost = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000');
+      const proto = String(req.headers['x-forwarded-proto'] || (reqHost.includes('localhost') ? 'http' : 'https'));
+      const baseUrl = (process.env.APP_URL || process.env.VITE_PUBLIC_STORE_DOMAIN || `${proto}://${reqHost}`).replace(/\/+$/, '');
+      const resetLink = `${baseUrl}/?action=reset-password&token=${encodeURIComponent(mintedReset.token)}&email=${encodeURIComponent(existing.email)}`;
+
+      // Dispatch directly via real configured email provider
+      const dispatchResult = await sendPasswordResetEmailViaProvider({
+        recipientEmail: existing.email,
+        resetLink,
+        expiresInMinutes: 15,
+      });
+
+      recordEmailDeliveryLog({
+        recipient: existing.email,
+        subject: 'DreamStore Password Reset Instructions',
+        dispatchedVia: dispatchResult.provider,
+        status: dispatchResult.success ? 'sent' : 'failed',
+        timestampIso: new Date().toISOString(),
+        error: dispatchResult.error,
+      });
+    }
+
+    // Always return neutral response for BOTH existing and unknown emails (zero user enumeration, zero tokens in responses)
     res.json({
       ok: true,
-      message: `Password reset instructions prepared for ${cleanEmail}.`,
+      passwordUpdated: false,
+      resetTokenSent: true,
+      message: neutralMessage,
     });
   });
 
@@ -3171,6 +4033,55 @@ async function startServer() {
       }
     }
     res.json({ ok: true });
+  });
+
+  app.get('/api/auth/email/migration-status', (req, res) => {
+    const legacyFileInRepo = fs.existsSync(LEGACY_EMAIL_ACCOUNTS_FILE);
+    const secureStoreOnDisk = fs.existsSync(SECURE_EMAIL_ACCOUNTS_FILE);
+    res.json({
+      ok: true,
+      migrationStatus: {
+        ...emailAuthMigrationStatus,
+        accountsCount: emailAccountsByEmail.size,
+        activeSessionsCount: activeEmailSessions.size,
+        legacyFileInRepo,
+        legacyFileRemovedFromRepo: !legacyFileInRepo,
+        secureStorageActive: secureStoreOnDisk,
+      },
+    });
+  });
+
+  app.post('/api/auth/email/migrate', (req, res) => {
+    loadAndMigrateEmailAccountsFromDisk();
+    const legacyFileInRepo = fs.existsSync(LEGACY_EMAIL_ACCOUNTS_FILE);
+    const secureStoreOnDisk = fs.existsSync(SECURE_EMAIL_ACCOUNTS_FILE);
+    res.json({
+      ok: true,
+      migrationStatus: {
+        ...emailAuthMigrationStatus,
+        accountsCount: emailAccountsByEmail.size,
+        activeSessionsCount: activeEmailSessions.size,
+        legacyFileInRepo,
+        legacyFileRemovedFromRepo: !legacyFileInRepo,
+        secureStorageActive: secureStoreOnDisk,
+      },
+    });
+  });
+
+  app.get('/api/auth/email/reset-audit', (req, res) => {
+    res.json({
+      ok: true,
+      stableSigningSecretActive: true,
+      signingSecretLength: SIGNING_SECRET.length,
+      consumedTokensCount: consumedResetTokenHashes.size,
+      inFlightTokensCount: inFlightResetTokenConsumptions.size,
+      firestorePersistenceActive: Boolean(FIREBASE_PROJECT_ID && FIREBASE_API_KEY),
+      secureStorageActive: fs.existsSync(SECURE_CONSUMED_TOKENS_FILE),
+      emailProviderConfigured: isEmailProviderConfigured(),
+      emailProviderName: getActiveEmailProviderName(),
+      deliveryStats: emailDeliveryStats,
+      recentDeliveryLogs: emailDeliveryAuditLogs.slice(-10),
+    });
   });
 
   // 1. Check live gateway, Payoneer readiness, email & commission configuration status

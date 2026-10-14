@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
+import { createTestEmailProvider } from './test-email-provider.mjs';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const cfg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
@@ -68,6 +69,9 @@ async function runSecuritySuite() {
   console.log(`Firebase Project ID: ${FIREBASE_PROJECT_ID}`);
   console.log(`Configured SUPER_ADMIN_UID: ${SUPER_ADMIN_UID}`);
   console.log('================================================================================\n');
+
+  const emailProvider = createTestEmailProvider(3893);
+  await emailProvider.start();
 
   // 1. Static Codebase & Key File Audit
   const secretKeyPath = path.join(process.cwd(), '.server-signing-secret.key');
@@ -700,6 +704,172 @@ async function runSecuritySuite() {
     `BuyerNav=${buyerNavItemsMatch} | SellerNav=${sellerNavItemsMatch} | BuyerBlocked=[Dashboard:${buyerBlockedOwnerDashboard.status},Wizard:${buyerBlockedWizard.status},SuperAdmin:${buyerBlockedSuperAdmin.status},CreateStore:${buyerDirectCreateStoreApi.status},UpsertProd:${buyerDirectUpsertProductApi.status},SellerSettings:${buyerDirectSellerSettingsApi.status}] | SellerBlockedSuperAdmin=[Screen:${sellerBlockedSuperAdmin.status},AdminAPI:${sellerDirectAdminConfigApi.status}] | ReturningSkipOnboarding=${returningUsersSkipOnboarding}`
   );
 
+  // 11. Verify /api/auth/email/reset-password Security (Unauthorized & Legitimate Resets)
+  // 11a. Attack: Attempt password change with ONLY email and newPassword (no resetToken)
+  const unauthNoTokenReset = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      newPassword: 'HackedPassword999!',
+    },
+  });
+
+  // 11b. Attack: Attempt password change with forged resetToken
+  const unauthForgedTokenReset = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      newPassword: 'HackedPassword999!',
+      resetToken: 'DS_PW_RESET.deadbeef123456.u_fake.9999999999999.forgedsignature12345',
+    },
+  });
+
+  // 11c. Unauthenticated reset request ({ email } only) must NOT leak resetToken or change password
+  const unauthRequestInstructions = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+    },
+  });
+
+  // 11d. Attack: Cross-account token misuse (Seller requests a valid resetToken for Seller, tries to reset Buyer's password)
+  const sellerResetTokenReq = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    token: sellerToken,
+    body: {
+      email: newSellerEmail,
+    },
+  });
+  const sellerResetEmail = emailProvider.getLatestEmail(newSellerEmail);
+  const sellerValidResetToken = emailProvider.extractResetToken(sellerResetEmail) || '';
+  const crossAccountResetAttempt = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      newPassword: 'CrossAccountHijack999!',
+      resetToken: sellerValidResetToken,
+    },
+  });
+
+  // 11e. Attack: Expired resetToken must be rejected (403 auth/reset-token-expired)
+  const expiredTokenReq = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    token: buyerToken,
+    body: {
+      email: newBuyerEmail,
+      ttlMs: -5000,
+    },
+  });
+  const expiredEmail = emailProvider.getLatestEmail(newBuyerEmail);
+  const expiredResetToken = emailProvider.extractResetToken(expiredEmail) || '';
+  const expiredTokenAttempt = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      newPassword: 'ExpiredTokenPassword999!',
+      resetToken: expiredResetToken,
+    },
+  });
+
+  // Confirm Buyer's original password STILL works and hacker passwords fail after all unauthorized attempts
+  const hackerSignInAttempt = await apiRequest('/api/auth/email/signin', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      password: 'HackedPassword999!',
+    },
+  });
+  const originalPasswordStillWorks = await apiRequest('/api/auth/email/signin', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      password: 'CandyPassword123!',
+    },
+  });
+
+  // 11f. Legitimate password reset with a verified, single-use, non-expired resetToken
+  const validBuyerTokenReq = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    token: originalPasswordStillWorks.data?.token || buyerToken,
+    body: {
+      email: newBuyerEmail,
+    },
+  });
+  const validBuyerEmail = emailProvider.getLatestEmail(newBuyerEmail);
+  const validBuyerResetToken = emailProvider.extractResetToken(validBuyerEmail) || '';
+  const legitimateReset = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      newPassword: 'NewVerifiedCandyPass777!',
+      resetToken: validBuyerResetToken,
+    },
+  });
+
+  // 11g. Replay Attack: Attempting to reuse the consumed single-use resetToken a second time must fail with 403
+  const replayTokenAttempt = await apiRequest('/api/auth/email/reset-password', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      newPassword: 'ReplayAttackPassword888!',
+      resetToken: validBuyerResetToken,
+    },
+  });
+
+  // 11h. Verify old password now fails (401), new password succeeds (200), and existing account UID & Buyer profile are preserved
+  const oldPasswordAfterReset = await apiRequest('/api/auth/email/signin', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      password: 'CandyPassword123!',
+    },
+  });
+  const newPasswordSignIn = await apiRequest('/api/auth/email/signin', {
+    method: 'POST',
+    body: {
+      email: newBuyerEmail,
+      password: 'NewVerifiedCandyPass777!',
+    },
+  });
+  const preservedBuyerProfile = await apiRequest('/api/users/profile', {
+    token: newPasswordSignIn.data?.token || '',
+  });
+
+  const unauthorizedResetsBlocked =
+    unauthNoTokenReset.status === 403 &&
+    unauthNoTokenReset.data?.code === 'auth/missing-reset-token' &&
+    unauthForgedTokenReset.status === 403 &&
+    unauthForgedTokenReset.data?.code === 'auth/invalid-reset-token' &&
+    unauthRequestInstructions.status === 200 &&
+    unauthRequestInstructions.data?.resetToken === undefined &&
+    unauthRequestInstructions.data?.passwordUpdated === false &&
+    crossAccountResetAttempt.status === 403 &&
+    crossAccountResetAttempt.data?.code === 'auth/reset-token-email-mismatch' &&
+    expiredTokenAttempt.status === 403 &&
+    expiredTokenAttempt.data?.code === 'auth/reset-token-expired' &&
+    hackerSignInAttempt.status === 401 &&
+    originalPasswordStillWorks.status === 200;
+
+  const legitimateAndSingleUseVerified =
+    legitimateReset.status === 200 &&
+    legitimateReset.data?.passwordUpdated === true &&
+    replayTokenAttempt.status === 403 &&
+    replayTokenAttempt.data?.code === 'auth/reset-token-already-used' &&
+    oldPasswordAfterReset.status === 401 &&
+    newPasswordSignIn.status === 200 &&
+    newPasswordSignIn.data?.user?.uid === buyerUid &&
+    preservedBuyerProfile.status === 200 &&
+    preservedBuyerProfile.data?.profile?.uid === buyerUid &&
+    preservedBuyerProfile.data?.profile?.role === 'buyer';
+
+  recordTest(
+    '11. Password Reset Endpoint Security (/api/auth/email/reset-password)',
+    'Blocks password changes using only email+newPassword (403), blocks forged/expired/cross-account/replayed tokens (403), and completes legitimate single-use token resets while preserving accounts',
+    unauthorizedResetsBlocked && legitimateAndSingleUseVerified,
+    `NoToken=${unauthNoTokenReset.status} (${unauthNoTokenReset.data?.code}) | Forged=${unauthForgedTokenReset.status} | CrossAccount=${crossAccountResetAttempt.status} (${crossAccountResetAttempt.data?.code}) | Expired=${expiredTokenAttempt.status} (${expiredTokenAttempt.data?.code}) | LegitReset=${legitimateReset.status} | ReplaySingleUse=${replayTokenAttempt.status} (${replayTokenAttempt.data?.code}) | AccountPreserved=${newPasswordSignIn.data?.user?.uid === buyerUid}`
+  );
+
+  await emailProvider.stop();
   console.log('\n================================================================================');
   console.log(`ALL ${report.length} SECURITY CHECKS PASSED.`);
   console.log('================================================================================');
@@ -709,5 +879,6 @@ runSecuritySuite().catch((err) => {
   console.error('SECURITY SUITE FAILED:', err);
   process.exit(1);
 });
+
 
 
