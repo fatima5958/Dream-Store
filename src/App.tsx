@@ -335,6 +335,7 @@ export default function App() {
     });
   };
   const [gatewayStatus, setGatewayStatus] = useState<GatewayServerStatus>({
+    paidCheckoutEnabled: false,
     jazzcashConfigured: false,
     easypaisaConfigured: false,
     stripeConfigured: false,
@@ -716,6 +717,7 @@ export default function App() {
       .then((data) => {
         if (data) {
           setGatewayStatus({
+            paidCheckoutEnabled: data.paidCheckoutEnabled === true,
             jazzcashConfigured: Boolean(data.jazzcashConfigured),
             easypaisaConfigured: Boolean(data.easypaisaConfigured),
             razorpayConfigured: Boolean(data.razorpayConfigured),
