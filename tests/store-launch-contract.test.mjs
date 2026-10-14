@@ -20,6 +20,8 @@ test('seller store is created only after an acknowledged server save', () => {
   assert.doesNotMatch(content, /await setDoc\(/);
   assert.match(server, /await storeRef\.set\(storeDocument\)/);
   assert.match(server, /Store could not be saved securely/);
+  const editor = app.slice(app.indexOf('  const handleUpdateConfig ='), app.indexOf('  const handleCompleteWizard ='));
+  assert.match(editor, /if \(!existingSnap\.exists\(\)\) return/);
 });
 
 test('new sellers get real empty catalog and Free plan, never mock profile/payments', () => {
