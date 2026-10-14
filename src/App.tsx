@@ -657,7 +657,14 @@ export default function App() {
 
       if (screenParam && SCREEN_TABS.some((t) => t.id === screenParam)) {
         requestedUrlScreenRef.current = screenParam;
-        if (screenParam !== 'super-admin') {
+        const sellerScreen =
+          screenParam === 'wizard' ||
+          screenParam === 'owner-dashboard' ||
+          screenParam === 'visual-editor';
+        if (sellerScreen || screenParam === 'super-admin') {
+          // Do not render a private workspace to a guest during auth restoration.
+          setActiveScreen('landing');
+        } else {
           setActiveScreen(screenParam);
         }
       } else if (storeParam && !screenParam) {
@@ -897,6 +904,14 @@ export default function App() {
             setActiveScreen('super-admin');
           }
         } else if (resolvedRole === 'seller') {
+          if (
+            (requestedUrlScreenRef.current === 'wizard' ||
+              requestedUrlScreenRef.current === 'owner-dashboard' ||
+              requestedUrlScreenRef.current === 'visual-editor') &&
+            activeScreenRef.current === 'landing'
+          ) {
+            setActiveScreen(requestedUrlScreenRef.current);
+          }
           if (
             requestedUrlScreenRef.current === 'super-admin' ||
             currentUrlScreen === 'super-admin' ||
