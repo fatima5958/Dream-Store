@@ -3824,6 +3824,18 @@ async function startServer() {
 
   // 0C. Server-verified Email & Password Authentication (Seamless fallback when Firebase Console Email/Password provider is disabled)
   app.post('/api/auth/email/signup', (req, res) => {
+    // This legacy fallback writes user credentials to ephemeral /tmp.
+    // Never create permanent-looking customer accounts in production through it.
+    // Enable native Firebase Email/Password Authentication and migrate legacy
+    // accounts before paid launch instead of silently losing users on restart.
+    if (process.env.NODE_ENV === 'production') {
+      res.status(503).json({
+        ok: false,
+        code: 'auth/provider-not-configured',
+        error: 'Email registration requires Firebase Authentication Email/Password to be enabled. Contact the site operator.',
+      });
+      return;
+    }
     const { email, password, displayName } = (req.body || {}) as {
       email?: string;
       password?: string;
