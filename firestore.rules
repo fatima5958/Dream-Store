@@ -159,20 +159,20 @@ service cloud.firestore {
       ]) &&
       isValidId(data.storeId) &&
       isValidId(data.ownerId) &&
-      data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+      data.title is string && data.title.size() >= 2 && data.title.size() <= 160 &&
       data.category in ['Ebooks', 'Workbooks', 'Planners', 'Templates', 'Bundles'] &&
-      data.subtitle is string && data.subtitle.size() >= 1 && data.subtitle.size() <= 300 &&
-      data.description is string && data.description.size() >= 1 && data.description.size() <= 3000 &&
+      data.subtitle is string && data.subtitle.size() <= 300 &&
+      data.description is string && data.description.size() <= 3000 &&
       data.priceUsd is number && data.priceUsd >= 0 && data.priceUsd <= 100000 &&
       data.pricePkr is number && data.pricePkr >= 0 && data.pricePkr <= 25000000 &&
       data.isFree is bool &&
       ((data.isFree == true && data.priceUsd == 0 && data.pricePkr == 0) || (data.isFree == false && data.priceUsd > 0 && data.pricePkr > 0)) &&
       data.published is bool &&
       data.status in ['Available', 'Coming Soon', 'Draft'] &&
-      data.image is string && data.image.size() >= 1 && data.image.size() <= 500000 &&
-      data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255 &&
-      data.fileType is string && data.fileType.size() >= 1 && data.fileType.size() <= 100 &&
-      data.fileSizeLabel is string && data.fileSizeLabel.size() >= 1 && data.fileSizeLabel.size() <= 60 &&
+      data.image is string && data.image.size() <= 500000 &&
+      data.fileName is string && data.fileName.size() <= 255 &&
+      data.fileType is string && data.fileType.size() <= 100 &&
+      data.fileSizeLabel is string && data.fileSizeLabel.size() <= 60 &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp;
     }
@@ -662,9 +662,13 @@ service cloud.firestore {
         (isSignedIn() && resource.data.ownerId == request.auth.uid) ||
         isAdmin();
 
+      // Firebase clients can create unpublished drafts only. Server Admin SDK
+      // exclusively verifies original files and flips products to Published.
       allow create: if isVerifiedUser() &&
         isValidId(productId) &&
         isValidProduct(incoming()) &&
+        incoming().published == false &&
+        incoming().status == 'Draft' &&
         incoming().ownerId == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
@@ -672,26 +676,28 @@ service cloud.firestore {
         get(/databases/$(database)/documents/stores/$(incoming().storeId)).data.ownerId == request.auth.uid &&
         get(/databases/$(database)/documents/stores/$(incoming().storeId)).data.status == 'Active';
 
+      // Browser SDK cannot update any published listing or republish an
+      // archived draft; every publish and edit to a published item goes through
+      // the authenticated backend and Firebase Admin SDK.
       allow update: if isVerifiedUser() &&
         isValidId(productId) &&
         isValidProduct(incoming()) &&
+        existing().published == false &&
+        incoming().published == false &&
+        incoming().status == 'Draft' &&
+        isOwner(existing().ownerId) &&
         incoming().ownerId == existing().ownerId &&
         incoming().storeId == existing().storeId &&
         incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().ownerId) &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'title', 'category', 'subtitle', 'description',
-              'priceUsd', 'pricePkr', 'isFree', 'published',
-              'status', 'image', 'fileName', 'fileType',
-              'fileSizeLabel', 'updatedAt'
-            ])
-          )
-        );
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'category', 'subtitle', 'description',
+          'priceUsd', 'pricePkr', 'isFree', 'status', 'image',
+          'fileName', 'fileType', 'fileSizeLabel', 'updatedAt'
+        ]);
 
-      allow delete: if isValidId(productId) && (isOwner(existing().ownerId) || isAdmin());
+      // Only backend can archive/remove listings so purchased originals remain.
+      allow delete: if false;
 
       // 4. Protected Digital Deliverables Subcollection
       match /deliverables/{deliverableId} {
