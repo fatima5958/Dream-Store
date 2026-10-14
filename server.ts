@@ -5596,6 +5596,10 @@ async function startServer() {
     const store =
       serverStores.get(String(productPayload.storeId)) ||
       (await resolveVerifiedStoreRecord(String(productPayload.storeId)));
+    if (!store) {
+      res.status(404).json({ error: 'Verified store not found. Product was not published.' });
+      return;
+    }
     if (store && !isSuper && store.ownerId !== user.uid) {
       res.status(403).json({
         error: `Forbidden: Seller "${user.uid}" cannot add or modify products in store "${productPayload.storeId}" owned by "${store.ownerId}".`,
@@ -5662,21 +5666,108 @@ async function startServer() {
       fileType: String(productPayload.fileType || 'PDF Document'),
       fileSizeLabel: String(productPayload.fileSizeLabel || '2.4 MB'),
     };
+    // A digital listing must never be published unless its original private file
+    // exists in the verified seller's Firebase Storage namespace. Metadata and
+    // user-supplied storage:// paths are not proof of a successful upload.
+    if (!adminFirestoreDb) {
+      res.status(503).json({ error: 'Secure product storage is unavailable. Product was not published.' });
+      return;
+    }
+    const authoritativeDeliverableRef = adminFirestoreDb.collection('products')
+      .doc(record.id).collection('deliverables').doc('main');
+    let authoritativeDeliverable: Record<string, unknown> | undefined;
+    try {
+      const savedDeliverable = await authoritativeDeliverableRef.get();
+      authoritativeDeliverable = savedDeliverable.exists ? savedDeliverable.data() : undefined;
+    } catch {
+      res.status(503).json({ error: 'Could not verify private product file. Product was not published.' });
+      return;
+    }
+    const requestedReference = String(productPayload.fileDataUrl || '').trim();
+    const storedReference = String(authoritativeDeliverable?.fileDataUrl || '').trim();
+    // New uploads use private references. Updating product metadata without a
+    // new upload is allowed only if the existing verified reference is present.
+    const fileReference = requestedReference || storedReference;
+    if (wantsPublished) {
+      if (!fileReference.startsWith('storage://') || fileReference !== storedReference) {
+        res.status(422).json({ error: 'Upload and save your original file securely before publishing.' });
+        return;
+      }
+      if (
+        String(authoritativeDeliverable?.ownerId || '') !== effectiveOwnerId ||
+        String(authoritativeDeliverable?.productId || '') !== record.id
+      ) {
+        res.status(403).json({ error: 'Private file does not belong to this seller/product.' });
+        return;
+      }
+      const objectPath = fileReference.slice('storage://'.length);
+      const allowedPrefix = `deliverables/${effectiveOwnerId}/${record.id}/`;
+      const fileSegment = objectPath.slice(allowedPrefix.length);
+      if (
+        !FIREBASE_STORAGE_BUCKET ||
+        !objectPath.startsWith(allowedPrefix) ||
+        !/^[A-Za-z0-9._-]+$/.test(fileSegment) ||
+        fileSegment.length < 1
+      ) {
+        res.status(422).json({ error: 'Secure file reference is invalid.' });
+        return;
+      }
+      try {
+        const [metadata] = await getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).file(objectPath).getMetadata();
+        const bytes = Number(metadata.size || 0);
+        const supportedMime = new Set([
+          'application/pdf', 'application/zip', 'application/epub+zip',
+          'text/plain', 'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ]);
+        if (
+          bytes < 1 ||
+          bytes > 5 * 1024 * 1024 ||
+          !supportedMime.has(String(metadata.contentType || ''))
+        ) {
+          res.status(422).json({ error: 'Original file size or type is not supported (maximum 5 MB).' });
+          return;
+        }
+      } catch {
+        res.status(503).json({ error: 'Original file could not be verified in Firebase Storage. Try uploading again.' });
+        return;
+      }
+    }
+
+    try {
+      // Server commit is the public publish gate; the browser initially saves a
+      // draft and must not expose unverified files to buyers.
+      const productDocRef = adminFirestoreDb.collection('products').doc(record.id);
+      const existingSnap = await productDocRef.get();
+      if (existingSnap.exists) {
+        const savedOwner = String(existingSnap.get('ownerId') || '');
+        const savedStore = String(existingSnap.get('storeId') || '');
+        if (savedOwner !== effectiveOwnerId || savedStore !== record.storeId) {
+          res.status(403).json({ error: 'Existing product belongs to another owner or store.' });
+          return;
+        }
+      }
+      const now = new Date();
+      await productDocRef.set({
+        ...record,
+        createdAt: existingSnap.exists ? existingSnap.get('createdAt') || now : now,
+        updatedAt: now,
+      }, { merge: true });
+    } catch {
+      res.status(503).json({ error: 'Could not save product to Firebase. Product was not published.' });
+      return;
+    }
     serverProducts.set(record.id, record);
-    if (productPayload.fileDataUrl && typeof productPayload.fileDataUrl === 'string') {
+    if (wantsPublished) {
       serverProductDeliverables.set(record.id, {
         fileName: record.fileName,
         fileType: record.fileType,
-        fileSizeLabel: record.fileSizeLabel || '2.4 MB',
-        fileDataUrl: String(productPayload.fileDataUrl),
+        fileSizeLabel: record.fileSizeLabel || '',
+        fileDataUrl: fileReference,
       });
+    } else {
+      serverProductDeliverables.delete(record.id);
     }
-    syncFirestoreDoc(
-      'products',
-      record.id,
-      record as unknown as Record<string, unknown>,
-      user.rawToken
-    );
     res.json({ ok: true, product: record });
   };
 
