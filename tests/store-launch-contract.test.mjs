@@ -63,7 +63,7 @@ test('new production sessions never inherit a demo seller, personal branding or 
 
 test('seller product deletion is durable and cannot silently resurrect on restart', () => {
   const serverDelete = server.slice(server.indexOf("app.post('/api/products/delete'"), server.indexOf("// 5. Server-Side Commission Calculator Endpoint"));
-  assert.match(serverDelete, /await ref\.update\(\{ published: false, status: 'Draft'/);
+  assert.match(serverDelete, /await productRef\.update\(\{\s*published: false,\s*status: 'Draft',\s*deleted: true/);
   assert.match(serverDelete, /serverProducts\.delete/);
   assert.match(serverDelete, /snap\.get\('ownerId'\) !== user\.uid/);
   const clientDelete = app.slice(app.indexOf('  const handleDeleteProduct = async'), app.indexOf('  const handleSavePaymentSettings ='));
