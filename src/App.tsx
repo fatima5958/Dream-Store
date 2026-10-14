@@ -173,9 +173,8 @@ export default function App() {
     if (screenParam && SCREEN_TABS.some((t) => t.id === screenParam)) {
       return screenParam;
     }
-    if (params.get('store')) {
-      return 'storefront';
-    }
+    // Wait for an actual store lookup before showing a seller's storefront.
+    // Unknown slugs must not render the default/demo template.
     return 'landing';
   });
   const activeScreenRef = useRef<ScreenId>(activeScreen);
@@ -638,19 +637,21 @@ export default function App() {
         const cleanSlug = storeParam.trim().toLowerCase();
         const loaded = await loadStoreFromBackendOrFirestore(cleanSlug);
         if (!loaded) {
-          if (cleanSlug === 'ananya.creates') {
-            setActiveStoreId('store-in-ananya');
-            setSelectedProductId('prod-in-mindful-journal');
-          } else if (cleanSlug === 'fatima.tech' || cleanSlug === 'fatimatech') {
-            setActiveStoreId('store-fatima-tech');
-            setSelectedProductId('prod-30-day-reset');
-          } else {
-            const localMatch = (Object.values(storeConfigsRef.current) as StoreConfig[]).find(
-              (sc) => sc.storeSlug.toLowerCase() === cleanSlug
-            );
+          // No implicit Fatima/Ananya fallback for invalid public links.
+          if (import.meta.env.DEV) {
+            const localMatch = (Object.values(storeConfigsRef.current) as StoreConfig[])
+              .find((sc) => sc.storeSlug.toLowerCase() === cleanSlug);
             if (localMatch) {
               setActiveStoreId(localMatch.storeId);
+            } else {
+              setBlockedAccessNotice('Store not found. Check the link or explore available stores.');
+              setActiveScreen('landing');
+              return;
             }
+          } else {
+            setBlockedAccessNotice('Store not found. Check the link or explore available stores.');
+            setActiveScreen('landing');
+            return;
           }
         }
       }
