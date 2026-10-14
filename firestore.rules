@@ -1019,45 +1019,9 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(orderNumber) &&
-        isValidLedgerRecord(incoming()) &&
-        incoming().orderNumber == orderNumber &&
-        incoming().buyerId == request.auth.uid &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time &&
-        existsAfter(/databases/$(database)/documents/orders/$(incoming().orderId));
-
-      allow update: if isVerifiedUser() &&
-        isValidId(orderNumber) &&
-        isValidLedgerRecord(incoming()) &&
-        incoming().orderId == existing().orderId &&
-        incoming().orderNumber == existing().orderNumber &&
-        incoming().storeId == existing().storeId &&
-        incoming().sellerId == existing().sellerId &&
-        incoming().buyerId == existing().buyerId &&
-        incoming().currency == existing().currency &&
-        incoming().commissionRateBps == existing().commissionRateBps &&
-        incoming().grossAmountMinor == existing().grossAmountMinor &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().sellerId) &&
-            !(existing().paymentStatus in ['Refunded', 'Failed']) &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'paymentStatus',
-              'verificationMode',
-              'commissionStatus',
-              'platformCommissionMinor',
-              'sellerShareBeforeFeesMinor',
-              'sellerNetEarningsMinor',
-              'updatedAt'
-            ])
-          )
-        );
-
-      allow delete: if false;
+      // Financial ledger writes are server-authoritative only (Firebase Admin SDK).
+      // Buyers and sellers must use authenticated checkout/verification APIs.
+      allow create, update, delete: if false;
     }
 
     // 12. Immutable Ledger & Verification Audit Trail (Append-Only)
