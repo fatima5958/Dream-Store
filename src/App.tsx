@@ -3012,6 +3012,7 @@ export default function App() {
           ''
         }
         defaultEmail={currentUser?.email || ''}
+        emailVerified={currentUser?.emailVerified !== false}
         onCompleteOnboarding={handleCompleteRoleOnboarding}
       />
 
