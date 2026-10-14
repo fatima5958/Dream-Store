@@ -14,6 +14,19 @@ This checklist applies to the isolated PR branch `fix/launch-checkout-download-s
 
 **Important:** These tests do NOT simulate all production Firebase Auth, named Firestore database, Cloud Run permissions, email delivery, real manual payments or real device behavior.
 
+## Safe public-preview mode
+
+The new paid checkout release flag defaults to **OFF in production**.
+`DREAMSTORE_PAID_CHECKOUT_ENABLED=true` is an explicit operator-only action
+reserved until all staging payment, refund, restart and original-file-download
+tests have passed. When OFF, real-money checkout is rejected server-side and
+the buyer UI displays a "Paid Orders Coming Soon" message **before** any wallet
+instructions. Free-order downloads still require backend verification,
+Firebase Admin connectivity and a persistent signing secret.
+
+Buyer delivery emails are now required to match the authenticated buyer's
+verified account email; an arbitrary recipient cannot be supplied in checkout.
+
 ## Blocking production issues
 
 1. **Legacy custom email accounts are saved under ephemeral OS `/tmp`**. A Cloud Run restart, replacement instance, or scale-out may lose accounts, sessions and pending reset tokens. Enable Firebase Auth Email/Password and migrate/verify existing custom-email users, or implement a durable securely managed account/session store. **Do not onboard paying customers via the legacy fallback until solved.**
