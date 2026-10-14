@@ -8,6 +8,7 @@ const app = read('src/App.tsx');
 const firebase = read('src/lib/firebase.ts');
 const server = read('server.ts');
 const rules = read('storage.rules');
+const types = read('src/types/dreamstore.ts');
 
 test('5 MiB file size limit is enforced before upload and in Storage rules', () => {
   assert.match(seller, /MAX_FILE_BYTES\s*=\s*5\s*\*\s*1024\s*\*\s*1024/);
@@ -49,4 +50,26 @@ test('download count is committed atomically and never accepted from browser sta
   assert.match(server, /count >= max/);
   assert.match(server, /saved\.paymentStatus !== 'Paid'/);
   assert.match(server, /if \(\!\(await ensureFinancialDatabaseReady\(res\)\)\) return/);
+});
+
+test('a seller must have a real stored file before publishing a product', () => {
+  assert.match(server, /getAdminStorage\(\)\.bucket\(FIREBASE_STORAGE_BUCKET\)\.file\(objectPath\)\.getMetadata\(\)/);
+  assert.match(server, /fileReference !== storedReference/);
+  assert.match(server, /Secure file reference is invalid/);
+  assert.match(server, /Could not save product to Firebase/);
+  assert.match(app, /published: false,\s*status: 'Draft'/);
+  assert.match(app, /The server could not publish this product/);
+});
+
+test('public users see no fabricated products, cart, stores or hardcoded admin contact', () => {
+  assert.match(app, /import\.meta\.env\.DEV \? INITIAL_PRODUCTS : \[\]/);
+  assert.match(app, /useState<CartItem\[\]>\(\[\]\)/);
+  assert.match(app, /import\.meta\.env\.DEV \? INITIAL_PLATFORM_STORES : \[\]/);
+  assert.match(app, /import\.meta\.env\.DEV &&/);
+  assert.match(types, /INITIAL_PLATFORM_STORES: PlatformStore\[\] = \[\]/);
+  assert.match(server, /const SUPER_ADMIN_EMAIL = ''/);
+  assert.match(server, /visitsCount: 0/);
+  assert.match(server, /checkoutViewsCount: 0/);
+  assert.doesNotMatch(server, /mateenfatima5958@gmail\.com/);
+  assert.doesNotMatch(server, /03359379024|0342126300/);
 });
