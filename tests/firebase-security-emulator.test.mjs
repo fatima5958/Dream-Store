@@ -134,3 +134,29 @@ test('No browser Firebase client can create or change a financial ledger documen
     orderNumber: 'order-two',
   }));
 });
+
+test('New seller can create a Free store but cannot self-grant Pro plan', async () => {
+  const base = {
+    ownerId: 'seller-one',
+    storeSlug: 'seller-one-live',
+    storeName: 'Seller One',
+    ownerName: 'Seller',
+    announcementText: 'Welcome',
+    heroHeadingLine1: 'Seller One',
+    heroHeadingLine2: 'Original downloads',
+    heroSubheading: 'Digital downloads by Seller One',
+    heroButtonText: 'Shop',
+    heroImage: '',
+    logoUrl: '',
+    theme: 'blush-rose',
+    currency: 'PKR',
+    exchangeRatePkr: 278,
+    status: 'Active',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  await assertFails(setDoc(doc(user('seller-one').firestore(), 'stores', 'store-seller-one'),
+    { ...base, plan: 'Pro' }));
+  await assertSucceeds(setDoc(doc(user('seller-one').firestore(), 'stores', 'store-seller-one'),
+    { ...base, plan: 'Free' }));
+});
