@@ -5985,8 +5985,31 @@ async function startServer() {
       });
       return;
     }
-    serverProducts.delete(String(productId));
-    res.json({ ok: true, deletedId: productId });
+    if (!adminFirestoreDb) {
+      res.status(503).json({ error: 'Secure product database unavailable. Product was not deleted.' });
+      return;
+    }
+    try {
+      const ref = adminFirestoreDb.collection('products').doc(String(productId));
+      const snap = await ref.get();
+      if (!snap.exists) {
+        res.status(404).json({ error: 'Product not found in the saved catalog.' });
+        return;
+      }
+      if (!isSuper && snap.get('ownerId') !== user.uid) {
+        res.status(403).json({ error: 'You cannot delete another seller\'s product.' });
+        return;
+      }
+      // Soft-delete to preserve purchased buyer entitlements and originals.
+      // Archived products are never published in seller storefronts or checkout.
+      await ref.update({ published: false, status: 'Draft', updatedAt: new Date() });
+      serverProducts.delete(String(productId));
+      serverProductDeliverables.delete(String(productId));
+      res.json({ ok: true, deletedId: productId, archived: true });
+    } catch (err) {
+      console.error('Product archive failed:', err);
+      res.status(503).json({ error: 'Product could not be removed safely. Please retry.' });
+    }
   });
 
   // 5. Server-Side Commission Calculator Endpoint
