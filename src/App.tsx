@@ -2482,16 +2482,12 @@ export default function App() {
     if (!currentUser || !hasFirebaseSdkSession()) return;
 
     const orderRef = doc(db, 'orders', orderId);
-    const ledgerRef = doc(db, 'ledger', target.orderNumber);
     const auditId = `aud-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`;
     const auditRef = doc(db, 'ledger_audit', auditId);
 
     try {
       await runTransaction(db, async (tx) => {
-        const [orderSnap, ledgerSnap] = await Promise.all([
-          tx.get(orderRef),
-          tx.get(ledgerRef),
-        ]);
+        const orderSnap = await tx.get(orderRef);
 
         // If the order only exists in Express memory (e.g. guest checkout prior to sign-in),
         // skip Firestore document update so tx.update never runs against a null resource.
@@ -2528,24 +2524,6 @@ export default function App() {
           downloadToken: safeToken,
           updatedAt: serverTimestamp(),
         });
-
-        if (
-          ledgerSnap.exists() &&
-          (isSuperAdminVerified || ledgerSnap.data().sellerId === currentUser.uid)
-        ) {
-          const ledgerUpdate: Record<string, unknown> = {
-            paymentStatus: newStatus,
-            verificationMode: updatedVerificationMode,
-            commissionStatus: updatedCommissionStatus,
-            updatedAt: serverTimestamp(),
-          };
-          if (newStatus === 'Refunded') {
-            ledgerUpdate.platformCommissionMinor = 0;
-            ledgerUpdate.sellerShareBeforeFeesMinor = 0;
-            ledgerUpdate.sellerNetEarningsMinor = 0;
-          }
-          tx.update(ledgerRef, ledgerUpdate);
-        }
 
         tx.set(auditRef, {
           auditId,
