@@ -2919,9 +2919,11 @@ async function requireAuthenticatedUser(
 ): Promise<VerifiedAuthUser | null> {
   const user = await extractVerifiedCaller(req);
   if (!user) {
+    // Keep the strict verification requirement, but return a recoverable
+    // account-session error rather than surfacing internal token jargon.
     res.status(401).json({
-      error:
-        'Unauthorized: A cryptographically verified Firebase Authentication Bearer ID token is required. Raw UIDs, forged tokens, and unauthenticated requests are rejected.',
+      code: 'auth/session-invalid',
+      error: 'Your sign-in session has expired or could not be verified. Please sign in again.',
     });
     return null;
   }
