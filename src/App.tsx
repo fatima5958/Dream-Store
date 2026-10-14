@@ -2093,14 +2093,22 @@ export default function App() {
   };
 
   const handleDeleteProduct = async (productId: string) => {
-    setProducts((prev) => prev.filter((p) => p.id !== productId));
-    if (currentUser && hasFirebaseSdkSession()) {
-      try {
-        await deleteDoc(doc(db, 'products', productId));
-      } catch (err) {
-        reportFirestoreError(err, OperationType.DELETE, `products/${productId}`);
-      }
+    if (!currentUser) throw new Error('Sign in to manage products.');
+    const headers = await getAuthHeaders();
+    const response = await fetch('/api/products/delete', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ productId }),
+    });
+    if (!response.ok) {
+      const details = await response.json().catch(() => ({}));
+      throw new Error(details.error || 'Product could not be removed. Please try again.');
     }
+    // Keep original files and purchase history for existing buyers.
+    // Only remove the item from visible catalog after the durable server write.
+    setProducts((prev) => prev.filter((p) => p.id !== productId));
+    setCart((prev) => prev.filter((item) => item.product.id !== productId));
+    if (selectedProductId === productId) setSelectedProductId('');
   };
 
   const handleSavePaymentSettings = async (settings: SellerPaymentSettings) => {
