@@ -486,39 +486,63 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
       setProductFormError(message);
       return;
     }
-    const sellerUid = auth.currentUser?.uid;
-    if (!sellerUid || sellerUid !== currentUserUid || !auth.currentUser?.emailVerified) {
-      setProductFormError('Sign in with a verified Firebase account to upload files securely.');
-      setFileUploadStatus('Secure upload requires verified Firebase sign-in.');
+    if (!currentUserUid) {
+      setProductFormError('Sign in with a verified seller account before uploading.');
+      setFileUploadStatus('Sign in to upload.');
       return;
     }
 
     setIsUploadingDigitalFile(true);
     setFileUploadStatus('Uploading original file (0%)...');
     const productId = editingProductId || draftProductId;
-    const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
-    const objectPath = `deliverables/${sellerUid}/${productId}/${Date.now()}-${safeName}`;
     try {
-      const task = uploadBytesResumable(storageRef(storage, objectPath), file, { contentType });
-      await new Promise<void>((resolve, reject) => {
-        task.on(
-          'state_changed',
-          (snapshot) => {
-            const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-            setFileUploadStatus(`Uploading original file (${pct}%)...`);
+      let privateReference = '';
+      const sdkUid = auth.currentUser?.uid;
+      if (sdkUid === currentUserUid && auth.currentUser?.emailVerified) {
+        const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
+        const objectPath = `deliverables/${sdkUid}/${productId}/${Date.now()}-${safeName}`;
+        const task = uploadBytesResumable(storageRef(storage, objectPath), file, { contentType });
+        await new Promise<void>((resolve, reject) => {
+          task.on(
+            'state_changed',
+            (snapshot) => {
+              const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+              setFileUploadStatus(`Uploading original file (${pct}%)...`);
+            },
+            reject,
+            resolve
+          );
+        });
+        privateReference = `storage://${objectPath}`;
+      } else {
+        // Server-email accounts do not have a Firebase browser SDK session.
+        // Upload the original bytes through a verified seller-only backend route.
+        const headers = await getAuthHeaders();
+        const upload = await fetch('/api/uploads/product', {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'Content-Type': 'application/octet-stream',
+            'X-Product-ID': productId,
+            'X-Store-ID': config.storeId,
+            'X-File-Name': encodeURIComponent(file.name),
+            'X-File-Type': contentType,
           },
-          reject,
-          resolve
-        );
-      });
+          body: file,
+        });
+        const result = await upload.json().catch(() => ({}));
+        if (!upload.ok || !String(result.fileReference || '').startsWith('storage://')) {
+          throw new Error(result.error || 'The original file could not be uploaded.');
+        }
+        privateReference = result.fileReference;
+      }
       const sizeLabel = file.size >= 1024 * 1024
         ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
         : `${Math.ceil(file.size / 1024)} KB`;
       setProdFileName(file.name);
       setProdFileType(contentType);
       setProdFileSize(sizeLabel);
-      // Private object reference, NOT a public download URL or a Firestore base64 blob.
-      setProdFileDataUrl(`storage://${objectPath}`);
+      setProdFileDataUrl(privateReference);
       setFileUploadStatus(`Original file securely uploaded: ${file.name} (${sizeLabel})`);
     } catch {
       setProdFileDataUrl('');
