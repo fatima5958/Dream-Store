@@ -138,3 +138,16 @@ test('auth restoration never promotes a locally cached role when backend identit
   assert.match(restoration, /Account verification is temporarily unavailable/);
   assert.match(restoration, /Could not verify your account/);
 });
+
+test('returning Firebase users never inherit seller or buyer privileges from public Firestore cache', () => {
+  const start = app.indexOf('// 2. Listen to Firebase & Email Authentication state');
+  const end = app.indexOf('// 3.', start);
+  assert.ok(start >= 0, 'authentication restoration exists');
+  const restoration = app.slice(start, end > start ? end : start + 21000);
+  assert.doesNotMatch(restoration, /existingRole = 'seller'\s*;(?=[\s\S]*?storeSnap)/);
+  assert.doesNotMatch(restoration, /const userSnap = await getDoc\(doc\(db, 'users', user\.uid\)\)/);
+  assert.match(restoration, /if \(!existingRole\) \{\s*\/\/ Role and onboarding state must come from the verified backend/);
+  assert.match(restoration, /if \(!existingRole\) \{\s*setUserProfile\(null\)/);
+  assert.match(restoration, /const profRes = await fetch\('\/api\/users\/profile'/);
+  assert.match(restoration, /profRes\.status === 401/);
+});
