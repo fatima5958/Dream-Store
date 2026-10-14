@@ -14,6 +14,7 @@ import {
 } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import { getFirestore as getAdminFirestore, type Firestore as AdminFirestore } from 'firebase-admin/firestore';
+import { getStorage as getAdminStorage } from 'firebase-admin/storage';
 
 dotenv.config();
 
@@ -32,6 +33,7 @@ let FIREBASE_PROJECT_ID = 'dreamstore';
 let FIREBASE_AUTH_DOMAIN = '';
 let FIREBASE_OAUTH_CLIENT_ID = '';
 let FIRESTORE_DATABASE_ID = '(default)';
+let FIREBASE_STORAGE_BUCKET = '';
 try {
   const cfgRaw = fs.readFileSync(path.join(__dirname, 'firebase-applet-config.json'), 'utf8');
   const parsedCfg = JSON.parse(cfgRaw);
@@ -40,6 +42,7 @@ try {
   FIREBASE_AUTH_DOMAIN = parsedCfg.authDomain || `${FIREBASE_PROJECT_ID}.firebaseapp.com`;
   FIREBASE_OAUTH_CLIENT_ID = parsedCfg.oAuthClientId || '';
   FIRESTORE_DATABASE_ID = parsedCfg.firestoreDatabaseId || '(default)';
+  FIREBASE_STORAGE_BUCKET = parsedCfg.storageBucket || '';
 } catch {
   FIREBASE_API_KEY = '';
 }
@@ -8061,6 +8064,32 @@ async function startServer() {
     }
 
     let protectedDeliverable = serverProductDeliverables.get(String(productId));
+    // Buyers cannot fetch private deliverable metadata directly. Only the backend
+    // reads the original file pointer after verifying this order/payment token.
+    if (!protectedDeliverable && adminFirestoreDb) {
+      try {
+        const privateSnap = await adminFirestoreDb.collection('products')
+          .doc(String(productId)).collection('deliverables').doc('main').get();
+        if (privateSnap.exists) {
+          const privateRecord = privateSnap.data() || {};
+          if (
+            String(privateRecord.ownerId || '') === ledgerEntry.sellerId &&
+            String(privateRecord.productId || '') === String(productId) &&
+            typeof privateRecord.fileDataUrl === 'string'
+          ) {
+            protectedDeliverable = {
+              fileName: String(privateRecord.fileName || 'Digital-Download').slice(0, 255),
+              fileType: String(privateRecord.fileMimeType || 'application/octet-stream').slice(0, 120),
+              fileSizeLabel: '',
+              fileDataUrl: privateRecord.fileDataUrl,
+            };
+            serverProductDeliverables.set(String(productId), protectedDeliverable);
+          }
+        }
+      } catch {
+        // Fail closed if authoritative metadata cannot be found.
+      }
+    }
     if (!protectedDeliverable && FIREBASE_PROJECT_ID && FIREBASE_API_KEY && productId) {
       try {
         const delivUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${encodeURIComponent(
@@ -8092,6 +8121,51 @@ async function startServer() {
         }
       } catch {
         // Ignore fallback deliverable fetch error
+      }
+    }
+
+    if (protectedDeliverable?.fileDataUrl?.startsWith('storage://')) {
+      const objectPath = protectedDeliverable.fileDataUrl.slice('storage://'.length);
+      const allowedPrefix = `deliverables/${ledgerEntry.sellerId}/${String(productId)}/`;
+      const safeObject = objectPath.startsWith(allowedPrefix) &&
+        /^[A-Za-z0-9._/-]+$/.test(objectPath) &&
+        objectPath.slice(allowedPrefix.length).length > 0 &&
+        !objectPath.slice(allowedPrefix.length).includes('/');
+      if (!safeObject || !FIREBASE_STORAGE_BUCKET || !adminFirestoreDb) {
+        res.status(403).json({ allowed: false, error: 'Private file reference is not authorized.' });
+        return;
+      }
+      try {
+        // Firebase Admin never exposes a public download URL or cross-seller file.
+        const object = getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).file(objectPath);
+        const [metadata] = await object.getMetadata();
+        const contentSize = Number(metadata.size || 0);
+        const allowedMime = new Set([
+          'application/pdf', 'application/zip', 'application/epub+zip',
+          'text/plain', 'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ]);
+        const contentType = String(metadata.contentType || '');
+        if (contentSize < 1 || contentSize > 5 * 1024 * 1024 || !allowedMime.has(contentType)) {
+          res.status(422).json({ allowed: false, error: 'Stored original file has invalid size or type.' });
+          return;
+        }
+        const [bytes] = await object.download();
+        if (bytes.length !== contentSize) {
+          res.status(503).json({ allowed: false, error: 'Original file integrity check failed.' });
+          return;
+        }
+        protectedDeliverable = {
+          ...protectedDeliverable,
+          fileType: contentType,
+          fileDataUrl: `data:${contentType};base64,${bytes.toString('base64')}`,
+        };
+      } catch {
+        res.status(503).json({
+          allowed: false,
+          error: 'Original file could not be retrieved from secure storage. Try again later.',
+        });
+        return;
       }
     }
 
