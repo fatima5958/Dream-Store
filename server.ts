@@ -5828,29 +5828,55 @@ async function startServer() {
       return;
     }
 
-    const isFree =
-      productPayload.isFree !== undefined
-        ? Boolean(productPayload.isFree)
-        : Number(productPayload.priceUsd) === 0 && Number(productPayload.pricePkr) === 0;
+    // The seller must provide a real product title, valid category and explicit
+    // prices. Never invent an ebook, a price or publish state on their behalf.
+    const title = String(productPayload.title || '').trim();
+    const productId = String(productPayload.id || '');
+    const requestedStatus = String(productPayload.status || (wantsPublished ? 'Available' : 'Draft'));
+    const allowedCategories = new Set(['Ebooks', 'Workbooks', 'Planners', 'Templates', 'Bundles']);
+    if (
+      !/^[A-Za-z0-9_-]{2,128}$/.test(productId) ||
+      title.length < 2 ||
+      !allowedCategories.has(String(productPayload.category || '')) ||
+      !['Available', 'Coming Soon', 'Draft'].includes(requestedStatus) ||
+      productPayload.published === undefined
+    ) {
+      res.status(422).json({ error: 'Enter a real title, valid category, product ID and publish state.' });
+      return;
+    }
+    const isFree = productPayload.isFree === true;
+    const givenUsd = Number(productPayload.priceUsd);
+    const givenPkr = Number(productPayload.pricePkr);
+    if (!isFree && (
+      !Number.isFinite(givenUsd) || givenUsd < 1 ||
+      !Number.isFinite(givenPkr) || givenPkr < 100
+    )) {
+      res.status(422).json({ error: 'Set your own valid USD and PKR prices, or mark the product Free.' });
+      return;
+    }
+    if (wantsPublished && (store.status !== 'Active' || requestedStatus !== 'Available')) {
+      res.status(403).json({ error: 'Only available products from an active store can be published.' });
+      return;
+    }
     const record: ServerProductRecord = {
       id: String(productPayload.id),
       storeId: String(productPayload.storeId),
       ownerId: effectiveOwnerId,
-      title: String(productPayload.title || 'Untitled Product').slice(0, 160),
-      category: String(productPayload.category || 'Ebooks'),
+      title: title.slice(0, 160),
+      category: String(productPayload.category),
       subtitle: productPayload.subtitle ? String(productPayload.subtitle).slice(0, 300) : undefined,
       description: productPayload.description
         ? String(productPayload.description).slice(0, 3000)
         : undefined,
       isFree,
-      priceUsd: isFree ? 0 : Math.max(1, Number(productPayload.priceUsd) || 1),
-      pricePkr: isFree ? 0 : Math.max(100, Number(productPayload.pricePkr) || 278),
+      priceUsd: isFree ? 0 : givenUsd,
+      pricePkr: isFree ? 0 : givenPkr,
       published: wantsPublished,
-      status: productPayload.status || 'Available',
+      status: requestedStatus as ServerProductRecord['status'],
       image: productPayload.image ? String(productPayload.image) : undefined,
-      fileName: String(productPayload.fileName || 'Document.pdf'),
-      fileType: String(productPayload.fileType || 'PDF Document'),
-      fileSizeLabel: String(productPayload.fileSizeLabel || '2.4 MB'),
+      fileName: String(productPayload.fileName || ''),
+      fileType: String(productPayload.fileType || ''),
+      fileSizeLabel: String(productPayload.fileSizeLabel || ''),
     };
     // A digital listing must never be published unless its original private file
     // exists in the verified seller's Firebase Storage namespace. Metadata and
