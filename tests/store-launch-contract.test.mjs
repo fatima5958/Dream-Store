@@ -47,3 +47,16 @@ test('Firebase email signup requests verification, without hardcoded identity', 
   assert.match(onboarding, /An email address is required/);
   assert.doesNotMatch(server, /displayName: 'Fatima'/);
 });
+
+test('new production sessions never inherit a demo seller, personal branding or wallet', () => {
+  assert.match(app, /const NEUTRAL_PUBLIC_STORE_CONFIG: StoreConfig/);
+  const neutral = app.slice(app.indexOf('const NEUTRAL_PUBLIC_STORE_CONFIG'), app.indexOf('function buildFreshUserStoreConfig'));
+  assert.match(neutral, /storeId: ''/);
+  assert.match(neutral, /storeSlug: ''/);
+  assert.match(neutral, /storeName: ''/);
+  assert.match(neutral, /ownerEmail: ''/);
+  const create = app.slice(app.indexOf('function buildFreshUserStoreConfig'), app.indexOf('export default function App'));
+  assert.match(create, /\.\.\.NEUTRAL_PUBLIC_STORE_CONFIG/);
+  assert.doesNotMatch(create, /fatima\.tech|ananya\.creates|displayStoreName/);
+  assert.match(app, /import\.meta\.env\.DEV \? INITIAL_STORE_CONFIG\.storeId : ''/);
+});
