@@ -111,6 +111,21 @@ function initializeStableServerSigningSecret(): string {
   return newSecret;
 }
 
+// Production instances must share a stable secret (e.g. Cloud Run Secret Manager).
+// A secret generated under /tmp can be different on restart and would invalidate
+// paid buyer downloads. Never accept paid orders using an ephemeral signing key.
+const PROVIDED_SIGNING_SECRET = (
+  process.env.SERVER_SIGNING_SECRET ||
+  process.env.DOWNLOAD_SIGNING_SECRET ||
+  process.env.TOKEN_SIGNING_SECRET ||
+  ''
+).trim();
+const HAS_DURABLE_PRODUCTION_SIGNING_SECRET =
+  PROVIDED_SIGNING_SECRET.length >= 32 &&
+  !['default', 'placeholder', 'change_me'].some((bad) =>
+    PROVIDED_SIGNING_SECRET.toLowerCase().includes(bad)
+  );
+
 const SIGNING_SECRET = initializeStableServerSigningSecret();
 
 const SUPPORTED_CURRENCIES: Record<string, number> = {
@@ -1208,6 +1223,12 @@ async function hydrateFinancialLedgerFromFirestore(): Promise<boolean> {
 const financialLedgerHydration = hydrateFinancialLedgerFromFirestore();
 
 async function ensureFinancialDatabaseReady(res: express.Response): Promise<boolean> {
+  if (process.env.NODE_ENV === 'production' && !HAS_DURABLE_PRODUCTION_SIGNING_SECRET) {
+    res.status(503).json({
+      error: 'Secure downloads are not configured. The operator must configure a durable SERVER_SIGNING_SECRET before enabling orders.',
+    });
+    return false;
+  }
   if (!adminFirestoreDb || !(await financialLedgerHydration) || !ledgerHydrationFinished || !ledgerHydrationSucceeded) {
     res.status(503).json({ error: 'Secure order database is unavailable. No checkout or payment change was accepted.' });
     return false;
