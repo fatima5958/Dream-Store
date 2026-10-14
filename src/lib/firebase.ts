@@ -9,6 +9,7 @@ import {
   getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
   updateProfile,
   sendPasswordResetEmail,
   signOut,
@@ -879,7 +880,14 @@ export async function signUpWithEmailAccount(
       try {
         await updateProfile(cred.user, { displayName });
       } catch {
-        // Ignore profile update failure
+        // Display name can be updated later.
+      }
+    }
+    if (cred.user && !cred.user.emailVerified) {
+      try {
+        await sendEmailVerification(cred.user);
+      } catch (err) {
+        console.warn('Email verification could not be sent. Product uploads remain locked until verified.', err);
       }
     }
     return cred.user;
