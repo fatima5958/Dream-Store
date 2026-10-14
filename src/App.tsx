@@ -3161,7 +3161,7 @@ export default function App() {
           orders={orders}
           currentUserUid={currentUser?.uid || null}
           currentUserName={userProfile?.displayName || currentUser?.displayName || null}
-          currentUserEmail={userProfile?.email || currentUser?.email || null}
+          currentUserEmail={currentUser?.email || userProfile?.email || null}
           onSignInGoogle={handleSignInGoogle}
           gatewayStatus={gatewayStatus}
           sellerPaymentSettings={sellerPaymentSettings}
