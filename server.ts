@@ -4411,8 +4411,8 @@ async function startServer() {
       const adminProfile: ServerUserProfileRecord = {
         uid: user.uid,
         role: 'super_admin',
-        displayName: 'Fatima',
-        email: user.email || SUPER_ADMIN_EMAIL,
+        displayName: String(user.displayName || (user.email ? user.email.split('@')[0] : 'Administrator')).slice(0, 120),
+        email: user.email || '',
         onboardingCompleted: true,
         storeId: `store-${user.uid.slice(0, 20)}`,
         createdAtIso: new Date().toISOString(),
