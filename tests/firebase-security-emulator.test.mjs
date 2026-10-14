@@ -208,3 +208,35 @@ test('Seller can create an incomplete draft but cannot publish or delete directl
   assert.equal(ownDraft.exists(), true);
   await assertFails(getDoc(doc(user('other-buyer').firestore(), 'products', 'draft-only-product')));
 });
+
+test('Administrator access requires both signed Admin SDK claims and verified email', async () => {
+  const claimUser = (uid, claims) => env.authenticatedContext(uid, claims);
+  const admin = claimUser('operator-admin', {
+    email_verified: true, role: 'super_admin', superAdmin: true,
+  });
+  const profileOnly = claimUser('unauthorized-admin-claim', {
+    email_verified: true, role: 'super_admin',
+  });
+  const unverified = claimUser('operator-not-verified', {
+    email_verified: false, role: 'super_admin', superAdmin: true,
+  });
+  const privateDoc = (ctx) => doc(ctx.firestore(), 'products', 'digital-one', 'deliverables', 'main');
+  await assertSucceeds(getDoc(privateDoc(admin)));
+  await assertFails(getDoc(privateDoc(profileOnly)));
+  await assertFails(getDoc(privateDoc(unverified)));
+});
+
+test('Admin custom claims can read another seller private Storage only if verified', async () => {
+  const path = 'deliverables/seller-one/digital-one/admin-claims.pdf';
+  await assertSucceeds(uploadBytes(storageObject(user('seller-one'), path), makePdf(1024), {
+    contentType: 'application/pdf',
+  }));
+  const admin = env.authenticatedContext('operator-admin', {
+    email_verified: true, role: 'super_admin', superAdmin: true,
+  });
+  const unverified = env.authenticatedContext('operator-unverified', {
+    email_verified: false, role: 'super_admin', superAdmin: true,
+  });
+  await assertSucceeds(getBytes(storageObject(admin, path)));
+  await assertFails(getBytes(storageObject(unverified, path)));
+});
