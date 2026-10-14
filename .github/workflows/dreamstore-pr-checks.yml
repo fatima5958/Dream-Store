@@ -26,8 +26,8 @@ jobs:
         run: bun run lint
       - name: Production Vite build
         run: bun run build
-      - name: Static 5MB storage and security contract checks
-        run: bun test tests/secure-deliverables-contract.test.mjs
+      - name: Static 5MB storage, launch onboarding and safety contracts
+        run: bun test tests/secure-deliverables-contract.test.mjs tests/store-launch-contract.test.mjs
 
       - name: Set up Java for Firebase emulators
         uses: actions/setup-java@v4
