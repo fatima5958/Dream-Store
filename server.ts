@@ -3706,9 +3706,6 @@ async function startServer() {
     res.json({
       status: 'ok',
       service: 'DreamStore Multi-Vendor API',
-      signingSecretEntropyBits: SIGNING_SECRET.length * 4,
-      persistentLedgerRecords: persistentLedger.size,
-      immutableAuditLogs: immutableAuditLog.length,
       timestamp: new Date().toISOString(),
     });
   });
@@ -4963,12 +4960,16 @@ async function startServer() {
 
   app.post('/api/stores/visit', async (req, res) => {
     const rawTarget = String(req.body?.storeId || req.body?.storeSlug || '').trim();
-    if (!rawTarget) {
-      res.status(400).json({ error: 'storeId or storeSlug is required.' });
+    if (!rawTarget || rawTarget.length > 100) {
+      res.status(400).json({ error: 'Valid storeId or storeSlug is required.' });
       return;
     }
     const matched = await resolveVerifiedStoreRecord(rawTarget);
-    const targetStoreId = matched?.storeId || rawTarget;
+    if (!matched || matched.status !== 'Active') {
+      res.status(404).json({ error: 'Public store not found.' });
+      return;
+    }
+    const targetStoreId = matched.storeId;
     const stats = recordStoreVisit(targetStoreId, Boolean(req.body?.isCheckoutView));
     res.json({
       ok: true,
