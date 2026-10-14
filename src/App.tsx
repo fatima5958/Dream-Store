@@ -17,7 +17,6 @@ import {
   calculateCommissionMinor,
   CartItem,
   CommissionStatus,
-  createSampleGuideDataUrl,
   CurrencyCode,
   formatMinorToMajor,
   GatewayServerStatus,
@@ -1941,39 +1940,18 @@ export default function App() {
   };
 
   const handleAddProduct = async (newProduct: Product) => {
-    setProducts((prev) => [newProduct, ...prev]);
-    if (currentUser) {
-      try {
-        const authHeaders = await getAuthHeaders();
-        fetch('/api/products/upsert', {
-          method: 'POST',
-          headers: authHeaders,
-          body: JSON.stringify({
-            id: newProduct.id,
-            storeId: config.storeId,
-            title: newProduct.title,
-            category: newProduct.category,
-            subtitle: newProduct.subtitle,
-            description: newProduct.description,
-            isFree: Boolean(newProduct.isFree),
-            priceUsd: newProduct.isFree ? 0 : Math.max(1, Number(newProduct.priceUsd)),
-            pricePkr: newProduct.isFree ? 0 : Math.max(100, Number(newProduct.pricePkr)),
-            published: Boolean(newProduct.published),
-            image: newProduct.image,
-            fileName: newProduct.fileName,
-            fileType: newProduct.fileType,
-            fileSizeLabel: newProduct.fileSizeLabel,
-            fileDataUrl: newProduct.fileDataUrl,
-          }),
-        }).catch(() => {});
-      } catch {
-        // Ignore network error if offline
-      }
+    const fileDataUrl = String(newProduct.fileDataUrl || '');
+    if (newProduct.published && !fileDataUrl.startsWith('data:')) {
+      throw new Error('Upload the original file before publishing a digital product.');
+    }
+    if (fileDataUrl.length >= 700000) {
+      throw new Error('Original file is too large for beta storage. The product was not published.');
+    }
+    if (!currentUser) throw new Error('Sign in before adding a product.');
 
-      if (!hasFirebaseSdkSession()) return;
-      const prodRef = doc(db, 'products', newProduct.id);
+    if (hasFirebaseSdkSession()) {
       try {
-        await setDoc(prodRef, {
+        await setDoc(doc(db, 'products', newProduct.id), {
           storeId: config.storeId,
           ownerId: currentUser.uid,
           title: newProduct.title.slice(0, 160),
@@ -1992,22 +1970,48 @@ export default function App() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-
-        await setDoc(doc(db, 'products', newProduct.id, 'deliverables', 'main'), {
-          productId: newProduct.id,
-          ownerId: currentUser.uid,
-          fileName: newProduct.fileName.slice(0, 255),
-          fileMimeType: 'text/plain',
-          fileDataUrl: (
-            newProduct.fileDataUrl ||
-            createSampleGuideDataUrl(newProduct.title, newProduct.subtitle)
-          ).slice(0, 790000),
-          updatedAt: serverTimestamp(),
-        });
+        if (fileDataUrl) {
+          await setDoc(doc(db, 'products', newProduct.id, 'deliverables', 'main'), {
+            productId: newProduct.id,
+            ownerId: currentUser.uid,
+            fileName: newProduct.fileName.slice(0, 255),
+            fileMimeType: newProduct.fileType.slice(0, 100) || 'application/octet-stream',
+            fileDataUrl,
+            updatedAt: serverTimestamp(),
+          });
+        }
       } catch (err) {
         reportFirestoreError(err, OperationType.CREATE, `products/${newProduct.id}`);
+        throw new Error('Product could not be saved to Firebase. Please try again.');
       }
     }
+
+    const authHeaders = await getAuthHeaders();
+    const response = await fetch('/api/products/upsert', {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        id: newProduct.id,
+        storeId: config.storeId,
+        title: newProduct.title,
+        category: newProduct.category,
+        subtitle: newProduct.subtitle,
+        description: newProduct.description,
+        isFree: Boolean(newProduct.isFree),
+        priceUsd: newProduct.isFree ? 0 : Math.max(1, Number(newProduct.priceUsd)),
+        pricePkr: newProduct.isFree ? 0 : Math.max(100, Number(newProduct.pricePkr)),
+        published: Boolean(newProduct.published),
+        image: newProduct.image,
+        fileName: newProduct.fileName,
+        fileType: newProduct.fileType,
+        fileSizeLabel: newProduct.fileSizeLabel,
+        fileDataUrl,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error('The server could not publish this product. Please try again.');
+    }
+    setProducts((prev) => [newProduct, ...prev]);
   };
 
   const handleUpdateProduct = async (productId: string, partial: Partial<Product>) => {
@@ -2774,67 +2778,23 @@ export default function App() {
       };
     }
 
-    // Fetch protected deliverable from Firestore
-    let fileDataUrl = '';
-    let fileName = 'DreamStore-Digital-Guide.txt';
-    const matchingProd = products.find((p) => p.id === order.primaryProductId);
-    if (matchingProd) {
-      fileName = matchingProd.fileName;
-      fileDataUrl =
-        matchingProd.fileDataUrl ||
-        createSampleGuideDataUrl(matchingProd.title, matchingProd.subtitle);
+    // Download the actual authorized original supplied by the server. Never fabricate a sample.
+    const fileDataUrl = String(verifyData.fileDataUrl || '');
+    const fileName = String(verifyData.fileName || 'Digital-Download').slice(0, 255);
+    if (!/^data:[a-z0-9.+/-]+(?:;[a-z0-9=+\-]+)*[,;]/i.test(fileDataUrl)) {
+      return {
+        ok: false,
+        message: 'Original product file is unavailable. Please contact the seller.',
+      };
     }
 
-    try {
-      const delivSnap = await getDoc(
-        doc(db, 'products', order.primaryProductId, 'deliverables', 'main')
-      );
-      if (delivSnap.exists()) {
-        const d = delivSnap.data();
-        fileName = d.fileName || fileName;
-        fileDataUrl = d.fileDataUrl || fileDataUrl;
-      }
-    } catch {
-      // Fallback to generated verified text if deliverable doc not yet seeded
-    }
-
-    if (!fileDataUrl) {
-      fileDataUrl = createSampleGuideDataUrl(order.itemTitlesSummary, 'Verified Order');
-    }
-
-    // Increment downloadCount in local UI state & Firestore
-    const nextDownloadCount = (verifyData.downloadCount as number) || order.downloadCount + 1;
+    const nextDownloadCount = Number(verifyData.downloadCount) || order.downloadCount + 1;
     setOrders((prev) =>
       prev.map((o) =>
         o.id === order.id ? { ...o, downloadCount: nextDownloadCount } : o
       )
     );
 
-    if (currentUser) {
-      try {
-        const orderDocRef = doc(db, 'orders', order.id);
-        const orderSnap = await getDoc(orderDocRef);
-        if (orderSnap.exists()) {
-          const ordData = orderSnap.data();
-          const currentFsCount = Number(ordData.downloadCount || 0);
-          const maxFsCount = Number(ordData.maxDownloads || 5);
-          if (
-            ordData.paymentStatus === 'Paid' &&
-            currentFsCount + 1 <= maxFsCount &&
-            (ordData.buyerId === currentUser.uid || isSuperAdminVerified)
-          ) {
-            await updateDoc(orderDocRef, {
-              downloadCount: currentFsCount + 1,
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-      } catch (err) {
-        reportFirestoreError(err, OperationType.UPDATE, `orders/${order.id}`);
-      }
-    }
-
-    // Trigger browser download
     const a = document.createElement('a');
     a.href = fileDataUrl;
     a.download = fileName;
@@ -2844,7 +2804,7 @@ export default function App() {
 
     return {
       ok: true,
-      message: `Downloading "${fileName}" (${order.downloadCount + 1}/${order.maxDownloads} downloads used).`,
+      message: `Downloading "${fileName}" (${nextDownloadCount}/${order.maxDownloads} downloads used).`,
     };
   };
 
