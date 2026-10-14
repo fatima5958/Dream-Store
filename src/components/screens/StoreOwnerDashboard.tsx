@@ -36,7 +36,6 @@ import {
   calculateCommissionMinor,
   CommissionInvoice,
   CommissionStatus,
-  createSampleGuideDataUrl,
   CURRENCY_META,
   CurrencyCode,
   CUSTOM_ACCENT_PRESETS,
@@ -215,9 +214,9 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
   const [prodPricePkr, setProdPricePkr] = useState<number>(8050);
   const [prodPublished, setProdPublished] = useState(true);
   const [prodImage, setProdImage] = useState<string>(products[0]?.image || config.heroImage);
-  const [prodFileName, setProdFileName] = useState('Digital-Guide.pdf');
-  const [prodFileType, setProdFileType] = useState('PDF Document');
-  const [prodFileSize, setProdFileSize] = useState('4.2 MB');
+  const [prodFileName, setProdFileName] = useState('');
+  const [prodFileType, setProdFileType] = useState('');
+  const [prodFileSize, setProdFileSize] = useState('');
   const [prodFileDataUrl, setProdFileDataUrl] = useState('');
 
   // Orders Filter State
@@ -412,9 +411,9 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
     setProdPricePkr(8050);
     setProdPublished(true);
     setProdImage(products[0]?.image || config.heroImage);
-    setProdFileName('Mindful-Guide.pdf');
-    setProdFileType('PDF Guide');
-    setProdFileSize('5.4 MB');
+    setProdFileName('');
+    setProdFileType('');
+    setProdFileSize('');
     setProdFileDataUrl('');
     setShowProductModal(true);
   };
@@ -460,23 +459,43 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
   const handleDigitalFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setProdFileDataUrl('');
+    setProductFormError(null);
+    // Current Firestore document storage supports only small beta files.
+    // Never silently replace a larger buyer deliverable with sample content.
+    const MAX_BETA_FILE_BYTES = 450 * 1024;
+    if (file.size === 0 || file.size > MAX_BETA_FILE_BYTES) {
+      const message = file.size === 0
+        ? 'The selected file is empty. Please choose a valid file.'
+        : 'This file is too large for beta uploads (450 KB maximum). Larger-file storage is coming soon.';
+      setProdFileName('');
+      setProdFileType('');
+      setProdFileSize('');
+      setFileUploadStatus(message);
+      setProductFormError(message);
+      return;
+    }
     setFileUploadStatus('Preparing digital file...');
     setProdFileName(file.name);
-    setProdFileType(file.type || 'Digital Archive');
+    setProdFileType(file.type || 'application/octet-stream');
     const kb = Math.max(1, Math.round(file.size / 1024));
     const sizeLabel = kb > 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`;
     setProdFileSize(sizeLabel);
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === 'string' && reader.result.length < 700000) {
-        setProdFileDataUrl(reader.result);
-      } else {
-        setProdFileDataUrl(createSampleGuideDataUrl(prodTitle || file.name, prodSubtitle));
+      if (typeof reader.result !== 'string' || !reader.result.startsWith('data:') || reader.result.length >= 700000) {
+        setProdFileDataUrl('');
+        setFileUploadStatus('Upload failed: file cannot be stored safely. Select a smaller file.');
+        setProductFormError('The original product file was not saved. Please choose a smaller file.');
+        return;
       }
+      setProdFileDataUrl(reader.result);
       setFileUploadStatus(`File ready: ${file.name} (${sizeLabel})`);
     };
     reader.onerror = () => {
-      setFileUploadStatus('Could not read digital file. Please select a valid PDF, ZIP, or EPUB.');
+      setProdFileDataUrl('');
+      setFileUploadStatus('Could not read the original digital file. Please try again.');
+      setProductFormError('Upload failed. Your product was not published.');
     };
     reader.readAsDataURL(file);
   };
@@ -484,6 +503,10 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
   const handleSaveProductForm = async (e: React.FormEvent) => {
     e.preventDefault();
     setProductFormError(null);
+    if (prodPublished && !editingProductId && !prodFileDataUrl.startsWith('data:')) {
+      setProductFormError('Upload a real digital file before publishing this product. Demo files are never substituted.');
+      return;
+    }
     if (!prodTitle.trim() || prodTitle.trim().length < 2) {
       setProductFormError('Please enter a product title (at least 2 characters).');
       return;
@@ -538,12 +561,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
         fileName: prodFileName,
         fileType: prodFileType,
         fileSizeLabel: prodFileSize,
-        fileDataUrl:
-          prodFileDataUrl ||
-          createSampleGuideDataUrl(
-            prodTitle.trim(),
-            prodSubtitle.trim() || 'Digital Product Download'
-          ),
+        fileDataUrl: prodFileDataUrl,
       };
 
       if (editingProductId) {
@@ -3272,7 +3290,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
                 <FileText className="w-5 h-5 text-[#6B4EA2] mb-1.5" />
                 <span className="text-[14px] font-extrabold text-[#50352F]">Digital File</span>
                 <span className="ds-helper text-[#6B4EA2] font-bold truncate max-w-full mt-0.5">
-                  {fileUploadStatus || `${prodFileName} (${prodFileSize})`}
+                  {fileUploadStatus || (prodFileName ? `${prodFileName} (${prodFileSize})` : 'Choose PDF, EPUB, ZIP or document (max 450 KB)')}
                 </span>
                 <input
                   type="file"
