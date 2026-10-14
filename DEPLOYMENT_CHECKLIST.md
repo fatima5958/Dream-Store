@@ -27,6 +27,16 @@ Firebase Admin connectivity and a persistent signing secret.
 Buyer delivery emails are now required to match the authenticated buyer's
 verified account email; an arbitrary recipient cannot be supplied in checkout.
 
+## Administrator authorization setup (required for migration)
+
+Security rules no longer embed any personal Firebase UID. They require a **verified Firebase ID token** with BOTH custom claims `role: 'super_admin'` and `superAdmin: true`. The application backend continues to require the single matching `SUPER_ADMIN_UID` configured in the service environment and cryptographically verified via Firebase Admin. This is not a user-editable Firestore profile role.
+
+- Verify `SUPER_ADMIN_UID` and `SUPER_ADMIN_BOOTSTRAP_SECRET` are configured privately.
+- Use the existing protected backend admin-bootstrap endpoint to assign both claims to the configured UID; it must report `customClaimAssigned: true`. Never publish the bootstrap secret or the UID in app pages/rules.
+- The admin must **refresh their Firebase ID token / sign out and back in** after the claim is assigned.
+- Confirm seller/buyer tokens without BOTH claims cannot perform admin-only reads/writes. CI emulator tests check verified and unverified claim combinations.
+- Deploy updated Firestore/Storage rules only after staging tests, otherwise an existing admin account with no claims will lose access.
+
 ## Blocking production issues
 
 1. **Legacy custom email accounts are saved under ephemeral OS `/tmp`**. A Cloud Run restart, replacement instance, or scale-out may lose accounts, sessions and pending reset tokens. Enable Firebase Auth Email/Password and migrate/verify existing custom-email users, or implement a durable securely managed account/session store. **Do not onboard paying customers via the legacy fallback until solved.**
