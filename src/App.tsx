@@ -133,6 +133,8 @@ function buildFreshUserStoreConfig(user: {
     ...INITIAL_STORE_CONFIG,
     storeId: userStoreId,
     ownerId: user.uid,
+    ownerEmail: user.email || '',
+    socialWebsite: '',
     storeName: displayStoreName,
     storeSlug: slugWithSuffix,
     ownerName: rawName.slice(0, 100),
@@ -189,10 +191,13 @@ export default function App() {
   const [activeSellerTab, setActiveSellerTab] = useState<OwnerTab>('overview');
   const [blockedAccessNotice, setBlockedAccessNotice] = useState<string | null>(null);
 
+  // Demo storefronts are only for local preview, not published visitor listings.
   const [storeConfigs, setStoreConfigs] = useState<Record<string, StoreConfig>>(
-    INITIAL_STORE_CONFIGS
+    import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}
   );
-  const storeConfigsRef = useRef<Record<string, StoreConfig>>(INITIAL_STORE_CONFIGS);
+  const storeConfigsRef = useRef<Record<string, StoreConfig>>(
+    import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}
+  );
   useEffect(() => {
     storeConfigsRef.current = storeConfigs;
   }, [storeConfigs]);
@@ -231,11 +236,9 @@ export default function App() {
       return updatedMap;
     });
   };
-  const [products, setProducts] = useState<Product[]>(INITIAL_PRODUCTS);
-  const [selectedProductId, setSelectedProductId] = useState<string>(INITIAL_PRODUCTS[0].id);
-  const [cart, setCart] = useState<CartItem[]>([
-    { product: INITIAL_PRODUCTS[0], quantity: 1 },
-  ]);
+  const [products, setProducts] = useState<Product[]>(import.meta.env.DEV ? INITIAL_PRODUCTS : []);
+  const [selectedProductId, setSelectedProductId] = useState<string>('');
+  const [cart, setCart] = useState<CartItem[]>([]);
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<LedgerAuditEntry[]>([]);
   const [paymentSettingsMap, setPaymentSettingsMap] = useState<
@@ -338,12 +341,15 @@ export default function App() {
     emailConfigured: false,
   });
 
-  const [platformStores, setPlatformStores] = useState<PlatformStore[]>(INITIAL_PLATFORM_STORES);
+  const [platformStores, setPlatformStores] = useState<PlatformStore[]>(
+    import.meta.env.DEV ? INITIAL_PLATFORM_STORES : []
+  );
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
   const [dockMinimized, setDockMinimized] = useState<boolean>(true);
   const [cartToast, setCartToast] = useState<string | null>(null);
   const cartToastTimerRef = useRef<number | null>(null);
   const isDevControlsEnabled =
+    import.meta.env.DEV &&
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('dev') === 'true';
 
@@ -602,18 +608,8 @@ export default function App() {
             });
             setSelectedProductId(apiProds[0].id);
           } else {
-            // Ensure default sample products exist for this custom store so storefront is populated
-            setProducts((prev) => {
-              const hasStoreProds = prev.some((p) => p.storeId === loadedStoreId);
-              if (hasStoreProds) return prev;
-              const cloned = INITIAL_PRODUCTS.slice(0, 3).map((base) => ({
-                ...base,
-                id: `${base.id}-${loadedStoreId.slice(-6)}`,
-                storeId: loadedStoreId,
-                ownerId: s.ownerId || 'creator',
-              }));
-              return [...cloned, ...prev];
-            });
+            // No published products means an empty storefront, not fabricated goods.
+            setProducts((prev) => prev.filter((p) => p.storeId !== loadedStoreId));
           }
           return loadedConfig;
         }
@@ -2821,7 +2817,7 @@ export default function App() {
           easypaisaStoreId: '',
           upiId: '',
           paymentLinkUrl: '',
-          payoneerReceivingEmail: currentUser.email || '',
+          payoneerReceivingEmail: '',
           payoneerRequestLink: '',
           payoneerReceivingAccountDetails: '',
           whatsappNotificationNumber: '',
@@ -2832,8 +2828,7 @@ export default function App() {
 
   const currentProduct =
     activeStoreProducts.find((p) => p.id === selectedProductId) ||
-    activeStoreProducts[0] ||
-    products[0];
+    activeStoreProducts[0] || null;
   const totalCartItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
@@ -3060,7 +3055,7 @@ export default function App() {
         />
       )}
 
-      {activeScreen === 'product-detail' && (
+      {activeScreen === 'product-detail' && currentProduct && (
         <ProductDetailPage
           product={currentProduct}
           allProducts={activeStoreProducts}
@@ -3076,6 +3071,15 @@ export default function App() {
           onNavigate={handleNavigate}
           isEditMode={isEditMode}
         />
+      )}
+
+      {activeScreen === 'product-detail' && !currentProduct && (
+        <div className="mx-auto max-w-xl p-8 text-center text-[#50352F]">
+          <h2 className="text-xl font-bold">This store has no published products yet.</h2>
+          <button type="button" className="candy-btn-pink mt-4 px-5 py-2" onClick={() => handleNavigate('shop')}>
+            Explore Store
+          </button>
+        </div>
       )}
 
       {activeScreen === 'visual-editor' && userProfile?.role !== 'buyer' && (
