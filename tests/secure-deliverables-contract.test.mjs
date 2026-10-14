@@ -83,3 +83,19 @@ test('production refuses financial operations without a durable download signing
   assert.match(server, /configure a durable SERVER_SIGNING_SECRET before enabling orders/);
   assert.match(server, /async function ensureFinancialDatabaseReady\(/);
 });
+
+test('production paid checkout is opt-in and buyers see no payment instructions during beta', () => {
+  const checkoutUi = read('src/components/screens/CheckoutAndOrdersPage.tsx');
+  const appUi = read('src/App.tsx');
+  const types = read('src/types/dreamstore.ts');
+  assert.match(server, /DREAMSTORE_PAID_CHECKOUT_ENABLED === 'true'/);
+  assert.match(server, /calculatedTotal > 0 && !PAID_CHECKOUT_ENABLED/);
+  assert.match(server, /paidCheckoutEnabled: PAID_CHECKOUT_ENABLED/);
+  assert.match(server, /confirmedBuyerEmail !== String\(customerEmail/);
+  assert.match(types, /paidCheckoutEnabled\?: boolean/);
+  assert.match(appUi, /paidCheckoutEnabled: false/);
+  assert.match(appUi, /paidCheckoutEnabled: data\.paidCheckoutEnabled === true/);
+  assert.match(checkoutUi, /checkout-beta-payments-disabled/);
+  assert.match(checkoutUi, /Please do not send a payment yet/);
+  assert.match(checkoutUi, /if \(!isFreeCart && !isPaidCheckoutGloballyEnabled\)/);
+});
