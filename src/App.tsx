@@ -66,6 +66,7 @@ import {
   OperationType,
   FirebaseUser,
   getAuthHeaders,
+  invalidateRejectedLegacyEmailSession,
 } from './lib/firebase';
 import { getDocs } from 'firebase/firestore';
 import { LandingPage } from './components/screens/LandingPage';
@@ -1641,14 +1642,35 @@ export default function App() {
     displayName: string;
     email: string;
   }) => {
-    if (!currentUser) return;
+    const requireNewSignIn = async () => {
+      // Clear browser-only legacy sessions that may survive a server restart.
+      // Never retry a denied request with an invented UID or without a token.
+      invalidateRejectedLegacyEmailSession();
+      await signOutUser().catch(() => {});
+      setRoleOnboardingOpen(false);
+      setAuthModalMode('signin');
+      setAuthModalOpen(true);
+    };
+
+    if (!currentUser) {
+      await requireNewSignIn();
+      throw new Error('Please sign in again to select Buyer or Seller.');
+    }
     // Strictly allow only 'buyer' or 'seller' — never allow Super Admin self-assignment
     const safeRole: OnboardingUserRole = payload.role === 'seller' ? 'seller' : 'buyer';
     const cleanName = payload.displayName.trim().slice(0, 120) || 'Shopper';
     const cleanEmail = (payload.email.trim() || currentUser.email || '').slice(0, 254);
     const userStoreId = `store-${currentUser.uid.slice(0, 20)}`;
 
-    const authHeaders = await getAuthHeaders();
+    let authHeaders: Record<string, string>;
+    try {
+      // A just-restored or recently signed-up Firebase identity must use a
+      // fresh, cryptographically valid ID token before saving its role.
+      authHeaders = await getAuthHeaders({}, { forceRefresh: true, requireAuth: true });
+    } catch {
+      await requireNewSignIn();
+      throw new Error('Your login needs refreshing. Please sign in again to continue.');
+    }
     const res = await fetch('/api/users/profile', {
       method: 'POST',
       headers: authHeaders,
@@ -1659,8 +1681,12 @@ export default function App() {
       }),
     });
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      await requireNewSignIn();
+      throw new Error('Your login session expired. Please sign in again to finish setup.');
+    }
     if (!res.ok) {
-      throw new Error(data.error || 'Failed to save your selected role.');
+      throw new Error(data.error || 'Unable to save your role right now. Please try again.');
     }
 
     if (hasFirebaseSdkSession() && currentUser.emailVerified !== false) {
