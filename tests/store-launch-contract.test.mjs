@@ -100,3 +100,11 @@ test('verified user role is durably saved and reloaded from Firestore across Clo
   assert.doesNotMatch(saveProfile, /body\.email \|\| user\.email/);
   assert.match(saveProfile, /Your account role could not be saved securely/);
 });
+
+test('public endpoints do not expose financial metrics or count visits for unknown stores', () => {
+  const health = server.slice(server.indexOf("app.get('/api/health'"), server.indexOf("// 0B. Firebase OAuth"));
+  assert.doesNotMatch(health, /persistentLedgerRecords|immutableAuditLogs|signingSecretEntropyBits/);
+  const visits = server.slice(server.indexOf("app.post('/api/stores/visit'"), server.indexOf("app.get('/api/stores/check-slug'"));
+  assert.match(visits, /!matched \|\| matched\.status !== 'Active'/);
+  assert.match(visits, /const targetStoreId = matched\.storeId/);
+});
