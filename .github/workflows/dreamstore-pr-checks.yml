@@ -53,11 +53,11 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Install headless Chromium for Playwright
         run: bunx playwright install chromium --with-deps
-      - name: Start DreamStore on a local test server
+      - name: Start isolated Vite UI preview (Firebase Admin credentials not required)
         run: |
-          nohup bun run dev > /tmp/dreamstore-browser-smoke.log 2>&1 &
+          nohup bunx vite --host 127.0.0.1 --port 3000 > /tmp/dreamstore-browser-smoke.log 2>&1 &
           for attempt in $(seq 1 50); do
-            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then exit 0; fi
+            if curl -fsS http://127.0.0.1:3000/ >/dev/null; then exit 0; fi
             sleep 2
           done
           cat /tmp/dreamstore-browser-smoke.log
