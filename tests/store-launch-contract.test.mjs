@@ -186,3 +186,11 @@ test('wizard checks existing creator URL with an authenticated identity', () => 
   assert.match(wizard, /getAuthHeaders\(\{\}, \{ requireAuth: true \}\)/);
   assert.match(wizard, /headers: authHeaders/);
 });
+
+test('moderated store data is recoverable across server restarts', () => {
+  const helper = server.slice(server.indexOf('async function hydrateModeratedStoresFromAdminFirestore'),
+    server.indexOf('void hydrateActiveStoresFromFirestore();'));
+  assert.match(helper, /adminFirestoreDb\.collection\('stores'\)\.get\(\)/);
+  assert.match(helper, /status: 'Pending'/);
+  assert.match(server, /void hydrateModeratedStoresFromAdminFirestore\(\)/);
+});

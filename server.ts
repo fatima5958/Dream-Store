@@ -1202,7 +1202,52 @@ async function resolveVerifiedStoreRecord(
   return matchInRegistry();
 }
 
+// Rehydrate non-public stores with the trusted Admin SDK. The public REST
+// query above intentionally excludes paused stores, but an administrator
+// still needs to see and reactivate them after a server restart.
+async function hydrateModeratedStoresFromAdminFirestore(): Promise<void> {
+  if (!adminFirestoreDb) return;
+  try {
+    const snapshots = await adminFirestoreDb.collection('stores').get();
+    for (const snap of snapshots.docs) {
+      const data = snap.data() || {};
+      if (data.status === 'Active') continue;
+      const ownerId = String(data.ownerId || '').trim();
+      const storeSlug = String(data.storeSlug || '').trim();
+      const storeName = String(data.storeName || '').trim();
+      if (!ownerId || !storeSlug || !storeName) continue;
+      serverStores.set(snap.id, {
+        storeId: snap.id,
+        ownerId,
+        ownerEmail: '',
+        ownerName: String(data.ownerName || storeName),
+        storeSlug,
+        storeName,
+        country: String(data.sellerCountry || data.country || 'Pakistan'),
+        sellerCountry: String(data.sellerCountry || data.country || 'Pakistan'),
+        productType: String(data.productType || 'Digital Products'),
+        currency: String(data.currency || 'PKR'),
+        exchangeRatePkr: Number(data.exchangeRatePkr) || 278,
+        theme: String(data.theme || 'blush-bloom'),
+        plan: data.plan === 'Pro' ? 'Pro' : 'Free',
+        instagramHandle: String(data.instagramHandle || ''),
+        announcementText: String(data.announcementText || ''),
+        heroHeadingLine1: String(data.heroHeadingLine1 || ''),
+        heroHeadingLine2: String(data.heroHeadingLine2 || ''),
+        heroSubheading: String(data.heroSubheading || ''),
+        heroButtonText: String(data.heroButtonText || ''),
+        heroImage: String(data.heroImage || ''),
+        logoUrl: String(data.logoUrl || ''),
+        status: 'Pending',
+      });
+    }
+  } catch (err) {
+    console.error('Could not rehydrate moderated stores:', err);
+  }
+}
+
 void hydrateActiveStoresFromFirestore();
+void hydrateModeratedStoresFromAdminFirestore();
 void hydratePublishedProductsFromFirestore();
 
 // Firestore is the durable financial source of truth; in-memory maps are read caches only.
