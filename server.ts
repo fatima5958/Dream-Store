@@ -52,23 +52,31 @@ try {
   FIREBASE_API_KEY = '';
 }
 
+// Cloud Run provides ADC using its attached service identity; local runs use an
+// explicitly configured credential, gcloud ADC, or the Firestore emulator.
+// Without any of these, avoid starting a Firestore gRPC client that may reject
+// outside the API handler and terminate an otherwise healthy process. Protected
+// operations and /api/ready continue to fail closed without Admin access.
+const HAS_GOOGLE_ADC_CONTEXT = Boolean(
+  process.env.K_SERVICE ||
+  process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+  process.env.FIRESTORE_EMULATOR_HOST ||
+  fs.existsSync(path.join(os.homedir(), '.config', 'gcloud', 'application_default_credentials.json'))
+);
 let adminFirestoreDb: AdminFirestore | null = null;
-try {
-  const adminApp = getApps().length
-    ? getApps()[0]
-    : initializeAdminApp({
-        credential: applicationDefault(),
-        projectId: FIREBASE_PROJECT_ID,
-      });
-  adminFirestoreDb = getAdminFirestore(adminApp, FIRESTORE_DATABASE_ID);
-  adminFirestoreDb.settings({ preferRest: true, ignoreUndefinedProperties: true });
-} catch {
+if (HAS_GOOGLE_ADC_CONTEXT) {
   try {
-    if (!getApps().length) {
-      initializeAdminApp({ projectId: FIREBASE_PROJECT_ID });
-    }
+    const adminApp = getApps().length
+      ? getApps()[0]
+      : initializeAdminApp({
+          credential: applicationDefault(),
+          projectId: FIREBASE_PROJECT_ID,
+        });
+    adminFirestoreDb = getAdminFirestore(adminApp, FIRESTORE_DATABASE_ID);
+    adminFirestoreDb.settings({ preferRest: true, ignoreUndefinedProperties: true });
   } catch {
-    // Firebase Admin SDK falls back cleanly if ADC is unavailable
+    adminFirestoreDb = null;
+    // Readiness and protected operations must reject until Admin is configured.
   }
 }
 
