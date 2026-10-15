@@ -138,7 +138,7 @@ test('auth restoration never promotes a locally cached role when backend identit
   assert.match(restoration, /getAuthHeaders\(\{\}, \{ requireAuth: true \}\)/);
   assert.match(restoration, /if \(profRes\.status === 401\)/);
   assert.match(restoration, /setAuthModalMode\('signin'\)/);
-  assert.match(restoration, /Account verification is temporarily unavailable/);
+  assert.match(restoration, /DreamStore server cannot reach its secure Firebase database/);
   assert.match(restoration, /Could not verify your account/);
 });
 
