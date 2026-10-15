@@ -12,6 +12,7 @@ import { createFirestoreStoreRepository } from '../server/v2/modules/stores.ts';
 import { createCreatorCampaignRepository } from '../server/v2/modules/creators.ts';
 import { createFirestoreProductRepository } from '../server/v2/modules/products.ts';
 import { createFirebaseUploadRepository } from '../server/v2/modules/uploads.ts';
+import { createFirestoreFinancialRepository } from '../server/v2/modules/finance-repository.ts';
 import { assertIsolatedV2Environment } from '../server/v2/config/staging.ts';
 
 let app, db, auth, bucket, server, base, profiles, stores;
@@ -29,7 +30,9 @@ async function request(path, caller, body, method = body === undefined ? 'GET' :
 async function start() {
   const deps = { auth: createFirebaseVerifier(auth), profiles, stores, creators: createCreatorCampaignRepository(db),
     products: createFirestoreProductRepository(db, bucket), uploads: createFirebaseUploadRepository(db, bucket),
-    readiness: { check: async () => true }, adminUid: identities.admin.uid, allowWrites: true, allowUnsignedEmulatorTokens: true };
+    finance: createFirestoreFinancialRepository(db, bucket),
+    readiness: { check: async () => true }, adminUid: identities.admin.uid, allowWrites: true, allowUnsignedEmulatorTokens: true,
+    paidCheckoutEnabled: true, downloadTokenSecret: 'emulator-only-signing-secret-0123456789abcdef' };
   const express = createV2App(deps);
   server = await new Promise(resolve => { const s = express.listen(0, '127.0.0.1', () => resolve(s)); });
   base = 'http://127.0.0.1:' + server.address().port;
@@ -43,7 +46,7 @@ before(async () => {
   // Only the explicitly guarded demo project is reset. Never production data.
   const reset = await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/emulator/v1/projects/${projectId}/databases/${config.firestoreDatabaseId}/documents`, { method: 'DELETE' });
   assert.equal(reset.ok, true);
-  for (const name of ['seller','other','buyer','admin','claim99','claim100','claim101']) {
+  for (const name of ['seller','other','buyer','buyer2','admin','claim99','claim100','claim101']) {
     const uid = 'v2-' + name;
     await auth.deleteUser(uid).catch(error => { if (error.code !== 'auth/user-not-found') throw error; });
     identities[name] = await auth.createUser({ uid, email: name+'@example.test', emailVerified: true, password:'Emulator-only-123!' });
@@ -65,7 +68,7 @@ test('V2 emulator explicitly loads closed Firestore rules without unsupported mu
 });
 
 test('real Auth/Firestore/Storage: Seller create→update→upload→publish→public view→restart; Buyer stays isolated', async () => {
-  for (const name of ['seller','other','buyer']) {
+  for (const name of ['seller','other','buyer','buyer2']) {
     const result=await request('/api/users/profile',name,{role:name==='buyer'?'buyer':'seller',displayName:name});assert.equal(result.status,200);
   }
   const created=await request('/api/stores/create','seller',{storeName:'Seller Books',storeSlug:'seller-books'});
@@ -74,17 +77,44 @@ test('real Auth/Firestore/Storage: Seller create→update→upload→publish→p
   assert.equal((await request('/api/stores/update','buyer',{storeId,updates:{storeName:'Stolen'}})).status,403);
   assert.equal((await request('/api/stores/update','seller',{storeId,updates:{storeName:'Updated Books'}})).status,200);
   const retry=await request('/api/stores/create','seller',{storeId,storeName:'Stale',storeSlug:'seller-books'});assert.equal(retry.status,200);
-  const product={id:'v2-book',storeId,title:'Actual Book',category:'Ebooks',isFree:true,published:false,priceUsd:0,pricePkr:0};
+  const product={id:'v2-book',storeId,title:'Actual Book',category:'Ebooks',isFree:false,published:false,priceUsd:10,pricePkr:2780};
   assert.equal((await request('/api/products/upsert','seller',product)).status,200);
   assert.equal((await request('/api/products?storeId='+storeId)).body.products.length,0);
   const uploaded=await request('/api/uploads/product','seller',Buffer.from('%PDF-1.7\nHello\n%%EOF'),'POST',{'Content-Type':'application/octet-stream','X-Product-ID':product.id,'X-Store-ID':storeId,'X-File-Name':'book.pdf','X-File-Type':'application/pdf'});
   assert.equal(uploaded.status,200);
   assert.equal((await request('/api/products/upsert','seller',{...product,published:true,fileName:'book.pdf',fileDataUrl:uploaded.body.fileReference})).status,200);
+  assert.equal((await request('/api/payment-settings/save','seller',{storeId,jazzCashMerchantId:'merchant-123',jazzCashEnabled:true})).status,200);
+  const checkoutBody={idempotencyKey:'idem-v2-paid-order-0001',storeId,buyerId:identities.buyer.uid,customerEmail:'buyer@example.test',currency:'PKR',paymentMethod:'jazzcash',paymentReference:'TXN-12345',items:[{id:product.id,quantity:1}]};
+  const parallel=await Promise.all([request('/api/checkout/validate-and-prepare','buyer',checkoutBody),request('/api/checkout/validate-and-prepare','buyer',checkoutBody)]);
+  assert.ok(parallel.every(result=>result.status===200||result.status===201));
+  assert.equal(parallel.filter(result=>result.body.duplicate===true).length,1);
+  const orderNumber=parallel.find(result=>result.body.orderNumber)?.body.orderNumber;
+  assert.equal((await request('/api/orders/list','buyer')).body.orders.length,1);
+  assert.equal((await request('/api/delivery/verify-download','buyer',{orderNumber,productId:product.id,buyerId:identities.buyer.uid,downloadToken:'LOCKED-PENDING-VERIFICATION'})).status,403);
+  assert.equal((await request('/api/orders/list','buyer2')).body.orders.length,0);
+  assert.equal((await request('/api/checkout/validate-and-prepare','buyer2',{...checkoutBody,buyerId:identities.buyer2.uid,idempotencyKey:'idem-v2-dupe-reference-01'})).status,409);
+  const secondOrder=await request('/api/checkout/validate-and-prepare','buyer2',{...checkoutBody,buyerId:identities.buyer2.uid,idempotencyKey:'idem-v2-second-buyer-0001',paymentReference:'TXN-98765'});
+  assert.equal(secondOrder.status,201);
+  assert.equal((await request('/api/orders/list','buyer')).body.orders.length,1);
+  assert.equal((await request('/api/orders/list','buyer2')).body.orders.length,1);
+  assert.equal((await request('/api/orders/verify-payment','other',{orderNumber,newStatus:'Paid',statementConfirmed:true})).status,403);
+  assert.equal((await request('/api/orders/verify-payment','buyer',{orderNumber,newStatus:'Paid',statementConfirmed:true})).status,403);
+  const verified=await request('/api/orders/verify-payment','seller',{orderNumber,newStatus:'Paid',statementConfirmed:true});
+  assert.equal(verified.status,200);assert.equal(verified.body.commissionStatus,'outstanding');
+  assert.equal((await db.collection('commission_entries').doc(orderNumber).get()).get('platformCommissionMinor'),13900);
+  const downloadBody={orderNumber,productId:product.id,buyerId:identities.buyer.uid,downloadToken:verified.body.downloadToken};
+  const downloaded=await request('/api/delivery/verify-download','buyer',downloadBody);
+  assert.equal(downloaded.status,200);assert.equal(downloaded.body.allowed,true);assert.match(downloaded.body.fileDataUrl,/^data:application\/pdf;base64,/);
+  assert.equal((await request('/api/delivery/verify-download','buyer',downloadBody)).status,403);
+  assert.equal((await request('/api/orders/refund','seller',{orderNumber,refundConfirmed:true,refundReference:'RF-12345'})).status,200);
+  assert.equal((await request('/api/downloads/token','buyer',{orderNumber})).status,403);
+  assert.equal((await db.collection('commission_adjustments').doc(orderNumber+':refund').get()).get('reason'),'order_refunded');
   const page=await request('/api/stores/by-slug/seller-books');assert.equal(page.status,200);
   assert.equal(page.body.store.storeName,'Updated Books');assert.equal(page.body.products.length,1);assert.equal(page.body.products[0].fileDataUrl,undefined);
   await new Promise(resolve=>server.close(resolve));await start();
   assert.equal((await request('/api/users/profile','seller')).body.profile.storeId,storeId);
   assert.equal((await request('/api/stores/seller-books')).body.products.length,1);
+  assert.equal((await request('/api/orders/list','buyer')).body.orders[0].paymentStatus,'Refunded');
   const filename=uploaded.body.fileReference.slice('storage://'.length);
   const privateRead=await fetch(`http://${process.env.FIREBASE_STORAGE_EMULATOR_HOST}/v0/b/${bucket.name}/o/${encodeURIComponent(filename)}?alt=media`);
   assert.equal(privateRead.status,403);

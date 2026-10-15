@@ -6,7 +6,7 @@
 
 **Gate 1:** Complete the API inventory cross-check (79 statically declared baseline routes plus dynamic registrations). Complete Firestore/Storage schema + ownership mappings, ledger and legacy Buyer migration expectations.
 
-**Gate 2:** Implement the remaining modules one by one, each with API-contract, role-isolation, failure-mode and concurrency regression tests. Keep all original financial logic and first-100 claim transaction semantics.
+**Gate 2:** Implement remaining modules one by one, each with API-contract, role-isolation, failure-mode and concurrency regression tests. Store/product/upload and initial financial order flows are implemented in V2. Keep all original financial logic and first-100 claim transaction semantics.
 
 **Gate 3:** Staging with Firebase emulators or explicitly approved isolated test infrastructure, unique test identities, fresh data, no live payments, no production side-effect workers. Demonstrate Buyer signup, Seller onboarding, returning profiles, founder claims 98→99→100, idempotency, double-submit, isolation, uploads, order lifecycle and downloads.
 
@@ -59,4 +59,5 @@ Never paste Firebase ID tokens, refresh tokens, service-account secrets, passwor
 - Implemented: public stores/storefront, owner restore/create/update, slug reservation, visit events, Seller product APIs, product projections, private uploads and public cover delivery.
 - Locally automated: deterministic repository/unit checks and source contracts. Fake transactions model serialization and do not prove emulator behavior.
 - Not verified in this environment: Express route tests, Firebase emulators, browser signup-to-published-store smoke, Vite build/typecheck, GitHub Actions. Install dependencies plus Java/Firebase CLI, then pass these before closing the milestone.
-- Pending: seller payment settings APIs, checkout, orders, payment verification, ledger/5% commission, fulfillment/downloads and financial Admin operations.
+- Implemented in V2 isolated staging: compatible manual Seller payment settings, sanitized checkout instructions, server-priced durable checkout/order creation, idempotency, Buyer/Seller order isolation, Seller manual verification/refunds, durable 5% commission entries/reversal adjustments and scoped signed downloads.
+- Pending: commission invoice/settlement lifecycle, Super Admin financial endpoints, gateway status/webhooks, order email notifications, Cloud IAM and deployment verification. Paid checkout remains disabled in production; no production records have changed.

@@ -39,29 +39,29 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 | POST | `/api/stores/create` | 4932 | Implemented — atomic owner/slug/campaign |
 | POST | `/api/stores/upsert` | 4933 | Implemented — idempotent create alias |
 | POST | `/api/stores/update` | 4936 | Implemented — owner-only active store |
-| GET | `/api/payment-settings/:storeId` | 5353 | Pending — V1 remains authoritative |
-| GET | `/api/payment-settings` | 5354 | Pending — V1 remains authoritative |
-| POST | `/api/payment-settings/save` | 5355 | Pending — V1 remains authoritative |
-| GET | `/api/seller-settings/:storeId` | 5356 | Pending — V1 remains authoritative |
-| GET | `/api/seller-settings` | 5357 | Pending — V1 remains authoritative |
-| POST | `/api/seller-settings` | 5358 | Pending — V1 remains authoritative |
-| GET | `/api/checkout/payment-instructions/:storeId` | 5362 | Pending — V1 remains authoritative |
+| GET | `/api/payment-settings/:storeId` | 5353 | Implemented — authenticated verified owner only |
+| GET | `/api/payment-settings` | 5354 | Implemented — authenticated verified owner only |
+| POST | `/api/payment-settings/save` | 5355 | Implemented — owner-only manual settings; automated gateways disabled |
+| GET | `/api/seller-settings/:storeId` | 5356 | Implemented — compatible owner-only alias |
+| GET | `/api/seller-settings` | 5357 | Implemented — compatible owner-only alias |
+| POST | `/api/seller-settings` | 5358 | Implemented — compatible owner-only alias |
+| GET | `/api/checkout/payment-instructions/:storeId` | 5362 | Implemented — sanitized public Buyer instructions |
 | POST | `/api/uploads/product` | 5435 | Implemented — private immutable upload |
 | POST | `/api/products/upsert` | 5766 | Implemented — validated owner catalog |
 | POST | `/api/products/save` | 5767 | Implemented — alias |
 | POST | `/api/products` | 5768 | Implemented — alias |
 | POST | `/api/products/delete` | 5770 | Implemented — owner-only tombstone |
-| POST | `/api/commission/calculate` | 5812 | Pending — V1 remains authoritative |
+| POST | `/api/commission/calculate` | 5812 | Implemented — supported manual methods, integer-minor 5% calculation |
 | POST | `/api/admin/commission-config` | 5851 | Pending — V1 remains authoritative |
 | POST | `/api/admin/commission-rate` | 5852 | Pending — V1 remains authoritative |
 | GET | `/api/ledger` | 5955 | Pending — V1 remains authoritative |
 | GET | `/api/ledger/transactions` | 5956 | Pending — V1 remains authoritative |
-| POST | `/api/checkout/validate-and-prepare` | 5959 | Pending — V1 remains authoritative |
-| POST | `/api/orders/verify-payment` | 6436 | Pending — V1 remains authoritative |
-| GET | `/api/orders/sync` | 6871 | Pending — V1 remains authoritative |
-| GET | `/api/orders/list` | 6872 | Pending — V1 remains authoritative |
+| POST | `/api/checkout/validate-and-prepare` | 5959 | Implemented — authoritative Firestore pricing and durable idempotency; paid flow isolated and opt-in |
+| POST | `/api/orders/verify-payment` | 6436 | Implemented — owning Seller only; amount/currency/commission snapshot checks |
+| GET | `/api/orders/sync` | 6871 | Implemented — Buyer/Seller identity-filtered |
+| GET | `/api/orders/list` | 6872 | Implemented — Buyer/Seller identity-filtered |
 | GET | `/api/orders/:orderNumber/email-notification` | 6876 | Pending — V1 remains authoritative |
-| POST | `/api/orders/refund` | 6918 | Pending — V1 remains authoritative |
+| POST | `/api/orders/refund` | 6918 | Implemented — Seller-only evidence-confirmed refund, commission reversal, download revocation |
 | POST | `/api/ledger/commission-status` | 7014 | Pending — V1 remains authoritative |
 | GET | `/api/commission/status` | 7154 | Pending — V1 remains authoritative |
 | GET | `/api/commissions/invoices` | 7155 | Pending — V1 remains authoritative |
@@ -81,8 +81,8 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 | GET | `/api/subscription/status` | 7916 | Pending — V1 remains authoritative |
 | POST | `/api/subscriptions` | 7920 | Pending — V1 remains authoritative |
 | POST | `/api/webhooks/:provider` | 7973 | Pending — V1 remains authoritative |
-| POST | `/api/downloads/token` | 7977 | Pending — V1 remains authoritative |
-| POST | `/api/delivery/verify-download` | 7991 | Pending — V1 remains authoritative |
+| POST | `/api/downloads/token` | 7977 | Implemented — Buyer-owned paid order only |
+| POST | `/api/delivery/verify-download` | 7991 | Implemented — signed scoped expiring one-use access to private Storage bytes |
 | POST | `/api/test-suite/run` | 8274 | Pending — V1 remains authoritative |
 | POST | `/api/gemini/chat` | 8532 | Pending — V1 remains authoritative |
 
@@ -109,4 +109,4 @@ Uploads accept PDF, EPUB, ZIP, TXT, DOC, DOCX plus PNG/JPEG/WebP/GIF covers. The
 
 `GET /api/products?storeId=...` returns drafts to the verified store owner and only published `Available` products to guests. Storefront response stays `{ store, products }`; directory response stays `{ stores }`. Visits do not reveal aggregate metrics.
 
-Checkout, orders, payment settings, gateway status, fulfillment, delivery, commissions, financial Admin, AI and email/password backend endpoints remain pending and return 501 on a V2-only process. No live payment or production route was switched.
+V2 now implements owner payment settings, sanitized manual checkout instructions, isolated server-priced checkout/order persistence, Seller verification/refunds, 5% commission entries/reversal adjustments and protected downloads. Commission invoice/settlement and Admin financial operations, gateway status/webhooks, email notifications, AI and email/password endpoints remain pending and return 501. Paid checkout is rejected in production and no production traffic or payment activity has been switched.

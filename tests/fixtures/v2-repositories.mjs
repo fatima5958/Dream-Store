@@ -75,6 +75,10 @@ export class MemoryBucket {
         const object=this.objects.get(path); if(!object) throw new Error('object missing');
         return [{...object,data:undefined}];
       },
+      download: async () => {
+        const object=this.objects.get(path); if(!object) throw new Error('object missing');
+        return [Buffer.from(object.data)];
+      },
       delete: async () => { if(this.failDelete) throw new Error('simulated Storage delete failure'); this.objects.delete(path); },
     };
   }

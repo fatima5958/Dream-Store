@@ -61,6 +61,7 @@ export interface V2Dependencies {
   creators: CreatorCampaignRepository;
   stores?: StoreRepository;
   products?: ProductRepository;
+  finance?: FinancialRepository;
   uploads?: UploadRepository;
   covers?: { read(ownerId: string, fileName: string): Promise<{ data: Buffer; contentType: string }> };
   readiness: ReadinessService;
@@ -68,6 +69,8 @@ export interface V2Dependencies {
   // Staging writes are disabled by default. Real production cutover is separate.
   allowWrites: boolean;
   allowUnsignedEmulatorTokens?: boolean;
+  paidCheckoutEnabled?: boolean;
+  downloadTokenSecret?: string;
 }
 
 export type AuthenticatedRequest = Request & { principal?: Principal };
@@ -79,4 +82,15 @@ export interface ProductRepository {
 }
 export interface UploadRepository {
   save(principal: Principal, input: { productId: string; storeId: string; fileName: string; contentType: string; data: Buffer; kind: 'product' | 'cover' }): Promise<Record<string, unknown>>;
+}
+
+export interface FinancialRepository {
+  store(target: string): Promise<Record<string, any> | null>;
+  paymentSettings(ownerId: string): Promise<Record<string, any> | null>;
+  savePaymentSettings(ownerId: string, storeId: string, settings: Record<string, unknown>): Promise<Record<string, unknown>>;
+  createOrder(input: Record<string, any>): Promise<{ duplicate: boolean; order: Record<string, any> }>;
+  order(orderNumber: string): Promise<Record<string, any> | null>;
+  listOrders(uid: string, admin: boolean): Promise<Array<Record<string, any>>>;
+  transitionOrder(orderNumber: string, expectedStatus: string, patch: Record<string, unknown>, actorUid: string): Promise<Record<string, any>>;
+  consumeDownload(orderNumber: string, buyerUid: string, productId: string, tokenId: string): Promise<{ order: Record<string, any>; deliverable: Record<string, any>; fileDataUrl: string }>;
 }

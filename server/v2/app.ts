@@ -6,6 +6,12 @@ import { canonicalStoreId, rolePermissions } from './modules/users.ts';
 import { publicStoreProjection, isValidStoreSlug } from './modules/stores.ts';
 
 import { requireSeller, requireId } from './modules/policy.ts';
+import { registerPaymentSettingsRoutes } from './modules/payment-settings.ts';
+import { registerCheckoutRoutes } from './modules/checkout.ts';
+import { registerOrderRoutes } from './modules/orders.ts';
+import { registerDownloadRoutes } from './modules/downloads.ts';
+import { registerPaymentVerificationRoutes } from './modules/payment-verification.ts';
+import { registerCommissionRoutes } from './modules/commissions.ts';
 
 const jsonRoute = (callback: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: (error?: unknown) => void) => {
@@ -260,6 +266,15 @@ export function createV2App(deps: V2Dependencies) {
     res.set('Content-Security-Policy', "default-src 'none'; sandbox");
     res.send(cover.data);
   }));
+
+  if (deps.finance) {
+    registerPaymentSettingsRoutes(app, deps);
+    registerCheckoutRoutes(app, deps);
+    registerOrderRoutes(app, deps);
+    registerPaymentVerificationRoutes(app, deps);
+    registerDownloadRoutes(app, deps);
+    registerCommissionRoutes(app, deps);
+  }
 
   // Financial, download and administrative modules remain deliberately unavailable.
   app.use('/api', (_req, res) => {

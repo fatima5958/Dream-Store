@@ -13,6 +13,12 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
        ├── modules/stores.ts  [owner restoration, atomic store/slug/claim]
        ├── modules/products.ts[owner catalog, public projection, publish gates]
        ├── modules/uploads.ts [5 MiB validation, immutable objects, cleanup jobs]
+       ├── modules/payment-settings.ts [private owner settings, sanitized checkout projection]
+       ├── modules/checkout.ts [Firestore prices, idempotency, manual payment order creation]
+       ├── modules/orders.ts [Buyer/Seller isolation, manual verification, refund transitions]
+       ├── modules/commissions.ts [integer-minor 500-bps commission calculation]
+       ├── modules/finance-repository.ts [durable named-Firestore transactions and private file reads]
+       ├── modules/downloads.ts [scoped expiring signatures, one-use authorization]
        ├── modules/policy.ts  [shared owner/email/image validation]
        ├── config/firebase.ts [project-locked Admin initialization, named database, bucket, readiness]
        ├── contracts.ts       [typed dependency injection boundaries]
@@ -24,7 +30,7 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
 - The existing Dockerfile runs `scripts/start.mjs` and therefore **V1**. No dual server process, parallel webhook worker or duplicate payment processor is started.
 - V2 requires `DREAMSTORE_V2_STAGING=1`; its default bind address is `127.0.0.1:8091`.
 - V2 refuses startup unless `DREAMSTORE_V2_STAGING=1`, a `demo-*` project and loopback Auth, named Firestore and Storage emulators are configured. It uses a separate Firebase Admin app. The frontend connects only with `VITE_DREAMSTORE_V2_STAGING=1` during localhost Vite development with a `demo-*` project.
-- V2 implements profile/onboarding, Admin identity verification, directory/storefront, atomic Store create/update/visits, slug checks, Seller product create/edit/publish/delete/list, verified private uploads and public cover delivery. Checkout/order/payment/fulfillment/commission/download APIs remain pending and return 501.
+- V2 implements profile/onboarding, Admin identity verification, directory/storefront, atomic Store create/update/visits, Seller products/uploads, owner payment settings, sanitized manual checkout instructions, idempotent order persistence, Seller-only manual payment verification/refunds, integer 5% commission entries, and signed private-file download authorization.
 - Readiness probes Firebase Auth permissions, named Firestore reads, Storage bucket access and durable signing-secret presence; it is not merely a server liveness flag. The public response is only `ready/not_ready`.
 - Never include token, password, cookies, private payment fields, Firebase credential values, or full SDK errors in logs.
 
@@ -39,9 +45,9 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
 
 ## Known blockers
 
-- Live `/api/ready` previously returned `not_ready`. Cloud Run IAM, Firebase Storage and signing-secret configuration must be diagnosed independently.
+- Live `/api/ready` previously returned `not_ready`. Cloud Run IAM, Firebase Storage and shared signing-secret configuration must be diagnosed independently. Staging readiness requires a stable signing secret of at least 32 characters.
 - Google Cloud OAuth redirect URI still needs **actual Google Console** confirmation; hardcoded diagnostic lists are not proof.
-- Cloud IAM and real deployment verification remain pending. Payments, financial consistency and downloads remain pending. Upload cleanup requires the manual staging reconciliation script.
+- Cloud IAM and real deployment verification remain pending. V2 paid checkout is opt-in for isolated non-production staging and hard-blocked in production; it has not been exercised against real payment rails. Commission invoice/settlement and Super Admin financial tools remain pending. Upload cleanup requires the manual staging reconciliation script.
 - Full staging integration, emulator credential isolation, cross-instance rate limiting and rollback rehearsal remain prerequisites for traffic switch.
 ## Public Store Directory (next implementation slice)
 

@@ -48,7 +48,11 @@ These are source-observed collection calls; nested collections, REST paths, and 
 ## Finance and private customer records
 
 - Preserve existing `orders`, `ledger`, `ledger_audit`, `commission_invoices`, `commission_payments`, `commission_payment_refs`, `commission_adjustments`, `subscriptions`, `sellerSettings`, and private delivery records.
-- Financial writes, verification webhooks, paid checkout, commission settlement and protected downloads are **not migrated** to V2. Production V1 remains the source of truth.
+- V2 retains V1 collection names and compatible document fields for `sellerSettings/{ownerId}`, `users/{ownerId}/private/settings`, `ledger/{orderNumber}`, `orders/{orderId}`, `checkout_idempotency/{sha256(buyerUid:key)}`, `payment_reference_claims/{sha256(seller:method:reference)}`, `ledger_audit/{auditId}`, and `commission_adjustments/{orderNumber}:refund`. Deterministic `commission_entries/{orderNumber}` records store commission in integer minor units. Admin invoice/payment settlement collections remain V1-only.
+- V2 checkout recalculates price from current product/store documents and rechecks catalog, active store and receiving method in the transaction that creates the order. Buyer/Seller IDs come from the verified principal and persisted store owner. A repeated Buyer + idempotency key returns the same durable order.
+- A submitted payment reference remains `Pending`; only the owning Seller may transition after confirming independent bank/wallet statement evidence. A reference alone never unlocks fulfillment. The saved amount, currency and 500-bps commission snapshot are validated before transition. Refunds require explicit actual-refund confirmation and a reference; they reverse commission and invalidate download tokens.
+- Paid downloads use a shared server signing secret, order-scoped buyer/product/order/expiry/nonce claims, and authoritative order status. Consumption is transactional, limited to five downloads, rotates the nonce and returns original file bytes only to the authenticated Buyer. Rejection/refund invalidates prior tokens. Public product projections never expose private file references.
+- Production V1 remains authoritative. Paid checkout is hard-blocked in production and disabled by default outside isolated staging. Automated payment gateways and production cutover remain disabled.
 - Never stage against real customer data in a write-enabled mode; use emulator fixtures and compare anonymized read-only examples.
 
 ## Migration constraints
