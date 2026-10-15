@@ -58,6 +58,8 @@ try {
 // outside the API handler and terminate an otherwise healthy process. Protected
 // operations and /api/ready continue to fail closed without Admin access.
 const HAS_GOOGLE_ADC_CONTEXT = Boolean(
+  // Isolated runtime regression tests explicitly inject Firebase doubles.
+  process.env.DREAMSTORE_TEST_SCENARIO ||
   process.env.K_SERVICE ||
   process.env.GOOGLE_APPLICATION_CREDENTIALS ||
   process.env.FIRESTORE_EMULATOR_HOST ||
