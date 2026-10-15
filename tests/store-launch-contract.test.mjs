@@ -315,3 +315,16 @@ test('release requires a separate staging smoke gate, not just green CI', () => 
   assert.match(status, /legacy ephemeral email accounts/i);
   assert.match(status, /DREAMSTORE_PAID_CHECKOUT_ENABLED=false/);
 });
+
+test('manual payment confirmation cannot be auto-checked and refunds require references', () => {
+  const start = app.indexOf('const handleUpdateOrderStatus');
+  const statusUpdate = app.slice(start, app.indexOf('const handleUpdateCommissionStatus', start));
+  assert.match(statusUpdate, /const statementConfirmed = newStatus === 'Paid'/);
+  assert.match(statusUpdate, /window\.confirm\(/);
+  assert.match(statusUpdate, /refundReference = window\.prompt/);
+  assert.doesNotMatch(statusUpdate, /statementConfirmed: true/);
+  const refund = server.slice(server.indexOf("app.post('/api/orders/refund'"),
+    server.indexOf('// A seller may dispute'));
+  assert.match(refund, /refundConfirmed !== true/);
+  assert.match(refund, /cleanRefundReference\.length < 3/);
+});

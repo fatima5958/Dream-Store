@@ -6844,7 +6844,13 @@ async function startServer() {
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
 
-    const { orderNumber, reason } = req.body || {};
+    const { orderNumber, reason, refundConfirmed, refundReference } = req.body || {};
+    const cleanRefundReference = String(refundReference || '').trim();
+    if (refundConfirmed !== true || cleanRefundReference.length < 3 ||
+        cleanRefundReference.length > 160) {
+      res.status(400).json({ error: 'Confirm the actual refunded funds and provide a wallet/bank refund reference.' });
+      return;
+    }
     if (!(await ensureFinancialDatabaseReady(res))) return;
     const entry = await loadFinancialOrder(String(orderNumber));
     if (!entry) {
@@ -6862,6 +6868,10 @@ async function startServer() {
     }
 
     await withSellerLock(entry.sellerId, async () => {
+      if (entry.paymentStatus !== 'Paid') {
+        res.status(409).json({ error: 'Only previously paid orders may be refunded.' });
+        return;
+      }
       if (entry.paymentStatus === 'Refunded') {
         res.status(409).json({
           error: `Duplicate refund blocked: Order "${orderNumber}" has already been refunded.`,
@@ -6901,7 +6911,7 @@ async function startServer() {
           previousStatus: prevStatus,
           newStatus: 'Refunded',
           verificationMode: entry.verificationMode,
-          detail: `Order refunded and 5% commission (${oldCommission / 100} ${entry.currency}) reversed to 0. Download token revoked.${reason ? ` Reason: ${reason}` : ''}`,
+          detail: `Refund confirmed against wallet/bank reference "${cleanRefundReference}". Commission (${oldCommission / 100} ${entry.currency}) reversed and download revoked.${reason ? ` Reason: ${String(reason).slice(0, 160)}` : ''}`,
         },
         user.rawToken
       );

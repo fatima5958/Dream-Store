@@ -2388,11 +2388,21 @@ export default function App() {
     try {
       const authHeaders = await getAuthHeaders();
       if (newStatus === 'Refunded') {
+        const refundReference = window.prompt(
+          'Enter the REAL bank/wallet transaction reference after refunding this buyer. Never mark Refunded before funds are returned.'
+        )?.trim();
+        if (!refundReference) return;
+        const refundConfirmed = window.confirm(
+          'Have you independently checked that the refund actually reached the buyer? This will revoke their download access.'
+        );
+        if (!refundConfirmed) return;
         const refRes = await fetch('/api/orders/refund', {
           method: 'POST',
           headers: authHeaders,
           body: JSON.stringify({
             orderNumber: target.orderNumber,
+            refundConfirmed,
+            refundReference,
           }),
         });
         if (!refRes.ok) {
@@ -2409,13 +2419,17 @@ export default function App() {
           }
         }
       } else if (newStatus === 'Paid' || newStatus === 'Failed') {
+        const statementConfirmed = newStatus === 'Paid'
+          ? window.confirm('Have you verified that cleared funds arrived in your actual bank/wallet statement? A transaction ID or screenshot alone is not proof.')
+          : false;
+        if (newStatus === 'Paid' && !statementConfirmed) return;
         const verifyRes = await fetch('/api/orders/verify-payment', {
           method: 'POST',
           headers: authHeaders,
           body: JSON.stringify({
             orderNumber: target.orderNumber,
             newStatus,
-            statementConfirmed: true,
+            statementConfirmed,
           }),
         });
         if (!verifyRes.ok) {

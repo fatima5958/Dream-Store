@@ -220,3 +220,11 @@ test('subscription requests cannot locally activate Pro plans without server gra
   // The production start entrypoint deliberately hides this test-only route.
   assert.equal(simulated.status, 404);
 });
+
+test('refund requires separately confirmed returned funds and a transfer reference', async t => {
+  const origin = await boot(t);
+  const refund = await request(origin, '/api/orders/refund',
+    { orderNumber: 'DS-EXAMPLE', refundConfirmed: false }, token());
+  assert.equal(refund.status, 400);
+  assert.match((await refund.json()).error, /refunded funds/i);
+});
