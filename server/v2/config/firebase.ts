@@ -8,6 +8,7 @@ import { ApiError, safeBackendCategory } from '../errors';
 import { createFirebaseVerifier } from '../modules/auth';
 import { createFirestoreProfileRepository } from '../modules/users';
 import { createCreatorCampaignRepository } from '../modules/creators';
+import { createFirestoreStoreRepository } from '../modules/stores';
 import type { ReadinessService, V2Dependencies } from '../contracts';
 
 interface PublicFirebaseConfig {
@@ -86,6 +87,7 @@ export function createProductionV2Dependencies(): V2Dependencies {
     auth: createFirebaseVerifier(auth),
     profiles: createFirestoreProfileRepository(db),
     creators: createCreatorCampaignRepository(db),
+    stores: createFirestoreStoreRepository(db),
     readiness,
     adminUid: String(process.env.SUPER_ADMIN_UID || '').trim(),
     // No production write until separate staging verification and owner approval.

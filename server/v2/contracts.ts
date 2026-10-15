@@ -36,6 +36,17 @@ export interface CreatorCampaignRepository {
   read(): Promise<{ limit: 100; claimed: number; remaining: number; soldOut: boolean; offer: 'free_storefront_setup' }>;
 }
 
+export interface StoreCreateResult {
+  store: Record<string, unknown>;
+  existed: boolean;
+  creatorClaimNumber: number | null;
+}
+
+export interface StoreRepository {
+  checkSlug(slug: string, viewer?: Principal | null, excludeStoreId?: string): Promise<boolean>;
+  create(principal: Principal, body: Record<string, unknown>): Promise<StoreCreateResult>;
+}
+
 export interface ReadinessService {
   check(): Promise<boolean>;
 }
@@ -44,6 +55,7 @@ export interface V2Dependencies {
   auth: AuthVerifier;
   profiles: ProfileRepository;
   creators: CreatorCampaignRepository;
+  stores?: StoreRepository;
   readiness: ReadinessService;
   adminUid: string;
   // Staging writes are disabled by default. Real production cutover is separate.

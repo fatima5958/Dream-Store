@@ -3,6 +3,7 @@ import { ApiError, handleApiError } from './errors';
 import type { Principal, Role, UserProfile, V2Dependencies } from './contracts';
 import { authenticatedPrincipal, isVerifiedSuperAdmin } from './modules/auth';
 import { canonicalStoreId, rolePermissions } from './modules/users';
+import { isValidStoreSlug } from './modules/stores';
 
 const jsonRoute = (callback: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: (error?: unknown) => void) => {
@@ -124,6 +125,49 @@ export function createV2App(deps: V2Dependencies) {
   app.get('/api/launch/creator-spots', jsonRoute(async (_req, res) => {
     res.json(await deps.creators.read());
   }));
+
+  // Public slug checks do not authorize mutation. A token, when supplied, is
+  // verified before an "excludeStoreId" may refer to an owned store.
+  app.get('/api/stores/check-slug', jsonRoute(async (req, res) => {
+    const slug = String(req.query.slug || '').trim().toLowerCase();
+    if (!isValidStoreSlug(slug)) {
+      res.json({ available: false, slug, reason: 'Choose a valid, non-reserved store URL.' });
+      return;
+    }
+    if (!deps.stores) throw new ApiError(501, 'backend/v2-not-implemented', 'Store operations are not available.');
+    const viewer = req.headers.authorization
+      ? await authenticatedPrincipal(req, deps)
+      : null;
+    const excludeStoreId = String(req.query.excludeStoreId || '').trim();
+    const available = await deps.stores.checkSlug(slug, viewer, excludeStoreId);
+    res.json({ available, slug, reason: available ? null : 'This store URL is already taken by another creator.' });
+  }));
+
+  const createStore = jsonRoute(async (req, res) => {
+    const principal = await authenticatedPrincipal(req, deps);
+    if (!principal.emailVerified) {
+      throw new ApiError(403, 'auth/email-not-verified', 'Verify your email before creating a store.');
+    }
+    // Admin store creation for third parties is not migrated in this slice.
+    // Do not grant privileged write behavior from an unchecked request body.
+    if (isVerifiedSuperAdmin(principal, deps.adminUid)) {
+      throw new ApiError(501, 'backend/v2-admin-store-pending', 'Administrator store creation is not migrated yet.');
+    }
+    if (!deps.allowWrites) {
+      throw new ApiError(503, 'backend/staging-readonly', 'Backend V2 writes are disabled outside its isolated emulator.');
+    }
+    if (!deps.stores) throw new ApiError(501, 'backend/v2-not-implemented', 'Store operations are not available.');
+    const profile = await deps.profiles.find(principal);
+    if (!profile || profile.role !== 'seller' || !profile.onboardingCompleted) {
+      throw new ApiError(403, 'store/seller-required', 'Complete verified Seller onboarding before creating a store.');
+    }
+    const result = await deps.stores.create(principal, req.body || {});
+    res.status(result.existed ? 200 : 201).json({
+      ok: true, store: result.store, creatorClaimNumber: result.creatorClaimNumber,
+    });
+  });
+  app.post('/api/stores/create', createStore);
+  app.post('/api/stores/upsert', createStore);
 
   // No shadow writes, payments or public file access. These endpoints stay on
   // V1 until ported and individually tested. A V2-only process must never
