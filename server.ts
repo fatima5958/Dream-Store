@@ -7658,6 +7658,14 @@ async function startServer() {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
+    if (process.env.NODE_ENV === 'production') {
+      res.status(404).json({ error: 'Not found.' });
+      return;
+    }
+    if (!isSuper) {
+      res.status(403).json({ error: 'Only the verified administrator can simulate invoices in development.' });
+      return;
+    }
 
     const { invoiceId, sellerId, makeOverdue = true } = req.body || {};
     const targetSellerId = isSuper && sellerId ? String(sellerId).trim() : user.uid;
@@ -7722,7 +7730,16 @@ async function startServer() {
       });
       return;
     }
-    const hasPro = Boolean(sellerProEntitlements.get(sellerId) || store?.plan === 'Pro');
+    if (!adminFirestoreDb || !store) {
+      res.status(503).json({ error: 'Subscription data cannot be verified.' });
+      return;
+    }
+    const fresh = await adminFirestoreDb.collection('stores').doc(store.storeId).get();
+    if (!fresh.exists || fresh.get('ownerId') !== sellerId) {
+      res.status(403).json({ error: 'Verified store ownership is required.' });
+      return;
+    }
+    const hasPro = fresh.get('plan') === 'Pro';
     res.json({
       sellerId,
       plan: hasPro ? 'Pro' : 'Free',
@@ -7791,21 +7808,26 @@ async function startServer() {
         : s.ownerId === user.uid && (!requestedStoreId || s.storeId === requestedStoreId)
     );
 
+    if (!adminFirestoreDb) {
+      res.status(503).json({ error: 'Subscription database unavailable.' });
+      return;
+    }
     const effectiveSellerId = isSuper && requestedSellerId ? requestedSellerId : user.uid;
-    const hasPro = Boolean(
-      sellerProEntitlements.get(effectiveSellerId) ||
-        storesList.some((s) => s.plan === 'Pro')
-    );
-
+    const snapshots = await Promise.all(storesList.map(s => adminFirestoreDb!
+      .collection('stores').doc(s.storeId).get()));
+    const live = snapshots
+      .filter(snap => snap.exists && (!requestedSellerId || snap.get('ownerId') === requestedSellerId))
+      .filter(snap => isSuper || snap.get('ownerId') === user.uid);
+    const hasPro = live.some(snap => snap.get('plan') === 'Pro');
     res.json({
       sellerId: effectiveSellerId,
       plan: hasPro ? 'Pro' : 'Free',
       hasProEntitlement: hasPro,
-      subscriptions: storesList.map((s) => ({
-        subscriptionId: `sub-${s.storeId}`,
-        storeId: s.storeId,
-        sellerId: s.ownerId,
-        plan: sellerProEntitlements.get(s.ownerId) || s.plan === 'Pro' ? 'Pro' : 'Free',
+      subscriptions: live.map(snap => ({
+        subscriptionId: `sub-${snap.id}`,
+        storeId: snap.id,
+        sellerId: String(snap.get('ownerId') || ''),
+        plan: snap.get('plan') === 'Pro' ? 'Pro' : 'Free',
         status: 'Active',
       })),
     });
@@ -7814,72 +7836,58 @@ async function startServer() {
   app.get('/api/subscriptions', asyncRoute(handleGetSubscriptions));
   app.get('/api/subscription/status', asyncRoute(handleGetSubscriptions));
 
+  // Self-service subscription requests are waitlist-only. Pro grants must go
+  // through the authenticated, durable /api/admin/subscriptions/grant-pro route.
   app.post('/api/subscriptions', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
-    const isSuper = isStrictSuperAdminUser(user);
-
-    const body = req.body || {};
-    const requestedSellerId = String(body.sellerId || body.ownerId || '').trim();
-    const requestedStoreId = String(body.storeId || '').trim();
-    const canonicalUserStoreId = `store-${user.uid.slice(0, 20)}`;
-    const fullUidStoreId = `store-${user.uid}`;
-    const ownedStore = await resolveOwnedStoreForUser(user.uid);
-
-    if (!isSuper) {
-      if (requestedSellerId && requestedSellerId !== user.uid) {
-        res.status(403).json({
-          error: `Forbidden: Seller "${user.uid}" cannot modify subscription for seller "${requestedSellerId}".`,
-        });
-        return;
-      }
-      if (requestedStoreId) {
-        const st = serverStores.get(requestedStoreId);
-        const isOwnedInRegistry = Boolean(st && st.ownerId === user.uid);
-        const isForeignInRegistry = Boolean(st && st.ownerId !== user.uid);
-        if (
-          isForeignInRegistry ||
-          (!isOwnedInRegistry &&
-            requestedStoreId !== canonicalUserStoreId &&
-            requestedStoreId !== fullUidStoreId &&
-            requestedStoreId !== ownedStore?.storeId)
-        ) {
-          res.status(403).json({
-            error: `Forbidden: Seller "${user.uid}" cannot modify subscription for store "${requestedStoreId}".`,
-          });
-          return;
+    if (!user.emailVerified || isVerifiedBuyerOnly(user.uid)) {
+      res.status(403).json({ error: 'A verified seller account is required.' });
+      return;
+    }
+    if (req.body?.status !== 'Waitlist') {
+      res.status(409).json({ error: 'This endpoint only accepts Pro waitlist requests, not active subscription grants.' });
+      return;
+    }
+    if (!adminFirestoreDb) {
+      res.status(503).json({ error: 'Subscription database unavailable. Your request was not saved.' });
+      return;
+    }
+    const store = await resolveOwnedStoreForUser(user.uid);
+    if (!store) {
+      res.status(403).json({ error: 'Create and verify your own store before joining the Pro waitlist.' });
+      return;
+    }
+    try {
+      const db = adminFirestoreDb;
+      const storeRef = db.collection('stores').doc(store.storeId);
+      const subscriptionRef = db.collection('subscriptions').doc(`sub-${store.storeId}`);
+      const payload = await db.runTransaction(async tx => {
+        const [fresh, prior] = await Promise.all([tx.get(storeRef), tx.get(subscriptionRef)]);
+        if (!fresh.exists || fresh.get('ownerId') !== user.uid ||
+            fresh.get('status') !== 'Active') {
+          throw Object.assign(new Error('Store unavailable.'), { code: 'unauthorized-store' });
         }
-      }
-      if (!ownedStore) {
-        res.status(403).json({
-          error: `Forbidden: Buyer "${user.uid}" does not own a store and cannot modify seller subscriptions.`,
-        });
-        return;
-      }
-      if (body.plan === 'Pro' && body.status !== 'Waitlist') {
-        res.status(403).json({
-          error: 'Forbidden: Only the verified Super Admin can activate Pro subscriptions.',
-        });
-        return;
+        const requestedAtIso = new Date().toISOString();
+        const entry = {
+          subscriptionId: `sub-${store.storeId}`, storeId: store.storeId,
+          sellerId: user.uid, plan: 'Free', status: 'Waitlist', requestedAtIso,
+          createdAt: prior.exists ? prior.get('createdAt') || new Date() : new Date(),
+          updatedAt: new Date(),
+        };
+        tx.set(subscriptionRef, entry);
+        return entry;
+      });
+      res.json({ ok: true, subscription: payload });
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'unauthorized-store') {
+        res.status(403).json({ error: 'Store ownership or status changed.' });
+      } else {
+        console.error('Pro waitlist save failed:', err);
+        res.status(503).json({ error: 'Waitlist request was not saved. Please retry.' });
       }
     }
-
-    const effectiveSellerId = isSuper && requestedSellerId ? requestedSellerId : user.uid;
-    const effectiveStoreId = requestedStoreId || ownedStore?.storeId || canonicalUserStoreId;
-    if (isSuper && body.plan === 'Pro') {
-      sellerProEntitlements.set(effectiveSellerId, true);
-    }
-
-    res.json({
-      ok: true,
-      subscription: {
-        subscriptionId: `sub-${effectiveStoreId}`,
-        storeId: effectiveStoreId,
-        sellerId: effectiveSellerId,
-        plan: isSuper && body.plan === 'Pro' ? 'Pro' : 'Free',
-        status: body.status === 'Waitlist' ? 'Waitlist' : 'Active',
-      },
-    });
   }));
 
   // No gateway adapter is installed. Do not acknowledge or simulate payment events.

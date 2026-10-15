@@ -209,3 +209,13 @@ test('seller cannot self-settle, reverse, or silently dispute commission', async
   assert.equal((await request(origin, '/api/ledger/commission-status',
     { orderNumber: 'DS-TEST-01', newCommissionStatus: 'disputed', note: 'bad' }, token())).status, 400);
 });
+
+test('subscription requests cannot locally activate Pro plans without server grants', async t => {
+  const origin = await boot(t);
+  const directPro = await request(origin, '/api/subscriptions',
+    { status: 'Active', plan: 'Pro', storeId: 'store-seller-test' }, token());
+  assert.equal(directPro.status, 409);
+  assert.notEqual((await directPro.json()).ok, true);
+  const simulated = await request(origin, '/api/commission/simulate-overdue', {}, token());
+  assert.equal(simulated.status, 403);
+});

@@ -287,3 +287,19 @@ test('refunded paid order updates invoice and adjustment in the same transaction
     server.indexOf('// 10B. Commission'));
   assert.doesNotMatch(refund, /applyOrderCommissionReversalToInvoice\(/);
 });
+
+test('subscriptions reflect fresh store entitlements and paid simulation is never public', () => {
+  const get = server.slice(server.indexOf("app.get('/api/entitlements/:sellerId'"),
+    server.indexOf("app.get('/api/subscriptions'"));
+  assert.match(get, /fresh\.get\('plan'\) === 'Pro'/);
+  assert.doesNotMatch(get, /sellerProEntitlements\.get/);
+  const post = server.slice(server.indexOf("app.post('/api/subscriptions'"),
+    server.indexOf('// No gateway adapter is installed'));
+  assert.match(post, /req\.body\?\.status !== 'Waitlist'/);
+  assert.match(post, /await db\.runTransaction/);
+  assert.doesNotMatch(post, /sellerProEntitlements\.set/);
+  const simulation = server.slice(server.indexOf("app.post('/api/commission/simulate-overdue'"),
+    server.indexOf('// 10D. Server-Validated'));
+  assert.match(simulation, /process\.env\.NODE_ENV === 'production'/);
+  assert.match(simulation, /if \(!isSuper\)/);
+});
