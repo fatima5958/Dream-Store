@@ -354,8 +354,10 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
     setIsLoadingEmail(true);
     try {
       if (mode === 'signup') {
-        await signUpWithEmailAccount(trimmedEmail, password, trimmedName);
-        setSuccessBanner(`Welcome to ${brandName}, ${trimmedName}!`);
+        const created = await signUpWithEmailAccount(trimmedEmail, password, trimmedName);
+        setSuccessBanner(created.emailVerified
+          ? `Welcome to ${brandName}, ${trimmedName}!`
+          : 'Account created! Check your inbox for an email verification link before starting your store.');
       } else {
         await signInWithEmailAccount(trimmedEmail, password);
         setSuccessBanner('Welcome back! Signed in successfully.');

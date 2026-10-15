@@ -67,6 +67,7 @@ import {
   FirebaseUser,
   getAuthHeaders,
   invalidateRejectedLegacyEmailSession,
+  resendCurrentUserVerificationEmail,
 } from './lib/firebase';
 import { getDocs } from 'firebase/firestore';
 import { LandingPage } from './components/screens/LandingPage';
@@ -203,6 +204,9 @@ export default function App() {
   // transient backend/token failure without a full refresh or changing accounts.
   const [authRestoreAttempt, setAuthRestoreAttempt] = useState(0);
   const [authVerificationIssue, setAuthVerificationIssue] = useState(false);
+  const [pendingEmailVerification, setPendingEmailVerification] = useState<string | null>(null);
+  const [emailVerificationBusy, setEmailVerificationBusy] = useState(false);
+  const [emailVerificationFeedback, setEmailVerificationFeedback] = useState<string | null>(null);
 
   // Demo storefronts are only for local preview, not published visitor listings.
   const [storeConfigs, setStoreConfigs] = useState<Record<string, StoreConfig>>(
@@ -752,8 +756,23 @@ export default function App() {
         setIsSuperAdminVerified(false);
         setUserProfile(null);
         setRoleOnboardingOpen(false);
+        setPendingEmailVerification(null);
         return;
       }
+
+      // Firebase creates the local session immediately after email signup.
+      // Unverified email accounts must wait for the verification link, rather
+      // than hitting /api/users/profile and being bounced back to Sign In.
+      if (hasFirebaseSdkSession() && user.emailVerified === false) {
+        setIsSuperAdminVerified(false);
+        setUserProfile(null);
+        setRoleOnboardingOpen(false);
+        setPendingEmailVerification(user.email || 'your inbox');
+        setAuthModalOpen(false);
+        setBlockedAccessNotice(null);
+        return;
+      }
+      setPendingEmailVerification(null);
 
       if (user) {
         let verifiedSuperAdmin = false;
@@ -818,16 +837,39 @@ export default function App() {
             // for revocation by the backend. Forcing a network refresh on every
             // first render caused avoidable failures on slow embedded previews.
             const authHeaders = await getAuthHeaders({}, { requireAuth: true });
-            const profRes = await fetch('/api/users/profile', {
+            let profRes = await fetch('/api/users/profile', {
               headers: authHeaders,
               cache: 'no-store',
               signal: AbortSignal.timeout(15000),
             });
+            // The freshly minted Firebase token may not be accepted by the
+            // first backend instance yet. Retry once with a refreshed signed
+            // token, but NEVER fall back to browser-cached roles.
+            if (profRes.status === 401 && hasFirebaseSdkSession()) {
+              try {
+                const retryHeaders = await getAuthHeaders({}, { forceRefresh: true, requireAuth: true });
+                profRes = await fetch('/api/users/profile', {
+                  headers: retryHeaders,
+                  cache: 'no-store',
+                  signal: AbortSignal.timeout(15000),
+                });
+              } catch {
+                // Report the verification problem without creating a login loop.
+              }
+            }
             if (profRes.status === 401) {
-              invalidateRejectedLegacyEmailSession();
-              await signOutUser().catch(() => {});
               setUserProfile(null);
               setRoleOnboardingOpen(false);
+              if (hasFirebaseSdkSession()) {
+                setAuthVerificationIssue(true);
+                setBlockedAccessNotice(
+                  'DreamStore cannot verify this Firebase session with its backend. ' +
+                  'Check the published server configuration, then retry verification.'
+                );
+                return;
+              }
+              invalidateRejectedLegacyEmailSession();
+              await signOutUser().catch(() => {});
               setAuthVerificationIssue(false);
               setAuthModalMode('signin');
               setAuthModalOpen(true);
@@ -862,7 +904,8 @@ export default function App() {
                 message.startsWith('DreamStore API is not connected') ||
                 message.startsWith('DreamStore server cannot reach') ||
                 message.startsWith('Account verification service returned') ||
-                message.startsWith('Could not verify your account')
+                message.startsWith('Could not verify your account') ||
+                message.startsWith('DreamStore cannot verify this Firebase session')
               ) ? null : message
             );
             if (
@@ -1644,7 +1687,46 @@ export default function App() {
   const handleSignOutGoogle = async () => {
     setUserProfile(null);
     setRoleOnboardingOpen(false);
+    setPendingEmailVerification(null);
     await signOutUser();
+  };
+
+  const handleCheckEmailVerified = async () => {
+    setEmailVerificationBusy(true);
+    setEmailVerificationFeedback(null);
+    try {
+      const firebaseUser = auth.currentUser;
+      if (!firebaseUser) throw new Error('Your signup session expired. Please sign in again.');
+      await firebaseUser.reload();
+      if (!auth.currentUser?.emailVerified) {
+        setEmailVerificationFeedback('Your email is not verified yet. Open the verification link in your inbox, then try again.');
+        return;
+      }
+      await auth.currentUser.getIdToken(true);
+      setPendingEmailVerification(null);
+      setAuthRestoreAttempt((count) => count + 1);
+    } catch (error) {
+      setEmailVerificationFeedback(
+        error instanceof Error ? error.message : 'Could not check verification. Please try again.'
+      );
+    } finally {
+      setEmailVerificationBusy(false);
+    }
+  };
+
+  const handleResendEmailVerification = async () => {
+    setEmailVerificationBusy(true);
+    setEmailVerificationFeedback(null);
+    try {
+      await resendCurrentUserVerificationEmail();
+      setEmailVerificationFeedback('Verification email sent. Please check Inbox and Spam.');
+    } catch (error) {
+      setEmailVerificationFeedback(
+        error instanceof Error ? error.message : 'Could not send verification email. Please retry later.'
+      );
+    } finally {
+      setEmailVerificationBusy(false);
+    }
   };
 
   const handleCompleteRoleOnboarding = async (payload: {
@@ -3011,6 +3093,50 @@ export default function App() {
                 config.ownerId === currentUser.uid)
           )}
         />
+      )}
+
+      {/* Verification is a separate stage, never a password/sign-in loop.
+          No seller role, dashboard or storefront claim is granted until the
+          signed-in Firebase account is verified and the backend approves it. */}
+      {pendingEmailVerification && (
+        <div data-testid="email-verification-required"
+          role="dialog" aria-modal="true" aria-labelledby="verify-email-heading"
+          className="fixed inset-0 z-[90] bg-[#50352F]/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-[28px] bg-[#FFFDF8] border-2 border-[#F58CB7] p-6 sm:p-8 shadow-2xl text-[#50352F]">
+            <h2 id="verify-email-heading" className="font-candy text-2xl font-extrabold mb-3">
+              Verify Your Email to Continue
+            </h2>
+            <p className="text-sm leading-relaxed mb-4">
+              We sent a verification link to <strong>{pendingEmailVerification}</strong>.
+              Open it to activate your DreamStore account. Your free creator spot will only
+              be counted after you finish the store setup wizard.
+            </p>
+            {emailVerificationFeedback && (
+              <p role="status" className="rounded-xl bg-[#FFF2DF] px-3 py-2 text-xs font-bold mb-3">
+                {emailVerificationFeedback}
+              </p>
+            )}
+            <div className="flex flex-col gap-3">
+              <button type="button" disabled={emailVerificationBusy}
+                data-testid="verify-email-check-btn"
+                onClick={() => { void handleCheckEmailVerified(); }}
+                className="candy-btn-pink rounded-full px-5 py-3 text-sm font-extrabold disabled:opacity-60">
+                {emailVerificationBusy ? 'Checking...' : 'I Verified My Email'}
+              </button>
+              <button type="button" disabled={emailVerificationBusy}
+                data-testid="verify-email-resend-btn"
+                onClick={() => { void handleResendEmailVerification(); }}
+                className="candy-btn-white rounded-full px-5 py-3 text-sm font-extrabold disabled:opacity-60">
+                Resend Verification Email
+              </button>
+              <button type="button" disabled={emailVerificationBusy}
+                onClick={() => { void handleSignOutGoogle(); setAuthModalMode('signin'); }}
+                className="text-xs font-bold underline px-3 py-2">
+                Use a Different Account
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <CandylandAuthModal

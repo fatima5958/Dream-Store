@@ -429,3 +429,23 @@ test('OAuth readiness never self-authorizes the visitor hostname', () => {
   assert.match(diagnostics, /identityToolkitReachable &&/);
   assert.match(diagnostics, /isHostnameAuthorized/);
 });
+
+test('email signup gates unverified Firebase users behind resend and verification instead of looping sign-in', () => {
+  const restoration = app.slice(app.indexOf('// 2. Listen to Firebase & Email Authentication state'),
+    app.indexOf('// 3. Real-time Firestore listeners'));
+  assert.match(restoration, /hasFirebaseSdkSession\(\) && user\.emailVerified === false/);
+  assert.match(restoration, /setPendingEmailVerification\(user\.email \|\| 'your inbox'\)/);
+  assert.match(restoration, /if \(profRes\.status === 401 && hasFirebaseSdkSession\(\)\)/);
+  assert.match(restoration, /getAuthHeaders\(\{\}, \{ forceRefresh: true, requireAuth: true \}\)/);
+  assert.match(restoration, /DreamStore cannot verify this Firebase session/);
+  assert.match(app, /data-testid="email-verification-required"/);
+  assert.match(app, /data-testid="verify-email-check-btn"/);
+  assert.match(app, /data-testid="verify-email-resend-btn"/);
+  assert.match(app, /await firebaseUser\.reload\(\)/);
+  assert.match(app, /await auth\.currentUser\.getIdToken\(true\)/);
+  assert.match(firebase, /export async function resendCurrentUserVerificationEmail/);
+  assert.match(firebase, /await sendEmailVerification\(user\)/);
+  const modal = read('src/components/CandylandAuthModal.tsx');
+  assert.match(modal, /Check your inbox for an email verification link/);
+  assert.match(restoration, /setUserProfile\(null\)/);
+});

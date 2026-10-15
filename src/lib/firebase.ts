@@ -331,6 +331,14 @@ export async function signUpWithEmailAccount(
   }
 }
 
+export async function resendCurrentUserVerificationEmail(): Promise<void> {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Please sign in again to resend your verification email.');
+  await user.reload();
+  if (user.emailVerified) return;
+  await sendEmailVerification(user);
+}
+
 export async function signInWithEmailAccount(
   email: string,
   password: string
