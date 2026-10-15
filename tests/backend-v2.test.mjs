@@ -13,9 +13,8 @@ function fixture(options = {}) {
   const deps = {
     auth: {
       async verifyBearer(token) {
-        if (token === 'bad') throw Object.assign(new Error('expired'), { status: 401, code: 'auth/session-invalid' });
-        if (token === 'outage') throw Object.assign(new Error('unavailable'), { status: 503, code: 'auth/backend-unavailable' });
-        return options.users?.[token] || principal(token);
+        const caller = token.split('.')[1];
+        return options.users?.[caller] || principal(caller);
       },
     },
     profiles: {
@@ -53,7 +52,7 @@ async function withServer(app, run) {
       const res = await fetch(base + path, {
         method,
         headers: {
-          ...(token ? { authorization: 'Bearer ' + token } : {}),
+          ...(token ? { authorization: 'Bearer fixture.' + token + '.signature' } : {}),
           ...(body ? { 'content-type': 'application/json' } : {}),
         },
         ...(body ? { body: JSON.stringify(body) } : {}),
