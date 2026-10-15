@@ -134,3 +134,25 @@ test('Rejected restored email session requires sign-in instead of trusting cache
     assert.equal(session, null, 'Rejected legacy session must be erased');
   } finally { await page.close(); }
 });
+
+test('Restored account gets actionable retry when hosted frontend cannot reach JSON backend', async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+  try {
+    await page.addInitScript(() => {
+      localStorage.setItem('dreamstore_email_auth_session_v1', JSON.stringify({
+        token: 'DS_EMAIL_SESSION.preview-only',
+        expiresAtMs: Date.now() + 3600000,
+        user: { uid: 'preview-session', email: 'preview@local.test',
+          displayName: 'Preview Seller', emailVerified: true },
+      }));
+    });
+    await page.route('**/api/admin/verify-session', route =>
+      route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }));
+    await page.route('**/api/users/profile', route =>
+      route.fulfill({ status: 200, contentType: 'text/html', body: '<html>Frontend fallback</html>' }));
+    await page.goto(origin + '/?screen=landing', { waitUntil: 'domcontentloaded', timeout: 40000 });
+    await page.getByTestId('retry-account-verification').waitFor({ state: 'visible', timeout: 30000 });
+    await assert.match(await page.locator('body').innerText(), /DreamStore API is not connected/);
+    assert.equal(await page.getByTestId('role-nav-seller').count(), 0);
+  } finally { await page.close(); }
+});

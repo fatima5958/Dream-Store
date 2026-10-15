@@ -199,6 +199,10 @@ export default function App() {
   const [activeBuyerSection, setActiveBuyerSection] = useState<BuyerNavSection>('storefronts');
   const [activeSellerTab, setActiveSellerTab] = useState<OwnerTab>('overview');
   const [blockedAccessNotice, setBlockedAccessNotice] = useState<string | null>(null);
+  // A rejected backend check must not grant cached roles. Let the user retry a
+  // transient backend/token failure without a full refresh or changing accounts.
+  const [authRestoreAttempt, setAuthRestoreAttempt] = useState(0);
+  const [authVerificationIssue, setAuthVerificationIssue] = useState(false);
 
   // Demo storefronts are only for local preview, not published visitor listings.
   const [storeConfigs, setStoreConfigs] = useState<Record<string, StoreConfig>>(
@@ -810,28 +814,57 @@ export default function App() {
           // Role and onboarding state must come from the verified backend.
           // Do not grant Seller/Buyer dashboards from editable localStorage.
           try {
-            const authHeaders = await getAuthHeaders({}, { forceRefresh: true, requireAuth: true });
+            // A valid cached Firebase ID token is still validated and checked
+            // for revocation by the backend. Forcing a network refresh on every
+            // first render caused avoidable failures on slow embedded previews.
+            const authHeaders = await getAuthHeaders({}, { requireAuth: true });
             const profRes = await fetch('/api/users/profile', {
               headers: authHeaders,
               cache: 'no-store',
+              signal: AbortSignal.timeout(15000),
             });
             if (profRes.status === 401) {
               invalidateRejectedLegacyEmailSession();
               await signOutUser().catch(() => {});
               setUserProfile(null);
               setRoleOnboardingOpen(false);
+              setAuthVerificationIssue(false);
               setAuthModalMode('signin');
               setAuthModalOpen(true);
               setBlockedAccessNotice('Your session expired. Sign in again to open your account.');
               return;
             }
+            if (!profRes.headers.get('content-type')?.includes('application/json')) {
+              setUserProfile(null);
+              setRoleOnboardingOpen(false);
+              setAuthVerificationIssue(true);
+              setBlockedAccessNotice('DreamStore API is not connected on this address. Deploy the Node backend and frontend together, then retry verification.');
+              return;
+            }
             if (!profRes.ok) {
               setUserProfile(null);
               setRoleOnboardingOpen(false);
-              setBlockedAccessNotice('Account verification is temporarily unavailable. Please refresh and retry.');
+              setAuthVerificationIssue(true);
+              setBlockedAccessNotice(
+                profRes.status === 503
+                  ? 'DreamStore server cannot reach its secure Firebase database right now. Please retry shortly.'
+                  : `Account verification service returned HTTP ${profRes.status}. Please retry or contact support.`
+              );
               return;
             }
             const profData = await profRes.json();
+            if (!profData || profData.ok !== true) {
+              throw new Error('Server returned invalid account verification data.');
+            }
+            setAuthVerificationIssue(false);
+            setBlockedAccessNotice((message) =>
+              message && (
+                message.startsWith('DreamStore API is not connected') ||
+                message.startsWith('DreamStore server cannot reach') ||
+                message.startsWith('Account verification service returned') ||
+                message.startsWith('Could not verify your account')
+              ) ? null : message
+            );
             if (
               profData &&
               profData.needsOnboarding === false &&
@@ -844,10 +877,16 @@ export default function App() {
               existingName = String(profData.profile.displayName || defaultName);
               existingEmail = String(profData.profile.email || defaultEmail);
             }
-          } catch {
+          } catch (error) {
+            console.warn('Account verification failed without changing the signed-in identity:', error);
             setUserProfile(null);
             setRoleOnboardingOpen(false);
-            setBlockedAccessNotice('Could not verify your account. Check your connection and retry.');
+            setAuthVerificationIssue(true);
+            setBlockedAccessNotice(
+              error instanceof Error && /sign-in|session has expired/i.test(error.message)
+                ? 'Your sign-in token cannot be verified. Sign out and sign in again, then retry.'
+                : 'Could not verify your account. The server may be unreachable or the request timed out. Retry verification.'
+            );
             return;
           }
         }
@@ -1033,19 +1072,8 @@ export default function App() {
             setActiveStoreId(userStoreId);
           }
 
-          try {
-            const authHeaders = await getAuthHeaders();
-            await fetch('/api/stores/create', {
-              method: 'POST',
-              headers: authHeaders,
-              body: JSON.stringify({
-                ...existingConfig,
-                ownerEmail: existingEmail,
-              }),
-            }).catch(() => {});
-          } catch {
-            // Ignore network error
-          }
+          // Reading an existing store must never silently rewrite it or consume
+          // a launch claim. Only the seller's explicit Save/Publish action writes.
         } else {
           // Initialize in-memory store config for the authenticated seller
           setStoreConfigs((prev) => {
@@ -1067,7 +1095,7 @@ export default function App() {
       }
     });
     return () => unsub();
-  }, []);
+  }, [authRestoreAttempt]);
 
   // 3. Real-time Firestore listeners once authenticated
   useEffect(() => {
@@ -2914,6 +2942,20 @@ export default function App() {
           className="bg-[#FFE7F1] border-b-2 border-[#F58CB7] px-4 py-2.5 text-center text-xs sm:text-sm font-extrabold text-[#9E3B66] flex items-center justify-center gap-3"
         >
           <span>{blockedAccessNotice}</span>
+          {authVerificationIssue && (
+            <button
+              type="button"
+              data-testid="retry-account-verification"
+              onClick={() => {
+                setAuthVerificationIssue(false);
+                setBlockedAccessNotice(null);
+                setAuthRestoreAttempt((attempt) => attempt + 1);
+              }}
+              className="px-3 py-1 rounded-full bg-[#F58CB7] text-[#50352F] text-xs font-extrabold cursor-pointer"
+            >
+              Retry verification
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setBlockedAccessNotice(null)}

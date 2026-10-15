@@ -135,7 +135,7 @@ test('auth restoration never promotes a locally cached role when backend identit
   assert.ok(start >= 0);
   const restoration = app.slice(start, end > start ? end : start + 21000);
   assert.doesNotMatch(restoration, /const cachedRaw = localStorage\.getItem/);
-  assert.match(restoration, /getAuthHeaders\(\{\}, \{ forceRefresh: true, requireAuth: true \}\)/);
+  assert.match(restoration, /getAuthHeaders\(\{\}, \{ requireAuth: true \}\)/);
   assert.match(restoration, /if \(profRes\.status === 401\)/);
   assert.match(restoration, /setAuthModalMode\('signin'\)/);
   assert.match(restoration, /Account verification is temporarily unavailable/);
@@ -387,4 +387,18 @@ test('every landing free claim entry point reflects sold-out campaign safely', (
   assert.match(landing, /creatorOfferExhausted \? 'Launch Spots Full'/);
   assert.match(pricing, /disabled=\{creatorSpotsSoldOut\}/);
   assert.match(pricing, /All 100 Launch Spots Claimed/);
+});
+
+test('account verification distinguishes backend HTML, permission errors, and network timeouts without escalating roles', () => {
+  const auth = app.slice(app.indexOf('// 2. Listen to Firebase & Email Authentication state'),
+    app.indexOf('// 3. Real-time Firestore listeners'));
+  assert.match(auth, /AbortSignal\.timeout\(15000\)/);
+  assert.match(auth, /headers\.get\('content-type'\)/);
+  assert.match(auth, /DreamStore API is not connected on this address/);
+  assert.match(auth, /profRes\.status === 503/);
+  assert.match(auth, /setAuthVerificationIssue\(true\)/);
+  assert.match(app, /data-testid="retry-account-verification"/);
+  assert.match(app, /setAuthRestoreAttempt\(\(attempt\) => attempt \+ 1\)/);
+  assert.doesNotMatch(auth, /await fetch\('\/api\/stores\/create'/);
+  assert.match(auth, /setUserProfile\(null\)/);
 });
