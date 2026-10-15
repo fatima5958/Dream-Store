@@ -518,3 +518,12 @@ test('rejected legacy sessions open Sign In before sign-out invalidates their au
     'sign-in recovery must be made visible before the legacy sign-out event invalidates the previous auth run');
   assert.match(branch, /if \(isStale\(\)\) return;[\s\S]*invalidateRejectedLegacyEmailSession\(\)/);
 });
+
+test('guest Gemini assistant enforces message-count and character caps before external model calls', () => {
+  const route = server.slice(server.indexOf("app.post('/api/gemini/chat'"));
+  assert.match(route, /const MAX_CHAT_MESSAGES = 30/);
+  assert.match(route, /const MAX_CHAT_MESSAGE_CHARS = 4000/);
+  assert.match(route, /res\.status\(413\)/);
+  assert.ok(route.indexOf('messages.length > MAX_CHAT_MESSAGES') < route.indexOf('const apiKey = process.env.GEMINI_API_KEY'));
+  assert.ok(route.indexOf('MAX_CHAT_MESSAGE_CHARS') < route.indexOf('ai.models.generateContent'));
+});

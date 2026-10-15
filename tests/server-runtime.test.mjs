@@ -286,3 +286,21 @@ test('first 100 launch: 98 -> 99 -> 100, full rejection and idempotent retries',
   assert.equal(soldOutBody.code, 'creator-spots-full');
   assert.equal((await status()).claimed, 100, 'failed extra claim must never increment the counter');
 });
+
+
+test('public Gemini assistant bounds guest chat history before invoking any API key', async t => {
+  const origin = await boot(t);
+  const message = text => ({ role: 'user', text });
+  const post = messages => request(origin, '/api/gemini/chat', { messages });
+  const overCount = await post(Array.from({ length: 31 }, () => message('hi')));
+  assert.equal(overCount.status, 413);
+  assert.match((await overCount.json()).error, /30 messages/);
+  const overChars = await post([message('x'.repeat(4001))]);
+  assert.equal(overChars.status, 413);
+  assert.match((await overChars.json()).error, /4000 characters/);
+  const malformed = await post([{}]);
+  assert.equal(malformed.status, 400);
+  const valid = await post([message('How can I sell my first ebook?')]);
+  assert.equal(valid.status, 200);
+  assert.equal(typeof (await valid.json()).reply, 'string');
+});

@@ -8536,6 +8536,33 @@ async function startServer() {
         res.status(400).json({ error: 'Messages array is required for multi-turn chat.' });
         return;
       }
+      // This guest-accessible assistant can invoke a billable Gemini model.
+      // Bound the history *before* model selection or SDK calls, including
+      // its local free-tier fallback. Combined with the /api write limiter,
+      // this prevents single oversized histories from exhausting quota.
+      const MAX_CHAT_MESSAGES = 30;
+      const MAX_CHAT_MESSAGE_CHARS = 4000;
+      if (
+        messages.length > MAX_CHAT_MESSAGES ||
+        messages.some((message: unknown) =>
+          !!message &&
+          typeof message === 'object' &&
+          typeof (message as { text?: unknown }).text === 'string' &&
+          (message as { text: string }).text.length > MAX_CHAT_MESSAGE_CHARS
+        )
+      ) {
+        res.status(413).json({
+          error: 'Chat history is too long. Send up to 30 messages with at most 4000 characters each.',
+        });
+        return;
+      }
+      if (messages.some((message: unknown) =>
+        !message || typeof message !== 'object' ||
+        typeof (message as { text?: unknown }).text !== 'string'
+      )) {
+        res.status(400).json({ error: 'Each chat message must contain text.' });
+        return;
+      }
 
       // Map requested model tier per Gemini API guidelines:
       // - 'fast' -> 'gemini-3.1-flash-lite-preview' (Free Tier)
