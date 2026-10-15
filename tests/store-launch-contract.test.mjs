@@ -356,3 +356,26 @@ test('staging preflight fails closed when paid checkout has not been separately 
   assert.match(preflight, /checkoutSafelyDisabled/);
   assert.match(preflight, /if \(failures > 0\) process\.exitCode = 1/);
 });
+
+test('first 100 creator claims are unique, atomic, and counted only after a new store saves', () => {
+  const creation = server.slice(server.indexOf('const handleCreateOrUpsertStore'),
+    server.indexOf("app.post('/api/stores/create'"));
+  assert.match(server, /app\.get\('\/api\/launch\/creator-spots'/);
+  assert.match(creation, /isFirstCreatorStore = !existingDoc\.exists && !isSuper/);
+  assert.match(creation, /db\.collection\('creator_launch_campaigns'\)/);
+  assert.match(creation, /db\.collection\('creator_launch_claims'\)\.doc\(ownerId\)/);
+  assert.match(creation, /tx\.create\(claimRef/);
+  assert.match(creation, /tx\.create\(campaignRef/);
+  assert.match(creation, /tx\.update\(campaignRef/);
+  assert.match(creation, /used >= CREATOR_LAUNCH_LIMIT/);
+  assert.match(creation, /code === 'launch-full'/);
+  assert.match(creation, /code === 'already-claimed'/);
+  assert.ok(creation.indexOf('tx.set(storeRef, storeDocument)') <
+    creation.indexOf('tx.create(claimRef'), 'claim writes are committed with store');
+  const landing = read('src/components/screens/LandingPage.tsx');
+  assert.match(landing, /creator-launch-counter/);
+  assert.match(landing, /\/api\/launch\/creator-spots/);
+  assert.match(landing, /creatorSpots.remaining/);
+  assert.match(landing, /disabled=\{creatorOfferExhausted\}/);
+  assert.match(landing, /5% fee applies only to verified paid sales/);
+});

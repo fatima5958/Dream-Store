@@ -4449,6 +4449,37 @@ async function startServer() {
     return copy as Omit<ServerStoreRecord, 'ownerEmail'> & { ownerEmail?: string };
   };
 
+  // Launch campaign starts with the first successfully created NEW creator store.
+  // Existing stores are not retroactively counted; saved edits never consume a slot.
+  // This is a no-upfront-fee storefront offer, not a waiver of the 5% sales commission.
+  const CREATOR_LAUNCH_LIMIT = 100;
+  const CREATOR_LAUNCH_ID = 'first-100-creators';
+
+  app.get('/api/launch/creator-spots', asyncRoute(async (_req, res) => {
+    if (!adminFirestoreDb) {
+      res.status(503).json({ error: 'Creator spot availability is temporarily unavailable.' });
+      return;
+    }
+    try {
+      const campaign = await adminFirestoreDb.collection('creator_launch_campaigns')
+        .doc(CREATOR_LAUNCH_ID).get();
+      const claimed = campaign.exists ? Number(campaign.get('claimedCount')) : 0;
+      if (!Number.isSafeInteger(claimed) || claimed < 0 || claimed > CREATOR_LAUNCH_LIMIT) {
+        throw new Error('Invalid creator launch counter state.');
+      }
+      res.json({
+        limit: CREATOR_LAUNCH_LIMIT,
+        claimed,
+        remaining: CREATOR_LAUNCH_LIMIT - claimed,
+        soldOut: claimed >= CREATOR_LAUNCH_LIMIT,
+        offer: 'free_storefront_setup',
+      });
+    } catch (err) {
+      console.error('Creator launch counter read failed:', err);
+      res.status(503).json({ error: 'Creator spot availability could not be verified. Please retry.' });
+    }
+  }));
+
   app.get('/api/stores', asyncRoute(async (req, res) => {
     const viewer = await extractVerifiedCaller(req);
     const isSuper = isStrictSuperAdminUser(viewer);
@@ -4699,6 +4730,31 @@ async function startServer() {
         const oldSlug = existingDoc.exists ? String(existingDoc.get('storeSlug') || '').toLowerCase() : '';
         const oldRef = oldSlug && oldSlug !== rawSlug ? slugCollection.doc(oldSlug) : null;
         const oldReservation = oldRef ? await tx.get(oldRef) : null;
+        const campaignRef = db.collection('creator_launch_campaigns').doc(CREATOR_LAUNCH_ID);
+        const claimRef = db.collection('creator_launch_claims').doc(ownerId);
+        const isFirstCreatorStore = !existingDoc.exists && !isSuper;
+        // All reads must happen before any transaction write. Reading the same
+        // campaign document serializes competing claims across all instances.
+        const campaignSnapshot = isFirstCreatorStore ? await tx.get(campaignRef) : null;
+        const previousClaim = isFirstCreatorStore ? await tx.get(claimRef) : null;
+        let creatorClaimNumber: number | null = null;
+        if (isFirstCreatorStore) {
+          const used = campaignSnapshot?.exists ? Number(campaignSnapshot.get('claimedCount')) : 0;
+          if (!Number.isSafeInteger(used) || used < 0 || used > CREATOR_LAUNCH_LIMIT) {
+            throw new Error('Invalid creator campaign count.');
+          }
+          if (previousClaim?.exists) {
+            throw Object.assign(new Error('This creator has already claimed a launch spot.'), {
+              code: 'already-claimed',
+            });
+          }
+          if (used >= CREATOR_LAUNCH_LIMIT) {
+            throw Object.assign(new Error('All 100 free creator spots have been claimed.'), {
+              code: 'launch-full',
+            });
+          }
+          creatorClaimNumber = used + 1;
+        }
         if (existingDoc.exists && String(existingDoc.get('ownerId') || '') !== ownerId) {
           throw Object.assign(new Error('Store belongs to another seller.'), { code: 'owner-conflict' });
         }
@@ -4741,11 +4797,26 @@ async function startServer() {
         tx.set(storeRef, storeDocument);
         if (!reservation.exists) tx.create(slugRef, { storeId, ownerId, createdAt: now });
         if (oldRef && oldReservation?.exists && oldReservation.get('storeId') === storeId) tx.delete(oldRef);
-        return { existed: existingDoc.exists };
+        if (creatorClaimNumber !== null) {
+          // Store creation, unique user claim, and counter decrement are atomic.
+          // No claimed spot is lost if a transaction rolls back.
+          tx.create(claimRef, {
+            ownerId, storeId, claimNumber: creatorClaimNumber, claimedAt: now,
+          });
+          if (campaignSnapshot?.exists) {
+            tx.update(campaignRef, { claimedCount: creatorClaimNumber, updatedAt: now });
+          } else {
+            tx.create(campaignRef, {
+              limit: CREATOR_LAUNCH_LIMIT, claimedCount: creatorClaimNumber,
+              createdAt: now, updatedAt: now,
+            });
+          }
+        }
+        return { existed: existingDoc.exists, creatorClaimNumber };
       });
       serverStores.set(storeId, record);
       const statusCode = outcome.existed ? 200 : 201;
-      res.status(statusCode).json({ ok: true, store: record });
+      res.status(statusCode).json({ ok: true, store: record, creatorClaimNumber: outcome.creatorClaimNumber });
     } catch (err) {
       const code = (err as { code?: string })?.code;
       if (code === 'slug-conflict') {
@@ -4758,6 +4829,16 @@ async function startServer() {
       }
       if (code === 'store-suspended') {
         res.status(403).json({ error: 'This store is suspended and cannot be edited.' });
+        return;
+      }
+      if (code === 'launch-full') {
+        res.status(409).json({ code: 'creator-spots-full', remaining: 0,
+          error: 'The first 100 free creator storefront spots are all claimed.' });
+        return;
+      }
+      if (code === 'already-claimed') {
+        res.status(409).json({ code: 'creator-already-claimed',
+          error: 'This creator has already claimed a launch spot. Please sign in to your existing store.' });
         return;
       }
       console.error('Verified store creation failed:', err);

@@ -137,6 +137,13 @@ const ProductCoverImage: React.FC<{
   );
 };
 
+type CreatorSpots = {
+  limit: number;
+  claimed: number;
+  remaining: number;
+  soldOut: boolean;
+};
+
 type LegalDocType = 'terms' | 'privacy' | 'refund' | 'commission' | 'contact';
 
 interface LandingPageProps {
@@ -198,6 +205,43 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [localAuthModalOpen, setLocalAuthModalOpen] = useState(false);
   const [localAuthModalMode, setLocalAuthModalMode] = useState<AuthModalMode>('signin');
+  const [creatorSpots, setCreatorSpots] = useState<CreatorSpots | null>(null);
+  const [creatorSpotsError, setCreatorSpotsError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const reload = async () => {
+      try {
+        const res = await fetch('/api/launch/creator-spots', { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok || !Number.isSafeInteger(data.claimed) ||
+            data.limit !== 100 || data.remaining !== data.limit - data.claimed ||
+            data.claimed < 0 || data.claimed > data.limit) {
+          throw new Error('Invalid creator offer status');
+        }
+        if (active) {
+          setCreatorSpots(data as CreatorSpots);
+          setCreatorSpotsError(false);
+        }
+      } catch {
+        if (active) {
+          setCreatorSpots(null);
+          setCreatorSpotsError(true);
+        }
+      }
+    };
+    void reload();
+    const timer = window.setInterval(() => { void reload(); }, 30000);
+    const onFocus = () => { void reload(); };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
+  const creatorOfferExhausted = creatorSpots?.soldOut === true && !canManageStore;
 
   const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const mobileMenuPanelRef = useRef<HTMLDivElement | null>(null);
@@ -418,6 +462,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               type="button"
               onClick={() => onNavigate('wizard')}
               data-testid="navbar-create-store-cta"
+              disabled={creatorOfferExhausted}
               className="candy-btn-pink min-h-[44px] px-5 py-2.5 rounded-full text-sm font-extrabold text-[#50352F] cursor-pointer whitespace-nowrap inline-flex items-center gap-2"
             >
               <Sparkles className="w-3.5 h-3.5 shrink-0" />
@@ -526,6 +571,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   <button
                     type="button"
                     data-testid="mobile-nav-create-store-cta"
+                    disabled={creatorOfferExhausted}
                     onClick={() => {
                       setMobileNavOpen(false);
                       onNavigate('wizard');
@@ -559,6 +605,43 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-[#7A5A52] mb-3">
                   Digital Storefronts for Creators
                 </p>
+                {/* Verified first-100 launch offer; never fabricate a live count. */}
+                <div id="claim-your-store" data-testid="creator-launch-counter"
+                  aria-live="polite"
+                  className="mb-5 rounded-[22px] border border-[#F5B6D3] bg-white/85 p-4 shadow-[0_7px_22px_rgba(244,114,182,0.12)] max-w-lg mx-auto lg:mx-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-left">
+                      <p className="text-[11px] font-extrabold uppercase tracking-wider text-[#AE517C]">
+                        Founding Creators · Limited Launch
+                      </p>
+                      <p className="text-base font-extrabold text-[#50352F]">
+                        {creatorSpots
+                          ? creatorSpots.soldOut
+                            ? 'All 100 creator spots claimed'
+                            : `${creatorSpots.remaining} of 100 free store spots left`
+                          : creatorSpotsError
+                            ? 'Live availability unavailable'
+                            : 'Checking free creator spots...'}
+                      </p>
+                    </div>
+                    <span data-testid="creator-spots-remaining"
+                      className="rounded-2xl bg-[#FFE3EF] px-3 py-2 font-extrabold text-[#8D3863] text-xl tabular-nums">
+                      {creatorSpots ? creatorSpots.remaining : '—'}
+                    </span>
+                  </div>
+                  <div role="progressbar" aria-label="Creator spots claimed"
+                    aria-valuemin={0} aria-valuemax={100}
+                    aria-valuenow={creatorSpots?.claimed ?? 0}
+                    className="mt-3 h-2.5 overflow-hidden rounded-full bg-[#F6D9E8]">
+                    <div className="h-full rounded-full bg-[#F472B6] transition-[width] duration-500"
+                      style={{ width: `${creatorSpots ? creatorSpots.claimed : 0}%` }} />
+                  </div>
+                  <p className="text-[11px] text-[#765C68] mt-2 text-left">
+                    Count updates after a new verified creator successfully creates a store.
+                    Rs. 0 upfront; 5% fee applies only to verified paid sales.
+                  </p>
+                </div>
+
 
                 {/* Hero Headline — Keep exact product message */}
                 <h1
@@ -579,11 +662,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   <button
                     type="button"
                     onClick={() => onNavigate('wizard')}
+                    disabled={creatorOfferExhausted}
                     data-testid="hero-primary-cta"
                     className="candy-btn-pink min-h-[52px] px-7 py-3.5 rounded-full font-extrabold text-base text-[#50352F] flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <Sparkles className="w-4 h-4 text-[#50352F]" />
-                    <span>Create My Free Store</span>
+                    <span>{creatorOfferExhausted ? 'All 100 Spots Claimed' : 'Claim My Free Store'}</span>
                     <ArrowRight className="w-4 h-4 text-[#50352F]" />
                   </button>
 
