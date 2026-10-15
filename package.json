@@ -14,7 +14,8 @@
     "test:server": "node --import tsx --test tests/server-runtime.test.mjs tests/http-security.test.mjs",
     "release:preflight": "node scripts/release-preflight.mjs",
     "test:v2": "node --import tsx --test tests/backend-v2.test.mjs",
-    "start:backend-v2": "node scripts/start-backend-v2.mjs"
+    "start:backend-v2": "node scripts/start-backend-v2.mjs",
+    "test:auth": "node --experimental-strip-types --test tests/backend-auth-unit.test.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
