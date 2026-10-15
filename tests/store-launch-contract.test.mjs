@@ -241,3 +241,26 @@ test('admin commission approval requires actual payment proof and atomic persist
   assert.match(adminUI, /Verify Cleared Funds/);
   assert.match(adminUI, /window\.confirm\(/);
 });
+
+test('commission reconciliation cannot write invoices during GET requests', () => {
+  const summary = server.slice(server.indexOf('function reconcileSellerCommissionState('),
+    server.indexOf('async function hydrateCommissionRecords()'));
+  assert.doesNotMatch(summary, /syncFirestoreDoc\(/);
+  assert.doesNotMatch(summary, /commissionInvoices\.set\(/);
+  assert.doesNotMatch(summary, /appendAuditEntry\(/);
+  assert.match(summary, /map\(inv => \(\{ \.\.\.inv \}\)\)/);
+});
+test('commission invoice issuance is durable, idempotent and uses one currency per invoice', () => {
+  const issue = server.slice(server.indexOf('async function issueDurableCommissionInvoicesForSeller'),
+    server.indexOf('function applyOrderCommissionReversalToInvoice('));
+  assert.match(issue, /commissionHydrationPromise/);
+  assert.match(issue, /groups\.get\(entry\.currency\)/);
+  assert.match(issue, /db\.runTransaction/);
+  assert.match(issue, /tx\.create\(invoiceRef/);
+  assert.match(issue, /tx\.update\(ref, \{ invoiceId \}\)/);
+  assert.match(issue, /already\.exists/);
+  const pay = server.slice(server.indexOf("app.post('/api/orders/verify-payment'"),
+    server.indexOf('// 9B. Real-Time Express Order List'));
+  assert.match(pay, /await issueDurableCommissionInvoicesForSeller\(entry\.sellerId\)/);
+  assert.match(pay, /commissionBillingWarning/);
+});

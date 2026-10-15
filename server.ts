@@ -1601,90 +1601,17 @@ function reconcileSellerCommissionState(
 
   // Filter out orders that have already been billed in an invoice (never count the same order twice)
   const unbilledEligible = eligibleVerifiedSales.filter(
-    (e) => !billedOrderNumbers.has(e.orderNumber)
+    (e) => !e.invoiceId && !billedOrderNumbers.has(e.orderNumber)
   );
 
-  // 2. Automatically generate an invoice for every batch of 5 verified, eligible sales
-  while (unbilledEligible.length >= INVOICE_SALES_THRESHOLD) {
-    const batch = unbilledEligible.splice(0, INVOICE_SALES_THRESHOLD);
-    const batchOrderNumbers = batch.map((b) => b.orderNumber);
-    const grossSalesMinor = batch.reduce((sum, b) => sum + b.grossAmountMinor, 0);
-    const commissionAmountMinor = batch.reduce((sum, b) => sum + b.platformCommissionMinor, 0);
-    const currency = batch[0]?.currency || defaultCurrency;
-
-    const seqNum = commissionInvoices.size + 1;
-    const invoiceId = `inv-${sellerId}-${seqNum}-${Date.now().toString().slice(-5)}`;
-    const invoiceNumber = `INV-${new Date(nowMs).getFullYear()}-${String(seqNum).padStart(4, '0')}`;
-    const issuedAtMs = nowMs;
-    const dueAtMs = issuedAtMs + INVOICE_PAYMENT_WINDOW_MS;
-    const issuedAtIso = new Date(issuedAtMs).toISOString();
-    const dueAtIso = new Date(dueAtMs).toISOString();
-
-    const invoice: CommissionInvoiceRecord = {
-      invoiceId,
-      invoiceNumber,
-      sellerId,
-      storeId,
-      currency,
-      orderNumbers: batchOrderNumbers,
-      verifiedSalesCount: batch.length,
-      grossSalesMinor,
-      commissionAmountMinor,
-      paidAmountMinor: 0,
-      adjustedAmountMinor: 0,
-      remainingBalanceMinor: commissionAmountMinor,
-      status: 'open',
-      issuedAtMs,
-      dueAtMs,
-      issuedAtIso,
-      dueAtIso,
-      serverSignature: signInvoiceRecord({
-        invoiceId,
-        sellerId,
-        orderNumbers: batchOrderNumbers,
-        commissionAmountMinor,
-        dueAtMs,
-      }),
-    };
-
-    commissionInvoices.set(invoiceId, invoice);
-    for (const item of batch) {
-      billedOrderNumbers.set(item.orderNumber, invoiceId);
-      item.invoiceId = invoiceId;
-      syncFirestoreDoc('ledger', item.orderNumber, item as unknown as Record<string, unknown>, bearerToken);
-    }
-
-    syncFirestoreDoc(
-      'commission_invoices',
-      invoice.invoiceId,
-      invoice as unknown as Record<string, unknown>,
-      bearerToken
-    );
-
-    appendAuditEntry(
-      {
-        orderNumber: batchOrderNumbers[batchOrderNumbers.length - 1],
-        orderId: batch[batch.length - 1].orderId,
-        sellerId,
-        actorUid: 'system:commission-engine',
-        action: 'INVOICE_GENERATED',
-        previousStatus: 'unbilled',
-        newStatus: 'open',
-        verificationMode: 'Server Automated',
-        detail: `Commission invoice ${invoiceNumber} automatically generated after ${INVOICE_SALES_THRESHOLD} verified sales (${batchOrderNumbers.join(
-          ', '
-        )}). Total 5% commission due: ${(commissionAmountMinor / 100).toFixed(2)} ${currency} by ${dueAtIso.slice(
-          0,
-          10
-        )}.`,
-      },
-      bearerToken
-    );
-  }
+  // Invoice creation is NOT a read-side effect. The authenticated payment
+  // transition calls issueDurableCommissionInvoicesForSeller after commit;
+  // a GET cannot create or bill an invoice based on local server memory.
 
   // 3. Evaluate overdue status across all seller invoices
   const sellerInvoices = Array.from(commissionInvoices.values())
     .filter((inv) => inv.sellerId === sellerId)
+    .map(inv => ({ ...inv }))
     .sort((a, b) => b.issuedAtMs - a.issuedAtMs);
 
   let isRestricted = false;
@@ -1695,12 +1622,7 @@ function reconcileSellerCommissionState(
     if (inv.remainingBalanceMinor <= 0) {
       if (inv.status !== 'paid' && inv.status !== 'voided') {
         inv.status = inv.paidAmountMinor > 0 ? 'paid' : 'voided';
-        syncFirestoreDoc(
-          'commission_invoices',
-          inv.invoiceId,
-          inv as unknown as Record<string, unknown>,
-          bearerToken
-        );
+        // Computed display status only; financial database remains authoritative.
       }
       continue;
     }
@@ -1725,31 +1647,7 @@ function reconcileSellerCommissionState(
         continue;
       }
 
-      if (inv.status === 'open') {
-        inv.status = 'overdue';
-        syncFirestoreDoc(
-          'commission_invoices',
-          inv.invoiceId,
-          inv as unknown as Record<string, unknown>,
-          bearerToken
-        );
-        appendAuditEntry(
-          {
-            orderNumber: inv.orderNumbers[0] || inv.invoiceNumber,
-            orderId: inv.invoiceId,
-            sellerId,
-            actorUid: 'system:commission-engine',
-            action: 'INVOICE_OVERDUE_RESTRICTED',
-            previousStatus: 'open',
-            newStatus: 'overdue',
-            verificationMode: 'Server Automated',
-            detail: `Invoice ${inv.invoiceNumber} passed 7-day payment deadline. Seller management features restricted until ${(
-              inv.remainingBalanceMinor / 100
-            ).toFixed(2)} ${inv.currency} is settled.`,
-          },
-          bearerToken
-        );
-      }
+      if (inv.status === 'open') inv.status = 'overdue';
       isRestricted = true;
       if (!restrictionReason) {
         restrictionReason = `Commission invoice ${inv.invoiceNumber} (${(
@@ -1815,6 +1713,123 @@ function reconcileSellerCommissionState(
     payments: sellerPayments,
     adjustments: sellerAdjustments,
   };
+}
+
+// Restore existing billing records before any invoice issuance. Local maps are
+// projections only, not an authority; the records must survive Cloud Run restarts.
+async function hydrateCommissionRecords(): Promise<void> {
+  if (!adminFirestoreDb) return;
+  try {
+    const [invoiceRows, paymentRows, adjustmentRows] = await Promise.all([
+      adminFirestoreDb.collection('commission_invoices').get(),
+      adminFirestoreDb.collection('commission_payments').get(),
+      adminFirestoreDb.collection('commission_adjustments').get(),
+    ]);
+    for (const row of invoiceRows.docs) {
+      const record = row.data() as CommissionInvoiceRecord;
+      if (!record || row.id !== record.invoiceId || !record.sellerId ||
+          !Array.isArray(record.orderNumbers)) continue;
+      commissionInvoices.set(row.id, record);
+      for (const number of record.orderNumbers) billedOrderNumbers.set(number, record.invoiceId);
+    }
+    for (const row of paymentRows.docs) {
+      const record = row.data() as CommissionPaymentSubmission;
+      if (record && record.paymentId === row.id && record.invoiceId && record.sellerId) {
+        commissionPayments.set(row.id, record);
+      }
+    }
+    for (const row of adjustmentRows.docs) {
+      const record = row.data() as CommissionAdjustmentEntry;
+      if (record && record.adjustmentId === row.id && record.invoiceId &&
+          !commissionAdjustments.some(existing => existing.adjustmentId === record.adjustmentId)) {
+        commissionAdjustments.push(record);
+      }
+    }
+  } catch (err) {
+    console.error('Commission database hydration failed; billing cannot be certified:', err);
+  }
+}
+const commissionHydrationPromise = hydrateCommissionRecords();
+
+// Invoices are issued in Firestore, never as a side-effect of reading the
+// dashboard. A deterministic ID and transactional recheck prevent competing
+// Cloud Run instances from billing the same five eligible orders twice.
+async function issueDurableCommissionInvoicesForSeller(sellerId: string): Promise<number> {
+  if (!adminFirestoreDb) throw new Error('Secure commission database is unavailable.');
+  await commissionHydrationPromise;
+  const db = adminFirestoreDb;
+  const verified = await db.collection('ledger').where('sellerId', '==', sellerId).get();
+  const groups = new Map<string, Array<{ orderNumber: string; entry: LedgerEntry }>>();
+  for (const row of verified.docs) {
+    const entry = row.data() as LedgerEntry;
+    if (entry.orderNumber !== row.id || entry.paymentStatus !== 'Paid' ||
+        entry.grossAmountMinor <= 0 || !Number.isSafeInteger(entry.platformCommissionMinor) ||
+        entry.platformCommissionMinor < 0 || entry.invoiceId ||
+        (entry.verificationMode !== 'Manually Verified by Seller' &&
+         entry.verificationMode !== 'Gateway Verified') ||
+        entry.commissionStatus === 'reversed' || entry.commissionStatus === 'disputed') continue;
+    const arr = groups.get(entry.currency) || [];
+    arr.push({ orderNumber: row.id, entry });
+    groups.set(entry.currency, arr);
+  }
+  let issued = 0;
+  for (const [currency, orders] of groups) {
+    orders.sort((a,b) => a.entry.createdAtIso.localeCompare(b.entry.createdAtIso) ||
+      a.orderNumber.localeCompare(b.orderNumber));
+    for (let start = 0; start + INVOICE_SALES_THRESHOLD <= orders.length; start += INVOICE_SALES_THRESHOLD) {
+      const batch = orders.slice(start, start + INVOICE_SALES_THRESHOLD);
+      const numbers = batch.map(row => row.orderNumber);
+      const hash = crypto.createHash('sha256').update([sellerId,currency,...numbers].join(':')).digest('hex');
+      const invoiceId = 'inv-' + hash.slice(0, 28);
+      const invoiceRef = db.collection('commission_invoices').doc(invoiceId);
+      const made = await db.runTransaction(async tx => {
+        const refs = numbers.map(number => db.collection('ledger').doc(number));
+        const [already, ...latest] = await Promise.all([tx.get(invoiceRef), ...refs.map(ref => tx.get(ref))]);
+        if (already.exists) return null;
+        const fresh = latest.map(snap => snap.exists ? snap.data() as LedgerEntry : null);
+        if (fresh.some(e => !e || e.sellerId !== sellerId || e.currency !== currency ||
+          e.paymentStatus !== 'Paid' || e.invoiceId ||
+          e.grossAmountMinor <= 0 || e.commissionStatus === 'reversed' ||
+          e.commissionStatus === 'disputed' ||
+          (e.verificationMode !== 'Manually Verified by Seller' &&
+           e.verificationMode !== 'Gateway Verified'))) return null;
+        const grossSalesMinor = fresh.reduce((sum,e) => sum + Number(e!.grossAmountMinor), 0);
+        const feeMinor = fresh.reduce((sum,e) => sum + Number(e!.platformCommissionMinor), 0);
+        if (!Number.isSafeInteger(grossSalesMinor) || !Number.isSafeInteger(feeMinor) || feeMinor < 0) {
+          throw new Error('Invalid commission invoice calculation.');
+        }
+        const nowMs = Date.now();
+        const dueAtMs = nowMs + INVOICE_PAYMENT_WINDOW_MS;
+        const storeId = String(fresh[0]!.storeId);
+        const invoice: CommissionInvoiceRecord = {
+          invoiceId, invoiceNumber: 'INV-' + new Date(nowMs).getFullYear() + '-' + hash.slice(0, 8).toUpperCase(),
+          sellerId, storeId, currency, orderNumbers: numbers,
+          verifiedSalesCount: numbers.length, grossSalesMinor,
+          commissionAmountMinor: feeMinor, paidAmountMinor: 0,
+          adjustedAmountMinor: 0, remainingBalanceMinor: feeMinor,
+          status: 'open', issuedAtMs: nowMs, dueAtMs,
+          issuedAtIso: new Date(nowMs).toISOString(),
+          dueAtIso: new Date(dueAtMs).toISOString(),
+          serverSignature: signInvoiceRecord({
+            invoiceId, sellerId, orderNumbers: numbers,
+            commissionAmountMinor: feeMinor, dueAtMs,
+          }),
+        };
+        tx.create(invoiceRef, invoice as unknown as Record<string, unknown>);
+        for (const ref of refs) tx.update(ref, { invoiceId });
+        return invoice;
+      });
+      if (!made) continue;
+      commissionInvoices.set(made.invoiceId, made);
+      for (const number of numbers) {
+        billedOrderNumbers.set(number, made.invoiceId);
+        const cache = persistentLedger.get(number);
+        if (cache) cache.invoiceId = made.invoiceId;
+      }
+      issued++;
+    }
+  }
+  return issued;
 }
 
 function applyOrderCommissionReversalToInvoice(
@@ -6396,7 +6411,15 @@ async function startServer() {
           user.rawToken
         );
 
-        // Automatically check if seller has reached 5 verified eligible sales and generate commission invoice
+        // Invoice creation requires durable, cross-instance Firestore commits.
+        // A failed invoice must never be reported as successfully billed.
+        let commissionBillingWarning: string | null = null;
+        try {
+          await issueDurableCommissionInvoicesForSeller(entry.sellerId);
+        } catch (err) {
+          console.error('Commission invoice persistence pending:', err);
+          commissionBillingWarning = 'Payment was confirmed, but commission invoicing needs operator reconciliation.';
+        }
         const commissionSummary = reconcileSellerCommissionState(
           entry.sellerId,
           Date.now(),
@@ -6417,6 +6440,7 @@ async function startServer() {
           emailNotification,
           auditEntry,
           commissionSummary,
+          ...(commissionBillingWarning ? { commissionBillingWarning } : {}),
         });
       } else {
         entry.paymentStatus = 'Failed';
