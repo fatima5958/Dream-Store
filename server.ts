@@ -2828,6 +2828,43 @@ function verifyServerEmailSessionToken(token: string): VerifiedAuthUser | null {
 }
 
 /**
+ * Distinguish invalid user credentials from failed *server-side* Firebase
+ * verification. Both fail closed. A broken Admin SDK must never masquerade as
+ * an expired account and trigger an endless sign-in loop.
+ */
+class FirebaseAuthBackendUnavailableError extends Error {
+  readonly code = 'auth/backend-unavailable';
+
+  constructor() {
+    super('Firebase Authentication verification is temporarily unavailable.');
+    this.name = 'FirebaseAuthBackendUnavailableError';
+  }
+}
+
+function isInvalidFirebaseIdTokenError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  // Firebase Admin explicitly classifies these as invalid or revoked *user*
+  // credentials. Never confuse auth/invalid-credential (Admin credentials)
+  // with auth/invalid-id-token (user token).
+  return typeof code === 'string' && [
+    'auth/argument-error',
+    'auth/id-token-expired',
+    'auth/id-token-revoked',
+    'auth/invalid-id-token',
+    'auth/user-disabled',
+  ].includes(code);
+}
+
+function safeFirebaseAdminFailureCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  // Only one bounded, syntactically constrained category, no messages, IDs,
+  // JWTs, cookies, e-mail addresses, request headers, or error objects.
+  return typeof code === 'string' && /^[a-z][a-z0-9-]{0,31}\/[a-z][a-z0-9-]{0,63}$/.test(code)
+    ? code
+    : 'unclassified';
+}
+
+/**
  * Cryptographically verifies a genuine Firebase Authentication ID token exclusively using the Firebase Admin SDK,
  * or a server-minted HMAC-verified DS_EMAIL_SESSION token.
  * Rejects missing tokens, raw UID strings, malformed tokens, 'none' algorithms, all HS256/custom JWT tokens,
@@ -2898,8 +2935,12 @@ export async function verifyFirebaseIdTokenOnServer(
       authTime: decoded.auth_time,
       rawToken: trimmed,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    if (isInvalidFirebaseIdTokenError(error)) return null;
+    console.error('[DreamStore Auth] Firebase Admin token verification unavailable', {
+      code: safeFirebaseAdminFailureCode(error),
+    });
+    throw new FirebaseAuthBackendUnavailableError();
   }
 }
 
@@ -2971,7 +3012,17 @@ async function requireAuthenticatedUser(
   req: express.Request,
   res: express.Response
 ): Promise<VerifiedAuthUser | null> {
-  const user = await extractVerifiedCaller(req);
+  let user: VerifiedAuthUser | null;
+  try {
+    user = await extractVerifiedCaller(req);
+  } catch (error) {
+    if (!(error instanceof FirebaseAuthBackendUnavailableError)) throw error;
+    res.status(503).json({
+      code: 'auth/backend-unavailable',
+      error: 'DreamStore cannot verify accounts with Firebase right now. Please retry later.',
+    });
+    return null;
+  }
   if (!user) {
     // Keep the strict verification requirement, but return a recoverable
     // account-session error rather than surfacing internal token jargon.

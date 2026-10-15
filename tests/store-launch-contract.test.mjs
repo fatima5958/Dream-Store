@@ -119,6 +119,8 @@ test('role onboarding refreshes Firebase ID token and securely recovers from a r
   const roleHandler = app.slice(start, end < 0 ? start + 6500 : end);
   assert.match(roleHandler, /getAuthHeaders\(\{\}, \{ forceRefresh: true, requireAuth: true \}\)/);
   assert.match(roleHandler, /if \(res\.status === 401\)/);
+  assert.match(roleHandler, /if \(hasFirebaseSdkSession\(\)\)/);
+  assert.match(roleHandler, /Your account has not been signed out/);
   assert.match(roleHandler, /await requireNewSignIn\(\)/);
   assert.match(roleHandler, /setAuthModalMode\('signin'\)/);
   assert.match(roleHandler, /invalidateRejectedLegacyEmailSession\(\)/);
@@ -448,4 +450,26 @@ test('email signup gates unverified Firebase users behind resend and verificatio
   const modal = read('src/components/CandylandAuthModal.tsx');
   assert.match(modal, /Check your inbox for an email verification link/);
   assert.match(restoration, /setUserProfile\(null\)/);
+});
+
+test('Firebase Admin outages do not masquerade as invalid sessions or log private bearer tokens', () => {
+  const verifier = server.slice(server.indexOf('class FirebaseAuthBackendUnavailableError'),
+    server.indexOf('/**\n * Extracts and cryptographically verifies the caller'));
+  assert.match(verifier, /verifyIdToken\(trimmed, true\)/);
+  assert.match(verifier, /isInvalidFirebaseIdTokenError\(error\)/);
+  assert.match(verifier, /safeFirebaseAdminFailureCode\(error\)/);
+  assert.match(verifier, /throw new FirebaseAuthBackendUnavailableError\(\)/);
+  assert.doesNotMatch(verifier, /console\.(error|log|warn)\([^\n]*(token|trimmed|error)\b/);
+  const auth = server.slice(server.indexOf('async function requireAuthenticatedUser('),
+    server.indexOf('async function requireSuperAdminUser('));
+  assert.match(auth, /res\.status\(503\)\.json\(\{/);
+  assert.match(auth, /code: 'auth\/backend-unavailable'/);
+  assert.match(auth, /code: 'auth\/session-invalid'/);
+  const onboardingHandler = app.slice(app.indexOf('const handleCompleteRoleOnboarding = async'),
+    app.indexOf('  const handleNavigate ='));
+  assert.match(onboardingHandler, /if \(res\.status === 401\) \{\s*if \(hasFirebaseSdkSession\(\)\)/);
+  assert.match(onboardingHandler, /await requireNewSignIn\(\)/);
+  const getProfile = app.slice(app.indexOf("let profRes = await fetch('/api/users/profile'"),
+    app.indexOf('const profData = await profRes.json()'));
+  assert.match(getProfile, /errorBody\?\.code === 'auth\/backend-unavailable'/);
 });

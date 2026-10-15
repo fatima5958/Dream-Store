@@ -884,11 +884,16 @@ export default function App() {
               return;
             }
             if (!profRes.ok) {
+              const errorBody = profRes.status === 503
+                ? await profRes.json().catch(() => null)
+                : null;
               setUserProfile(null);
               setRoleOnboardingOpen(false);
               setAuthVerificationIssue(true);
               setBlockedAccessNotice(
-                profRes.status === 503
+                errorBody?.code === 'auth/backend-unavailable'
+                  ? 'DreamStore Firebase server verification is temporarily unavailable. Your account is still signed in; retry when the server is restored.'
+                  : profRes.status === 503
                   ? 'DreamStore server cannot reach its secure Firebase database right now. Please retry shortly.'
                   : `Account verification service returned HTTP ${profRes.status}. Please retry or contact support.`
               );
@@ -905,7 +910,8 @@ export default function App() {
                 message.startsWith('DreamStore server cannot reach') ||
                 message.startsWith('Account verification service returned') ||
                 message.startsWith('Could not verify your account') ||
-                message.startsWith('DreamStore cannot verify this Firebase session')
+                message.startsWith('DreamStore cannot verify this Firebase session') ||
+                message.startsWith('DreamStore Firebase server verification')
               ) ? null : message
             );
             if (
@@ -1774,10 +1780,22 @@ export default function App() {
     });
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) {
+      if (hasFirebaseSdkSession()) {
+        // An unexpected backend 401 must not destroy a valid Firebase
+        // session and restart sign-up. Keep onboarding pending, with no role
+        // or dashboard access, until the server can verify the signed token.
+        setAuthVerificationIssue(true);
+        setBlockedAccessNotice('DreamStore could not verify this Firebase session. Your account has not been signed out. Please retry onboarding after the server is fixed.');
+        throw new Error('Account verification failed on the server. Please retry later or use Sign Out to switch accounts.');
+      }
       await requireNewSignIn();
       throw new Error('Your login session expired. Please sign in again to finish setup.');
     }
     if (!res.ok) {
+      if (data?.code === 'auth/backend-unavailable') {
+        setAuthVerificationIssue(true);
+        setBlockedAccessNotice('DreamStore Firebase server verification is temporarily unavailable. Your account is still signed in; retry when the server is restored.');
+      }
       throw new Error(data.error || 'Unable to save your role right now. Please try again.');
     }
 

@@ -79,8 +79,21 @@ export function getAuth() {
   return {
     async verifyIdToken(token, checkRevoked) {
       if (checkRevoked !== true) throw new Error('Revocation checking is required.');
+      if (scenario === 'auth-admin-permission-denied') {
+        throw Object.assign(new Error('test-only Firebase Admin permission denied'), { code: 'auth/insufficient-permission' });
+      }
+      if (scenario === 'auth-admin-network-outage') {
+        throw Object.assign(new Error('test-only network outage'), { code: 'app/network-error' });
+      }
+      if (scenario === 'auth-admin-no-app') {
+        throw Object.assign(new Error('test-only no initialized Firebase Admin app'), { code: 'app/no-app' });
+      }
+      if (scenario === 'auth-admin-invalid-credential') {
+        throw Object.assign(new Error('test-only bad Admin credentials'), { code: 'app/invalid-credential' });
+      }
       const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
-      if (payload.sub === 'revoked-user') throw new Error('auth/id-token-revoked');
+      if (payload.sub === 'revoked-user') throw Object.assign(new Error('test-only revoked token'), { code: 'auth/id-token-revoked' });
+      if (payload.sub === 'expired-admin-user') throw Object.assign(new Error('test-only expired token'), { code: 'auth/id-token-expired' });
       return { ...payload, uid: payload.sub, email: 'seller@example.test', email_verified: payload.email_verified !== false, name: 'Test Seller' };
     },
     async setCustomUserClaims() { throw permissionError(); },

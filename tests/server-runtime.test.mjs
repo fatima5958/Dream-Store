@@ -69,6 +69,37 @@ test('production entrypoint honors PORT, disables temporary auth, and does not e
   assert.match(malformed.headers.get('content-type'), /json/);
 });
 
+
+test('Firebase Admin backend errors yield 503, not misleading invalid-session 401', async t => {
+  for (const scenario of ['auth-admin-permission-denied', 'auth-admin-network-outage', 'auth-admin-no-app', 'auth-admin-invalid-credential']) {
+    await t.test(scenario, async t => {
+      const origin = await boot(t, scenario);
+      const res = await request(origin, '/api/users/profile', undefined, token());
+      assert.equal(res.status, 503, scenario);
+      assert.deepEqual(await res.json(), {
+        code: 'auth/backend-unavailable',
+        error: 'DreamStore cannot verify accounts with Firebase right now. Please retry later.',
+      });
+      assert.equal(res.headers.get('cache-control'), 'no-store');
+      assert.equal((await request(origin, '/api/users/profile', { role: 'seller' }, token())).status, 503);
+    });
+  }
+});
+
+test('expired or revoked tokens are rejected with 401 and never acquire a role', async t => {
+  const origin = await boot(t);
+  for (const uid of ['revoked-user', 'expired-admin-user']) {
+    const res = await request(origin, '/api/users/profile', undefined, token(uid));
+    assert.equal(res.status, 401);
+    assert.equal((await res.json()).code, 'auth/session-invalid');
+  }
+  const malformed = await request(origin, '/api/users/profile', undefined, 'not-a-firebase-token');
+  assert.equal(malformed.status, 401);
+  assert.equal((await malformed.json()).code, 'auth/session-invalid');
+  const forged = await request(origin, '/api/users/profile', undefined, token('seller-test', { aud: 'other-firebase-project' }));
+  assert.equal(forged.status, 401);
+});
+
 test('readiness fails without a stable production secret even when Firebase is reachable', async t => {
   const origin = await boot(t, 'healthy', '');
   assert.equal((await request(origin, '/api/ready')).status, 503);
