@@ -15,12 +15,14 @@ import {
 
 export interface SquishyPricingProps {
   onStartFreeStore: () => void;
+  creatorSpotsSoldOut?: boolean;
   onExploreStores?: () => void;
   defaultWaitlistEmail?: string;
 }
 
 export const SquishyPricing: React.FC<SquishyPricingProps> = ({
   onStartFreeStore,
+  creatorSpotsSoldOut = false,
   defaultWaitlistEmail = '',
 }) => {
   const prefersReducedMotion = useReducedMotion();
@@ -121,7 +123,7 @@ export const SquishyPricing: React.FC<SquishyPricingProps> = ({
                 Starter Creator Plan
               </span>
               <span className="text-xs font-extrabold text-[#50352F] bg-[#AFE0BE] border-2 border-[#D9F3E1] px-3 py-1 rounded-full shadow-[0_3px_0_#82BF96]">
-                Available Now
+                {creatorSpotsSoldOut ? 'All 100 Spots Claimed' : 'Available Now'}
               </span>
             </div>
 
@@ -214,10 +216,11 @@ export const SquishyPricing: React.FC<SquishyPricingProps> = ({
                   type="button"
                   onClick={onStartFreeStore}
                   data-testid="pricing-cta-free"
+                  disabled={creatorSpotsSoldOut}
                   className="candy-btn-pink w-full min-h-[50px] px-6 py-3.5 rounded-full font-extrabold text-sm sm:text-base text-[#50352F] flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Sparkles className="w-4 h-4" />
-                  <span>Create My Free Store</span>
+                  <span>{creatorSpotsSoldOut ? 'All 100 Launch Spots Claimed' : 'Claim My Free Store'}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>

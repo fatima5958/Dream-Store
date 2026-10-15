@@ -379,3 +379,12 @@ test('first 100 creator claims are unique, atomic, and counted only after a new 
   assert.match(landing, /disabled=\{creatorOfferExhausted\}/);
   assert.match(landing, /5% fee applies only to verified paid sales/);
 });
+
+test('every landing free claim entry point reflects sold-out campaign safely', () => {
+  const landing = read('src/components/screens/LandingPage.tsx');
+  const pricing = read('src/components/ui/squishy-pricing.tsx');
+  assert.match(landing, /creatorSpotsSoldOut=\{creatorOfferExhausted\}/);
+  assert.match(landing, /creatorOfferExhausted \? 'Launch Spots Full'/);
+  assert.match(pricing, /disabled=\{creatorSpotsSoldOut\}/);
+  assert.match(pricing, /All 100 Launch Spots Claimed/);
+});

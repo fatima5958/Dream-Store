@@ -466,7 +466,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               className="candy-btn-pink min-h-[44px] px-5 py-2.5 rounded-full text-sm font-extrabold text-[#50352F] cursor-pointer whitespace-nowrap inline-flex items-center gap-2"
             >
               <Sparkles className="w-3.5 h-3.5 shrink-0" />
-              <span className="whitespace-nowrap">Create My Free Store</span>
+              <span className="whitespace-nowrap">{creatorOfferExhausted ? 'Launch Spots Full' : 'Claim My Free Store'}</span>
             </button>
           </div>
 
@@ -579,7 +579,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     className="w-full min-h-[48px] px-5 py-3 rounded-full candy-btn-pink text-[15px] font-extrabold text-[#50352F] flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
                   >
                     <Sparkles className="w-4 h-4 shrink-0" />
-                    <span>Create My Free Store</span>
+                    <span>{creatorOfferExhausted ? 'All 100 Spots Claimed' : 'Claim My Free Store'}</span>
                   </button>
                 </div>
               </div>
@@ -1099,6 +1099,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         {/* 6. CANONICAL PRICING SECTION — SQUISHY PRICING (Free Rs. 0 vs DreamStore Pro Coming Soon) */}
         <SquishyPricing
           onStartFreeStore={() => onNavigate('wizard')}
+          creatorSpotsSoldOut={creatorOfferExhausted}
           onExploreStores={handleExploreStores}
           defaultWaitlistEmail={userEmail || ''}
         />
@@ -1182,9 +1183,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('wizard')}
-              className="hover:text-[#50352F] cursor-pointer"
+              disabled={creatorOfferExhausted}
+              className="hover:text-[#50352F] cursor-pointer disabled:opacity-50"
             >
-              Create Store
+              {creatorOfferExhausted ? 'Launch Spots Full' : 'Create Store'}
             </button>
             <button
               type="button"
