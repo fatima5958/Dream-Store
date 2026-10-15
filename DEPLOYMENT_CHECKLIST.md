@@ -2,9 +2,9 @@
 
 **Status: READY FOR STAGING REVIEW, NOT YET APPROVED FOR PAID PRODUCTION.**
 
-This checklist applies to the isolated PR branch `fix/launch-checkout-download-safety`. Do not merge or deploy to the live DreamStore until the production gates below pass.
+This checklist applies to the isolated PR branch `fix/launch-readiness`. Do not merge or deploy to the live DreamStore until the production gates below pass.
 
-## Verified in GitHub Actions
+## Required automated checks
 
 - TypeScript/typecheck and Vite production build.
 - Static tests for authentic seller files (up to 5 MiB), pricing, checkout and download authorization.
@@ -13,6 +13,16 @@ This checklist applies to the isolated PR branch `fix/launch-checkout-download-s
 - Code-level checks for Free-plan onboarding and server-acknowledged store launch.
 
 **Important:** These tests do NOT simulate all production Firebase Auth, named Firestore database, Cloud Run permissions, email delivery, real manual payments or real device behavior.
+
+## Auth and runtime rollout gates
+
+- Deploy the client and server together. A stale or rejected onboarding token now triggers Firebase sign-in recovery; selecting a role must persist successfully before entering a dashboard.
+- Enable the Firebase Email/Password and Google providers. Authorize the deployed domain and its `/__/auth/handler` OAuth redirect URI. The same-origin helper proxy forwards official Firebase responses; the public cross-user relay has been removed. Test popup and redirect flows in a normal browser tab.
+- Start with `npm start` on Node 22.12+ (CI uses Node 24). This forces production mode and honors Cloud Run `PORT`. Install runtime dependencies including `tsx`, and build `dist` before startup.
+- Require `/api/ready` to return 200 in staging. It checks the signing secret, Firestore and Storage; `/api/health` only confirms process liveness.
+- Configure `TRUST_PROXY_HOPS=1` only behind a trusted single-hop proxy that overwrites forwarded headers.
+- Run `npm run test:server`: these regression tests use isolated Firebase doubles to exercise failure paths, not live credentials. Existing emulator and browser checks remain required.
+- Digital checkout currently supports one product, quantity one, per order so every purchased item has a matching download entitlement. Generic payment webhooks are disabled until a verified provider adapter is implemented.
 
 ## Safe public-preview mode
 
@@ -39,7 +49,7 @@ Security rules no longer embed any personal Firebase UID. They require a **verif
 
 ## Blocking production issues
 
-1. **Legacy custom email accounts are saved under ephemeral OS `/tmp`**. A Cloud Run restart, replacement instance, or scale-out may lose accounts, sessions and pending reset tokens. Enable Firebase Auth Email/Password and migrate/verify existing custom-email users, or implement a durable securely managed account/session store. **Do not onboard paying customers via the legacy fallback until solved.**
+1. **Production now rejects legacy temporary email sessions.** Enable Firebase Auth Email/Password and migrate/verify existing custom-email users while preserving their UIDs and ownership before rollout. Legacy accounts were stored under ephemeral OS `/tmp`; recover any available records securely before replacing instances. Test existing accounts as well as new signups. Legacy development auth requires both development mode and `DREAMSTORE_LEGACY_EMAIL_AUTH_ENABLED=true`.
 2. Verify the production runtime has a **stable 32+ character `SERVER_SIGNING_SECRET`** (same across all instances, stored through a secret manager, not source code). Paid order endpoints fail closed without it.
 3. Firebase Admin must have working credentials for Firebase project `dulcet-trees-qk6n5`, the **named Firestore database** `ai-studio-dreamstore-fac8084d-6f5b-423c-9b66-3ce72d622890` and Storage bucket `dulcet-trees-qk6n5.firebasestorage.app`. Merely compiling code doesn't verify runtime access.
 4. **Review and deploy security rules to the correct Firestore database and Storage bucket.** `firebase.emulator.json` is for local emulators; do not assume its default database target matches production. Back up/export production documents before a rules deployment.

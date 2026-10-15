@@ -3,7 +3,8 @@ name: DreamStore Pull Request Checks
 on:
   push:
     branches:
-      - fix/launch-checkout-download-safety
+      - main
+      - fix/launch-readiness
   pull_request:
     branches:
       - main
@@ -17,13 +18,18 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.3
       - name: Install from committed lockfile
         run: bun install --frozen-lockfile
       - name: TypeScript typecheck
         run: bun run lint
+      - name: Server auth and failure-path regression tests
+        run: npm run test:server
       - name: Production Vite build
         run: bun run build
       - name: Static 5MB storage, launch onboarding and safety contracts
@@ -46,9 +52,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.4.3
       - name: Install app dependencies
         run: bun install --frozen-lockfile
       - name: Install headless Chromium for Playwright

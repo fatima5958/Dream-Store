@@ -95,3 +95,40 @@ test('Production checkout does not offer test-buyer identity or payment instruct
     assert.doesNotMatch(await page.locator('body').innerText(), /Amina Test Buyer|Use Sandbox Buyer/i);
   } finally { await page.close(); }
 });
+
+test('Rejected restored email session requires sign-in instead of trusting cached seller role', async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+  try {
+    await page.addInitScript(() => {
+      const uid = 'u_restored_stale_seller';
+      localStorage.setItem('dreamstore_email_auth_session_v1', JSON.stringify({
+        token: 'DS_EMAIL_SESSION.invalid.browser-token',
+        expiresAtMs: Date.now() + 3600_000,
+        user: {
+          uid,
+          email: 'expired-session@local.test',
+          displayName: 'Expired Seller',
+          emailVerified: true,
+        },
+      }));
+      localStorage.setItem('dreamstore_user_profile_' + uid, JSON.stringify({
+        uid, role: 'seller', displayName: 'Expired Seller',
+        email: 'expired-session@local.test', onboardingCompleted: true,
+      }));
+    });
+    await page.route('**/api/admin/verify-session', route =>
+      route.fulfill({ status: 403, contentType: 'application/json', body: '{}' })
+    );
+    await page.route('**/api/users/profile', route =>
+      route.fulfill({ status: 401, contentType: 'application/json',
+        body: JSON.stringify({ code: 'auth/session-invalid', error: 'Sign in again.' }) })
+    );
+    await page.goto(origin + '/?screen=landing', { waitUntil: 'domcontentloaded', timeout: 40000 });
+    await page.getByTestId('hero-headline').waitFor({ state: 'visible', timeout: 30000 });
+    await page.getByTestId('candyland-auth-modal').waitFor({ state: 'visible', timeout: 30000 });
+    assert.equal(await page.getByTestId('role-nav-seller').count(), 0);
+    assert.equal(await page.getByTestId('auth-tab-signin').getAttribute('aria-selected'), 'true');
+    const session = await page.evaluate(() => localStorage.getItem('dreamstore_email_auth_session_v1'));
+    assert.equal(session, null, 'Rejected legacy session must be erased');
+  } finally { await page.close(); }
+});
