@@ -506,3 +506,15 @@ test('readiness failures are logged safely without changing the public API respo
 test('OAuth diagnostics flag redirect URI names as unverified source-code values', () => {
   assert.match(server, /registeredRedirectUrisSource: 'source-code-list-unverified'/);
 });
+
+test('rejected legacy sessions open Sign In before sign-out invalidates their auth run', () => {
+  const effect = app.slice(app.indexOf('// 2. Listen to Firebase & Email Authentication state'),
+    app.indexOf('  }, [authRestoreAttempt]);'));
+  const branch = effect.slice(effect.indexOf('if (profRes.status === 401)'),
+    effect.indexOf('if (!profRes.headers.get', effect.indexOf('if (profRes.status === 401)')));
+  assert.ok(branch.indexOf('invalidateRejectedLegacyEmailSession()') >= 0);
+  assert.ok(branch.indexOf("setAuthModalOpen(true)") >= 0);
+  assert.ok(branch.indexOf("await signOutUser().catch") > branch.indexOf("setAuthModalOpen(true)"),
+    'sign-in recovery must be made visible before the legacy sign-out event invalidates the previous auth run');
+  assert.match(branch, /if \(isStale\(\)\) return;[\s\S]*invalidateRejectedLegacyEmailSession\(\)/);
+});

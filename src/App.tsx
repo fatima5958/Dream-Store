@@ -883,12 +883,15 @@ export default function App() {
               // Never sign out a newer identity because of an older 401.
               if (isStale()) return;
               invalidateRejectedLegacyEmailSession();
-              await signOutUser().catch(() => {});
-              if (isStale()) return;
+              // Set the recovery UI before signOutUser notifies subscribers:
+              // that notification invalidates this older auth run. A second
+              // stale-run guard after sign-out would otherwise suppress the
+              // required Sign In modal for a rejected legacy session.
               setAuthVerificationIssue(false);
               setAuthModalMode('signin');
               setAuthModalOpen(true);
               setBlockedAccessNotice('Your session expired. Sign in again to open your account.');
+              await signOutUser().catch(() => {});
               return;
             }
             if (!profRes.headers.get('content-type')?.includes('application/json')) {
