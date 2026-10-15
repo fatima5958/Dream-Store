@@ -29,7 +29,7 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 | POST | `/api/navigation/access` | 4483 | Implemented in isolated V2 staging |
 | GET | `/api/auth/verify-screen-access` | 4484 | Implemented in isolated V2 staging |
 | GET | `/api/launch/creator-spots` | 4541 | Implemented in isolated V2 staging |
-| GET | `/api/stores` | 4566 | Not migrated — V1 remains authoritative |
+| GET | `/api/stores` | 4566 | Implemented in isolated V2 staging (active public directory, positive field allowlist, bounded 100 records) |
 | POST | `/api/stores/visit` | 4585 | Not migrated — V1 remains authoritative |
 | GET | `/api/stores/check-slug` | 4607 | Not migrated — V1 remains authoritative |
 | GET | `/api/stores/by-slug/:slug` | 4668 | Not migrated — V1 remains authoritative |

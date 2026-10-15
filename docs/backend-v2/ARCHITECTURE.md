@@ -20,7 +20,7 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
 - The existing Dockerfile runs `scripts/start.mjs` and therefore **V1**. No dual server process, parallel webhook worker or duplicate payment processor is started.
 - V2 requires `DREAMSTORE_V2_STAGING=1`; its default bind address is `127.0.0.1:8091`.
 - V2 account writes are disabled unless running against a configured Firestore emulator. Production Firestore is never writable through this staging process.
-- V2 only implements profile read/onboarding, Admin session verification, role-based navigation authorization, creator-count read and health/readiness. Unsupported API routes explicitly return HTTP 501.
+- V2 currently implements profile read/onboarding, Admin session verification, role-based navigation authorization, creator-count read, public Store Directory, slug checks, emulator-only store creation, and health/readiness. Unsupported API routes explicitly return HTTP 501.
 - Readiness probes Firebase Auth permissions, named Firestore reads, Storage bucket access and durable signing-secret presence; it is not merely a server liveness flag. The public response is only `ready/not_ready`.
 - Never include token, password, cookies, private payment fields, Firebase credential values, or full SDK errors in logs.
 
@@ -39,3 +39,10 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
 - Google Cloud OAuth redirect URI still needs **actual Google Console** confirmation; hardcoded diagnostic lists are not proof.
 - V2 store writes, orders, payments, uploads, financial transaction consistency, downloads and worker behavior are not implemented.
 - Full staging integration, emulator credential isolation, cross-instance rate limiting and rollback rehearsal remain prerequisites for traffic switch.
+## Public Store Directory (next implementation slice)
+
+- `GET /api/stores` queries active stores in the existing named Firestore database; no cached demo stores are used.
+- Results are capped at 100 records until paginated cursor support is built; no false claim of an exhaustive catalogue.
+- A positive allowlist excludes private seller payment settings, emails and any future sensitive database fields.
+- Availability/read errors return 503, never misleading `{ stores: [] }`.
+- Public store-by-slug pages still need compatible product-list retrieval and ownership-safe read logic before they can migrate.

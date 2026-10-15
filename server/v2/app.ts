@@ -126,6 +126,13 @@ export function createV2App(deps: V2Dependencies) {
     res.json(await deps.creators.read());
   }));
 
+  // Guest discovery is read-only, backed by the same named Firestore database
+  // as Seller creation. Never reveal private payment or seller settings.
+  app.get('/api/stores', jsonRoute(async (_req, res) => {
+    if (!deps.stores) throw new ApiError(501, 'backend/v2-not-implemented', 'Store directory is unavailable.');
+    res.json({ stores: await deps.stores.listPublic() });
+  }));
+
   // Public slug checks do not authorize mutation. A token, when supplied, is
   // verified before an "excludeStoreId" may refer to an owned store.
   app.get('/api/stores/check-slug', jsonRoute(async (req, res) => {

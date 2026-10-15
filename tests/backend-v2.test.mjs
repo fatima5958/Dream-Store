@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createV2App } from '../server/v2/app.ts';
 import { createFirebaseVerifier } from '../server/v2/modules/auth.ts';
+import { createFirestoreStoreRepository, publicStoreProjection } from '../server/v2/modules/stores.ts';
 
 const principal = (uid, overrides = {}) => ({
   uid, email: uid + '@example.test', emailVerified: true,
@@ -37,6 +38,7 @@ function fixture(options = {}) {
     },
     readiness: { async check() { return options.ready === true; } },
     adminUid: 'admin_uid',
+    stores: options.stores,
     allowWrites: options.allowWrites === true,
   };
   const app = createV2App(deps);
@@ -143,7 +145,7 @@ test('V2 reads creator counter without a claim mutation or fabricated progress',
     const [status, body] = await request('/api/launch/creator-spots');
     assert.equal(status, 200);
     assert.deepEqual([body.claimed, body.remaining, body.soldOut], [98, 2, false]);
-    assert.equal((await request('/api/stores/create', 'creator', { storeName: 'No write' }))[0], 501);
+    assert.equal((await request('/api/stores/create', 'creator', { storeName: 'No write' }))[0], 503);
   });
 });
 
@@ -162,4 +164,78 @@ test('Firebase Admin validates signed and unrevoked tokens; outages are recovera
   await assert.rejects(verify.verifyBearer('revoked'), e => e.status === 401);
   await assert.rejects(verify.verifyBearer('offline'), e => e.status === 503);
   assert.deepEqual(calls.map(x => x[1]), [true, true, true]);
+});
+
+
+test('V2 public directory is limited to active stores and never exposes Seller secrets', async () => {
+  const fakeStore = {
+    storeSlug: 'creator-books', storeName: 'Creator Books', ownerId: 'private_owner_uid',
+    ownerEmail: 'seller@example.test', paymentLinkUrl: 'private-link',
+    jazzCashMerchantId: 'private-merchant', bankTransferInstructions: 'private-bank',
+    sellerCountry: 'Pakistan', currency: 'PKR', status: 'Active',
+    passwordHash: 'never-public', theme: 'blush-rose',
+  };
+  const queryCalls = [];
+  const db = {
+    collection(name) {
+      assert.equal(name, 'stores');
+      return {
+        where(...args) {
+          queryCalls.push(['where', ...args]);
+          return {
+            limit(count) {
+              queryCalls.push(['limit', count]);
+              return {
+                async get() {
+                  return { docs: [{ id: 'store-private-owner', data: () => fakeStore }] };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+  const directory = createFirestoreStoreRepository(db);
+  const listing = await directory.listPublic();
+  assert.deepEqual(queryCalls, [['where', 'status', '==', 'Active'], ['limit', 100]]);
+  assert.equal(listing.length, 1);
+  const [publicStore] = listing;
+  assert.equal(publicStore.storeSlug, 'creator-books');
+  assert.equal(publicStore.storeId, 'store-private-owner');
+  for (const secret of ['ownerEmail', 'paymentLinkUrl', 'jazzCashMerchantId',
+    'bankTransferInstructions', 'passwordHash']) {
+    assert.equal(Object.hasOwn(publicStore, secret), false, secret + ' must not leak');
+  }
+  const { app } = fixture({ stores: { listPublic: () => Promise.resolve(listing) } });
+  await withServer(app, async request => {
+    const [status, response] = await request('/api/stores');
+    assert.equal(status, 200);
+    assert.deepEqual(response, { stores: listing });
+  });
+});
+
+test('publicStoreProjection excludes untrusted nested private data by default', () => {
+  const projected = publicStoreProjection('store-seller', {
+    storeName: 'Public Shop', status: 'Active', ownerEmail: 'private@example.test',
+    nestedSettings: { paymentDetails: 'private' }, plan: 'Free',
+    exchangeRatePkr: Infinity,
+  });
+  assert.deepEqual(projected, {
+    storeId: 'store-seller', storeName: 'Public Shop', status: 'Active', plan: 'Free',
+  });
+});
+
+test('V2 directory infrastructure failures are never misreported as empty stores', async () => {
+  const { app } = fixture({
+    stores: { async listPublic() { throw Object.assign(new Error('simulated database failure'), {
+      code: 'permission-denied',
+    }); } },
+  });
+  await withServer(app, async request => {
+    const [status, response] = await request('/api/stores');
+    assert.equal(status, 503);
+    assert.equal(response.code, 'backend/unavailable');
+    assert.equal('stores' in response, false);
+  });
 });

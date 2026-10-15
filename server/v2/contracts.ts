@@ -43,6 +43,7 @@ export interface StoreCreateResult {
 }
 
 export interface StoreRepository {
+  listPublic(): Promise<Array<Record<string, unknown>>>;
   checkSlug(slug: string, viewer?: Principal | null, excludeStoreId?: string): Promise<boolean>;
   create(principal: Principal, body: Record<string, unknown>): Promise<StoreCreateResult>;
 }

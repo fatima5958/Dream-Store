@@ -14,6 +14,30 @@ export const isValidStoreSlug = (slug: string): boolean =>
 
 const currencies = new Set(['PKR', 'INR', 'USD', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD']);
 
+const PUBLIC_STORE_FIELDS = [
+  // Explicit positive allowlist: new private fields cannot leak by accident.
+  'ownerId', 'storeSlug', 'storeName', 'ownerName', 'country', 'sellerCountry',
+  'productType', 'instagramHandle', 'announcementText', 'heroHeadingLine1',
+  'heroHeadingLine2', 'heroSubheading', 'heroButtonText', 'heroImage', 'logoUrl',
+  'theme', 'customAccentColor', 'currency', 'exchangeRatePkr', 'plan', 'status',
+] as const;
+
+export function publicStoreProjection(id: string, source: Record<string, unknown>) {
+  const publicStore: Record<string, unknown> = { storeId: id };
+  for (const name of PUBLIC_STORE_FIELDS) {
+    const value = source[name];
+    if (typeof value === 'string' || (name === 'exchangeRatePkr' &&
+        typeof value === 'number' && Number.isFinite(value))) {
+      publicStore[name] = value;
+    }
+  }
+  // No payment settings, seller email, buyer data, bank details, or internal
+  // Firestore metadata may be returned through the discovery endpoint.
+  return publicStore;
+}
+
+
+
 function field(value: unknown, max: number, fallback = ''): string {
   if (typeof value !== 'string') return fallback;
   return value.trim().slice(0, max);
@@ -67,6 +91,13 @@ export function createFirestoreStoreRepository(db: Firestore): StoreRepository {
   const campaign = db.collection('creator_launch_campaigns').doc(FIRST_CREATORS_ID);
 
   return {
+    async listPublic() {
+      // Query only published, active stores; return bounded records and project
+      // fields explicitly, never the full Firestore document.
+      const result = await stores.where('status', '==', 'Active').limit(100).get();
+      return result.docs.map(snap => publicStoreProjection(snap.id, snap.data() || {}));
+    },
+
     async checkSlug(slug, viewer, excludeStoreId) {
       if (!isValidStoreSlug(slug)) return false;
       let ownId = '';
