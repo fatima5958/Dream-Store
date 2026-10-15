@@ -138,6 +138,38 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [welcomeChoice, setWelcomeChoice] = useState<'create' | 'manage'>('create');
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [remainingFounderSpots, setRemainingFounderSpots] = useState<number | null>(null);
+
+  // Display the same server-verified launch count during onboarding; opening
+  // the wizard never reserves a spot. A spot is claimed on successful final save.
+  useEffect(() => {
+    let active = true;
+    const refreshSpots = async () => {
+      try {
+        const response = await fetch('/api/launch/creator-spots', { cache: 'no-store' });
+        if (!response.ok) throw new Error('Creator counter unavailable');
+        const data = await response.json();
+        if (data.limit !== 100 ||
+            !Number.isSafeInteger(data.claimed) ||
+            data.claimed < 0 || data.claimed > 100 ||
+            data.remaining !== 100 - data.claimed) {
+          throw new Error('Unverified creator counter');
+        }
+        if (active) setRemainingFounderSpots(data.remaining);
+      } catch {
+        if (active) setRemainingFounderSpots(null);
+      }
+    };
+    void refreshSpots();
+    const timer = window.setInterval(() => { void refreshSpots(); }, 30000);
+    const handleFocus = () => { void refreshSpots(); };
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, []);
   const [copiedSlugUrl, setCopiedSlugUrl] = useState(false);
 
   // Controlled form state for Stage 1 so user input is never overwritten by demo defaults or stale async snapshots
@@ -628,6 +660,27 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
             {/* STAGE 1: STORE IDENTITY (Mode Choice + Store Name, Unique Bio Link & Instagram) */}
             {currentStep === 1 && (
               <div className="space-y-6 max-w-2xl">
+                <div data-testid="wizard-founder-spots"
+                  aria-live="polite"
+                  className="rounded-2xl border border-[#F5B6D3] bg-[#FFF1F7] px-4 py-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-extrabold text-[#8D3863] text-xs uppercase tracking-wider">Founding 100 Creators</p>
+                    <p className="text-[#50352F] text-sm font-extrabold">
+                      {remainingFounderSpots === null
+                        ? 'Checking live creator spots...'
+                        : remainingFounderSpots === 0
+                        ? 'All 100 free launch spots claimed'
+                        : `${remainingFounderSpots} of 100 free storefront spots remaining`}
+                    </p>
+                    <p className="text-xs text-[#765C68] mt-0.5">
+                      Your spot counts only after you finish setup and launch your store.
+                    </p>
+                  </div>
+                  <span data-testid="wizard-founder-count"
+                    className="shrink-0 rounded-xl bg-white px-3 py-2 text-xl font-extrabold tabular-nums text-[#8D3863]">
+                    {remainingFounderSpots === null ? '—' : remainingFounderSpots}
+                  </span>
+                </div>
                 <div>
                   <h2 className="ds-section-title font-candy font-bold text-[#50352F]">
                     1. Store Identity — What would you like to do today?

@@ -402,3 +402,11 @@ test('account verification distinguishes backend HTML, permission errors, and ne
   assert.doesNotMatch(auth, /await fetch\('\/api\/stores\/create'/);
   assert.match(auth, /setUserProfile\(null\)/);
 });
+
+test('first wizard step visibly explains verified founder spots and when they are claimed', () => {
+  const wizard = read('src/components/screens/StoreSetupWizard.tsx');
+  assert.match(wizard, /data-testid="wizard-founder-spots"/);
+  assert.match(wizard, /\/api\/launch\/creator-spots/);
+  assert.match(wizard, /remainingFounderSpots === null/);
+  assert.match(wizard, /Your spot counts only after you finish setup and launch your store/);
+});
