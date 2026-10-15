@@ -14,6 +14,8 @@ test('commission uses rounded integer minor units at exactly 500 basis points', 
   });
   assert.equal(commissionBreakdown(1, 'USD', 'manual_bank').platformCommissionMinor, 0);
   assert.equal(commissionBreakdown(10, 'USD', 'manual_bank').platformCommissionMinor, 1);
+  assert.equal(commissionBreakdown(Number.MAX_SAFE_INTEGER, 'USD', 'manual_bank').platformCommissionMinor,
+    Number((BigInt(Number.MAX_SAFE_INTEGER) * 500n + 5000n) / 10000n));
   assert.throws(() => commissionBreakdown(1.2, 'USD', 'manual_bank'), /integer/);
 });
 
@@ -51,7 +53,7 @@ function financeFixture() {
   db.seed('products/book', { storeId: 'store-seller', ownerId: 'seller', isFree: false,
     published: true, status: 'Available', deleted: false, priceUsd: 10, pricePkr: 2780 });
   db.seed('sellerSettings/seller', { ownerId: 'seller', jazzCashMerchantId: 'merchant-123', jazzCashEnabled: true });
-  return { db, bucket, repo: createFirestoreFinancialRepository(db, bucket) };
+  return { db, bucket, repo: createFirestoreFinancialRepository(db, bucket, 'test-invoice-signing-secret-0123456789') };
 }
 const orderInput = overrides => ({ orderNumber: 'DS-1-order', orderId: 'order-1', storeId: 'store-seller',
   sellerId: 'seller', buyerId: 'buyer', primaryProductId: 'book', customerName: 'Buyer', customerEmail: 'buyer@example.test',
@@ -72,6 +74,9 @@ test('Firestore order creation is durable, idempotent, and a failed commit store
   const duplicate = await f.repo.createOrder(orderInput({ orderNumber: 'DS-2-other', orderId: 'order-2' }));
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.order.orderNumber, 'DS-1-order');
+  await assert.rejects(f.repo.createOrder(orderInput({ orderNumber: 'DS-3-tampered', orderId: 'order-3', grossAmountMinor: 500 })),
+    error => error.status === 409 && error.code === 'orders/idempotency-conflict');
+  assert.equal(f.db.data.has('ledger/DS-3-tampered'), false);
 
   const failed = financeFixture(); failed.db.failCommit = true;
   await assert.rejects(failed.repo.createOrder(orderInput()));
@@ -98,4 +103,80 @@ test('concurrent seller verification creates one commission and refund revokes i
   await f.repo.transitionOrder('DS-1-order', 'Paid', { paymentStatus: 'Refunded', refundReference: 'REF-1' }, 'seller');
   assert.equal(f.db.data.get('commission_entries/DS-1-order').status, 'reversed');
   assert.equal(f.db.data.get('commission_adjustments/DS-1-order:refund').amountMinor, -13900);
+});
+
+test('commission invoices issue after five verified eligible sales and survive repeat requests', async () => {
+  const f = financeFixture();
+  for (let i = 1; i <= 5; i++) {
+    const orderNumber = `DS-invoice-${i}`;
+    f.db.seed(`ledger/${orderNumber}`, { orderNumber, orderId: `order-${i}`, sellerId: 'seller', storeId: 'store-seller',
+      buyerId: `buyer-${i}`, currency: 'PKR', grossAmountMinor: 10000, platformCommissionMinor: 500, commissionRateBps: 500,
+      paymentMethod: 'jazzcash', paymentStatus: 'Paid', verificationMode: 'Manually Verified by Seller',
+      commissionStatus: 'outstanding', createdAtIso: new Date(Date.UTC(2026, 0, i)).toISOString() });
+  }
+  const invoices = await f.repo.issueCommissionInvoices('seller');
+  assert.equal(invoices.length, 1);
+  assert.equal(invoices[0].verifiedSalesCount, 5);
+  assert.equal(invoices[0].commissionAmountMinor, 2500);
+  assert.equal(invoices[0].status, 'open');
+  assert.equal((await f.repo.issueCommissionInvoices('seller')).length, 0);
+  const saved = f.db.data.get(`commission_invoices/${invoices[0].invoiceId}`);
+  assert.equal(saved.serverSignature.length, 64);
+  assert.equal(f.db.data.get('ledger/DS-invoice-1').invoiceId, saved.invoiceId);
+});
+
+test('commission proof requires owner, admin attestation and an idempotent single settlement', async () => {
+  const f = financeFixture();
+  for (let i = 1; i <= 5; i++) {
+    const orderNumber = `DS-settle-${i}`;
+    const order = { orderNumber, orderId: `order-${i}`, sellerId: 'seller', storeId: 'store-seller', buyerId: `buyer-${i}`,
+      currency: 'PKR', grossAmountMinor: 10000, platformCommissionMinor: 500, commissionRateBps: 500, paymentMethod: 'jazzcash', paymentStatus: 'Paid',
+      verificationMode: 'Manually Verified by Seller', commissionStatus: 'outstanding', createdAtIso: `2026-01-0${i}` };
+    f.db.seed(`ledger/${orderNumber}`, order);
+    f.db.seed(`commission_entries/${orderNumber}`, { entryId: orderNumber, ...order, status: 'outstanding' });
+  }
+  const [invoice] = await f.repo.issueCommissionInvoices('seller');
+  await assert.rejects(f.repo.submitCommissionPayment({ invoiceId: invoice.invoiceId, sellerId: 'other',
+    amountMinor: 2500, paymentMethod: 'manual_bank', paymentReference: 'BANK-SETTLE-1' }), error => error.status === 403);
+  const proof = await f.repo.submitCommissionPayment({ invoiceId: invoice.invoiceId, sellerId: 'seller',
+    amountMinor: 2500, paymentMethod: 'manual_bank', paymentReference: 'BANK-SETTLE-1', proofNote: 'Test transfer evidence' });
+  assert.equal(proof.payment.status, 'submitted');
+  assert.equal(proof.payment.evidenceSubmittedAtIso.length > 0, true);
+  await assert.rejects(f.repo.submitCommissionPayment({ invoiceId: invoice.invoiceId, sellerId: 'seller',
+    amountMinor: 2500, paymentMethod: 'manual_bank', paymentReference: 'BANK-SETTLE-1' }), error => error.status === 409);
+  const reviewInput = { paymentId: proof.payment.paymentId, invoiceId: invoice.invoiceId, decision: 'approve',
+    fundsConfirmed: true, actorUid: 'admin' };
+  await assert.rejects(f.repo.reviewCommissionPayment({ ...reviewInput, actorUid: 'seller' }), error => error.status === 403);
+  const [first, retry] = await Promise.allSettled([f.repo.reviewCommissionPayment(reviewInput), f.repo.reviewCommissionPayment(reviewInput)]);
+  assert.equal([first, retry].filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal([first, retry].filter(result => result.status === 'rejected' && result.reason.status === 409).length, 1);
+  const records = await f.repo.commissionRecords('seller');
+  assert.equal(records.invoices[0].status, 'paid');
+  assert.equal(records.invoices[0].remainingBalanceMinor, 0);
+  assert.equal(records.payments[0].status, 'verified');
+  for (let i = 1; i <= 5; i++) assert.equal(f.db.data.get(`ledger/DS-settle-${i}`).commissionStatus, 'paid');
+  await f.repo.transitionOrder('DS-settle-1', 'Paid', { paymentStatus: 'Refunded', commissionStatus: 'reversed',
+    payoutStatus: 'Reversed (Refunded)', refundReference: 'REF-SETTLE-1' }, 'seller');
+  const adjusted = f.db.data.get(`commission_invoices/${invoice.invoiceId}`);
+  assert.equal(adjusted.status, 'paid');
+  assert.equal(adjusted.remainingBalanceMinor, 0);
+  assert.equal(adjusted.adjustedAmountMinor, 500);
+  assert.equal(f.db.data.get('commission_adjustments/adj-' + (await import('node:crypto')).createHash('sha256')
+    .update(`${invoice.invoiceId}:DS-settle-1:refund`).digest('hex').slice(0,32)).adjustmentAmountMinor, 500);
+});
+
+test('commission rejection returns invoice to collectible state and audit is append-only', async () => {
+  const f = financeFixture();
+  for (let i = 1; i <= 5; i++) f.db.seed(`ledger/DS-reject-${i}`, { orderNumber: `DS-reject-${i}`, sellerId: 'seller',
+    storeId: 'store-seller', currency: 'PKR', grossAmountMinor: 10000, platformCommissionMinor: 500, commissionRateBps: 500, paymentMethod: 'jazzcash',
+    paymentStatus: 'Paid', verificationMode: 'Manually Verified by Seller', commissionStatus: 'outstanding', createdAtIso: `2026-01-0${i}` });
+  const [invoice] = await f.repo.issueCommissionInvoices('seller');
+  const { payment } = await f.repo.submitCommissionPayment({ invoiceId: invoice.invoiceId, sellerId: 'seller',
+    amountMinor: 2500, paymentMethod: 'manual_bank', paymentReference: 'BANK-REJECT-1' });
+  const reviewed = await f.repo.reviewCommissionPayment({ paymentId: payment.paymentId, invoiceId: invoice.invoiceId,
+    decision: 'reject', actorUid: 'admin', fundsConfirmed: false, note: 'Reference not found in statement' });
+  assert.equal(reviewed.payment.status, 'rejected');
+  assert.equal(reviewed.invoice.status, 'open');
+  assert.equal(reviewed.invoice.remainingBalanceMinor, 2500);
+  assert.equal([...f.db.data.keys()].filter(key => key.startsWith('ledger_audit/')).length, 3);
 });

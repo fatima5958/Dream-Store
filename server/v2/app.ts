@@ -12,6 +12,8 @@ import { registerOrderRoutes } from './modules/orders.ts';
 import { registerDownloadRoutes } from './modules/downloads.ts';
 import { registerPaymentVerificationRoutes } from './modules/payment-verification.ts';
 import { registerCommissionRoutes } from './modules/commissions.ts';
+import { registerCommissionSettlementRoutes } from './modules/commission-settlements.ts';
+import { createProcessRateLimiter } from './modules/rate-limit.ts';
 
 const jsonRoute = (callback: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: (error?: unknown) => void) => {
@@ -53,6 +55,7 @@ export function createV2App(deps: V2Dependencies) {
     res.set('X-Content-Type-Options', 'nosniff');
     next();
   });
+  app.use('/api', createProcessRateLimiter());
 
   app.get('/api/health', (_req, res) => res.json({
     status: 'ok',
@@ -62,6 +65,19 @@ export function createV2App(deps: V2Dependencies) {
   app.get('/api/ready', jsonRoute(async (_req, res) => {
     const ready = await deps.readiness.check();
     res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready' });
+  }));
+
+  // Runtime readiness reports capability only. V2 intentionally does not
+  // inspect or expose live payment credentials and never enables live gateways.
+  app.get('/api/payments/gateway-status', (_req, res) => res.json({
+    paidCheckoutEnabled: deps.allowWrites && deps.paidCheckoutEnabled === true && process.env.NODE_ENV !== 'production',
+    jazzcashConfigured: false, easypaisaConfigured: false, razorpayConfigured: false,
+    stripeConfigured: false, payoneerConfigured: false, payoneerApiEnabled: false,
+    payoneerManualVerificationPreserved: true, payoneerMode: 'manual_settlement',
+    emailConfigured: false, platformCommissionBps: 500,
+  }));
+  app.post('/api/webhooks/:provider', (_req, res) => res.status(503).json({
+    error: 'Automated payment webhooks are disabled in Backend V2.', code: 'payments/webhooks-disabled',
   }));
 
   const readProfile = jsonRoute(async (req, res) => {
@@ -274,6 +290,7 @@ export function createV2App(deps: V2Dependencies) {
     registerPaymentVerificationRoutes(app, deps);
     registerDownloadRoutes(app, deps);
     registerCommissionRoutes(app, deps);
+    registerCommissionSettlementRoutes(app, deps);
   }
 
   // Financial, download and administrative modules remain deliberately unavailable.

@@ -91,6 +91,11 @@ export interface FinancialRepository {
   createOrder(input: Record<string, any>): Promise<{ duplicate: boolean; order: Record<string, any> }>;
   order(orderNumber: string): Promise<Record<string, any> | null>;
   listOrders(uid: string, admin: boolean): Promise<Array<Record<string, any>>>;
+  issueCommissionInvoices?(sellerId: string): Promise<Array<Record<string, any>>>;
+  commissionRecords?(sellerId?: string): Promise<{ invoices: Array<Record<string, any>>; payments: Array<Record<string, any>>; adjustments: Array<Record<string, any>> }>;
+  submitCommissionPayment?(input: Record<string, any>): Promise<{ payment: Record<string, any>; invoice: Record<string, any> }>;
+  reviewCommissionPayment?(input: Record<string, any>): Promise<{ payment: Record<string, any>; invoice: Record<string, any> }>;
+  disputeCommission?(orderNumber: string, sellerId: string, note: string): Promise<Record<string, any>>;
   transitionOrder(orderNumber: string, expectedStatus: string, patch: Record<string, unknown>, actorUid: string): Promise<Record<string, any>>;
   consumeDownload(orderNumber: string, buyerUid: string, productId: string, tokenId: string): Promise<{ order: Record<string, any>; deliverable: Record<string, any>; fileDataUrl: string }>;
 }

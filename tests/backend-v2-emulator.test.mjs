@@ -30,7 +30,7 @@ async function request(path, caller, body, method = body === undefined ? 'GET' :
 async function start() {
   const deps = { auth: createFirebaseVerifier(auth), profiles, stores, creators: createCreatorCampaignRepository(db),
     products: createFirestoreProductRepository(db, bucket), uploads: createFirebaseUploadRepository(db, bucket),
-    finance: createFirestoreFinancialRepository(db, bucket),
+    finance: createFirestoreFinancialRepository(db, bucket, 'emulator-only-invoice-signing-secret-0123456789abcdef'),
     readiness: { check: async () => true }, adminUid: identities.admin.uid, allowWrites: true, allowUnsignedEmulatorTokens: true,
     paidCheckoutEnabled: true, downloadTokenSecret: 'emulator-only-signing-secret-0123456789abcdef' };
   const express = createV2App(deps);
@@ -88,7 +88,14 @@ test('real Auth/Firestore/Storage: Seller create→update→upload→publish→p
   const parallel=await Promise.all([request('/api/checkout/validate-and-prepare','buyer',checkoutBody),request('/api/checkout/validate-and-prepare','buyer',checkoutBody)]);
   assert.ok(parallel.every(result=>result.status===200||result.status===201));
   assert.equal(parallel.filter(result=>result.body.duplicate===true).length,1);
+  assert.equal((await request('/api/checkout/validate-and-prepare','buyer',{...checkoutBody,paymentReference:'TXN-CHANGED-REFERENCE'})).status,409,
+    'An idempotency key cannot be replayed with changed purchase details');
   const orderNumber=parallel.find(result=>result.body.orderNumber)?.body.orderNumber;
+  const gatewayStatus=await request('/api/payments/gateway-status');
+  assert.equal(gatewayStatus.status,200);assert.equal(gatewayStatus.body.jazzcashConfigured,false);
+  assert.equal(gatewayStatus.body.stripeConfigured,false);assert.equal(gatewayStatus.body.paidCheckoutEnabled,true,
+    'Explicit paid-checkout opt-in is permitted only in this isolated emulator test');
+  assert.equal((await request('/api/webhooks/test-provider','buyer',{})).status,503);
   assert.equal((await request('/api/orders/list','buyer')).body.orders.length,1);
   assert.equal((await request('/api/delivery/verify-download','buyer',{orderNumber,productId:product.id,buyerId:identities.buyer.uid,downloadToken:'LOCKED-PENDING-VERIFICATION'})).status,403);
   assert.equal((await request('/api/orders/list','buyer2')).body.orders.length,0);
@@ -99,9 +106,16 @@ test('real Auth/Firestore/Storage: Seller create→update→upload→publish→p
   assert.equal((await request('/api/orders/list','buyer2')).body.orders.length,1);
   assert.equal((await request('/api/orders/verify-payment','other',{orderNumber,newStatus:'Paid',statementConfirmed:true})).status,403);
   assert.equal((await request('/api/orders/verify-payment','buyer',{orderNumber,newStatus:'Paid',statementConfirmed:true})).status,403);
+  assert.equal((await request('/api/orders/verify-payment',null,{orderNumber,newStatus:'Paid',statementConfirmed:true})).status,401);
+  assert.equal((await request('/api/orders/verify-payment','seller',{orderNumber,newStatus:'Paid',statementConfirmed:false})).status,422);
   const verified=await request('/api/orders/verify-payment','seller',{orderNumber,newStatus:'Paid',statementConfirmed:true});
   assert.equal(verified.status,200);assert.equal(verified.body.commissionStatus,'outstanding');
+  assert.equal(verified.body.paymentEvidence.externalProviderVerified,false,
+    'Seller attestation must never be represented as gateway/bank verification');
   assert.equal((await db.collection('commission_entries').doc(orderNumber).get()).get('platformCommissionMinor'),13900);
+  const auditedOrders=await request('/api/orders/list','buyer');
+  assert.equal(auditedOrders.body.orders.find(order=>order.orderNumber===orderNumber).paymentEvidence.attestedByUid,identities.seller.uid);
+  assert.equal(auditedOrders.body.audits.some(audit=>audit.action==='MANUAL_PAYMENT_VERIFIED'&&audit.actorUid===identities.seller.uid),true);
   const downloadBody={orderNumber,productId:product.id,buyerId:identities.buyer.uid,downloadToken:verified.body.downloadToken};
   const downloaded=await request('/api/delivery/verify-download','buyer',downloadBody);
   assert.equal(downloaded.status,200);assert.equal(downloaded.body.allowed,true);assert.match(downloaded.body.fileDataUrl,/^data:application\/pdf;base64,/);
@@ -109,12 +123,59 @@ test('real Auth/Firestore/Storage: Seller create→update→upload→publish→p
   assert.equal((await request('/api/orders/refund','seller',{orderNumber,refundConfirmed:true,refundReference:'RF-12345'})).status,200);
   assert.equal((await request('/api/downloads/token','buyer',{orderNumber})).status,403);
   assert.equal((await db.collection('commission_adjustments').doc(orderNumber+':refund').get()).get('reason'),'order_refunded');
+
+  // The first paid sale was refunded, so five fresh verified sales are needed
+  // before the V1-compatible commission threshold produces an invoice.
+  const additional=[];
+  for(let i=0;i<4;i++){
+    const buyer=i%2===0?'buyer':'buyer2';
+    const checkout=await request('/api/checkout/validate-and-prepare',buyer,{...checkoutBody,
+      buyerId:identities[buyer].uid,customerEmail:buyer+'@example.test',idempotencyKey:`idem-v2-invoice-${i}-0001`,
+      paymentReference:`TXN-INVOICE-${i}-10001`});
+    assert.equal(checkout.status,201);
+    additional.push(checkout.body.orderNumber);
+  }
+  const eligibleOrders=[secondOrder.body.orderNumber,...additional];
+  for(const number of eligibleOrders){
+    const pendingOrder=await db.collection('ledger').doc(number).get();
+    const sellerResult=await request('/api/orders/verify-payment','seller',{orderNumber:number,newStatus:'Paid',
+      declaredPaymentMethod:pendingOrder.get('paymentMethod'),statementConfirmed:true});
+    assert.equal(sellerResult.status,200);
+  }
+  const summary=await request('/api/commission/status?sellerId='+encodeURIComponent(identities.seller.uid),'seller');
+  assert.equal(summary.status,200);assert.equal(summary.body.invoices.length,1);
+  const invoice=summary.body.invoices[0];
+  assert.equal(invoice.verifiedSalesCount,5);assert.equal(invoice.commissionAmountMinor,69500);
+  assert.equal((await request('/api/commission/status?sellerId='+encodeURIComponent(identities.seller.uid),'buyer')).status,403);
+  assert.equal((await request('/api/commission/submit-payment','other',{invoiceId:invoice.invoiceId,amountMinor:invoice.remainingBalanceMinor,
+    paymentMethod:'manual_bank',paymentReference:'CPAY-FOREIGN-001'})).status,403);
+  const proof=await request('/api/commission/submit-payment','seller',{invoiceId:invoice.invoiceId,
+    amountMinor:invoice.remainingBalanceMinor,paymentMethod:'manual_bank',paymentReference:'CPAY-TEST-0001',
+    proofNote:'Synthetic staging-only transfer reference'});
+  assert.equal(proof.status,200);assert.equal(proof.body.payment.status,'submitted');
+  assert.equal((await request('/api/commission/submit-payment','buyer',{invoiceId:invoice.invoiceId,
+    amountMinor:invoice.remainingBalanceMinor,paymentMethod:'manual_bank',paymentReference:'CPAY-BUYER-001'})).status,403);
+  assert.equal((await request('/api/commission/submit-payment','seller',{invoiceId:invoice.invoiceId,
+    amountMinor:invoice.remainingBalanceMinor,paymentMethod:'manual_bank',paymentReference:'CPAY-TEST-0001'})).status,409);
+  assert.equal((await request('/api/admin/commission/verify-payment','seller',{invoiceId:invoice.invoiceId,
+    paymentId:proof.body.payment.paymentId,decision:'approve',fundsConfirmed:true})).status,403);
+  assert.equal((await request('/api/admin/commission-config','seller',{newCommissionBps:500})).status,403);
+  assert.equal((await request('/api/admin/commission-config','admin',{newCommissionBps:250})).status,409);
+  assert.equal((await request('/api/admin/commission-config','admin',{newCommissionBps:500})).body.platformCommissionBps,500);
+  assert.equal((await request('/api/admin/commission/verify-payment','admin',{invoiceId:invoice.invoiceId,
+    paymentId:proof.body.payment.paymentId,decision:'approve',fundsConfirmed:false})).status,422);
+  const settlement=await request('/api/admin/commission/verify-payment','admin',{invoiceId:invoice.invoiceId,
+    paymentId:proof.body.payment.paymentId,decision:'approve',fundsConfirmed:true});
+  assert.equal(settlement.status,200);assert.equal(settlement.body.invoice.status,'paid');
+  assert.equal(settlement.body.payment.reviewMode,'Super Admin Attested Cleared Funds');
+  assert.equal((await request('/api/admin/commission/verify-payment','admin',{invoiceId:invoice.invoiceId,
+    paymentId:proof.body.payment.paymentId,decision:'approve',fundsConfirmed:true})).status,409);
   const page=await request('/api/stores/by-slug/seller-books');assert.equal(page.status,200);
   assert.equal(page.body.store.storeName,'Updated Books');assert.equal(page.body.products.length,1);assert.equal(page.body.products[0].fileDataUrl,undefined);
   await new Promise(resolve=>server.close(resolve));await start();
   assert.equal((await request('/api/users/profile','seller')).body.profile.storeId,storeId);
   assert.equal((await request('/api/stores/seller-books')).body.products.length,1);
-  assert.equal((await request('/api/orders/list','buyer')).body.orders[0].paymentStatus,'Refunded');
+  assert.equal((await request('/api/orders/list','buyer')).body.orders.find(order=>order.orderNumber===orderNumber).paymentStatus,'Refunded');
   const filename=uploaded.body.fileReference.slice('storage://'.length);
   const privateRead=await fetch(`http://${process.env.FIREBASE_STORAGE_EMULATOR_HOST}/v0/b/${bucket.name}/o/${encodeURIComponent(filename)}?alt=media`);
   assert.equal(privateRead.status,403);

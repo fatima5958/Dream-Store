@@ -107,6 +107,20 @@ test('V2 blocks onboarding mutations when not in isolated Firebase emulator', as
   });
 });
 
+test('V2 applies a process-local rate limit to repeated account writes', async () => {
+  const { app } = fixture({ allowWrites: true });
+  await withServer(app, async request => {
+    for (let i = 0; i < 40; i++) {
+      const [status] = await request('/api/users/profile', 'rate-limited-user', { role: 'buyer', displayName: 'Buyer' });
+      assert.equal(status, 200);
+    }
+    const [status, body, headers] = await request('/api/users/profile', 'rate-limited-user', { role: 'buyer', displayName: 'Buyer' });
+    assert.equal(status, 429);
+    assert.equal(body.code, 'request/rate-limited');
+    assert.equal(headers.get('retry-after') !== null, true);
+  });
+});
+
 test('V2 Buyer/Seller onboarding preserves distinct roles and returning profiles', async () => {
   const { app, profiles, calls } = fixture({ allowWrites: true });
   await withServer(app, async request => {

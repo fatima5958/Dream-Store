@@ -4,6 +4,7 @@ import type { V2Dependencies } from '../contracts.ts';
 import { ApiError } from '../errors.ts';
 import { authenticatedPrincipal, isVerifiedSuperAdmin } from './auth.ts';
 import { createDownloadToken } from './checkout.ts';
+import { statusSummary } from './commission-settlements.ts';
 import { requireSeller } from './policy.ts';
 
 export function registerOrderRoutes(app: Express, deps: V2Dependencies) {
@@ -20,12 +21,16 @@ export function registerOrderRoutes(app: Express, deps: V2Dependencies) {
       downloadToken: order.paymentStatus === 'Paid' && order.buyerId === principal.uid ? createDownloadToken(order, deps.downloadTokenSecret || '') : 'LOCKED-UNTIL-PAYMENT-VERIFIED',
       downloadCount: order.downloadCount || 0, maxDownloads: order.maxDownloads || 5, expiresAtMs: order.expiresAtMs,
       verificationMode: order.verificationMode, commissionStatus: order.commissionStatus, payoutStatus: order.payoutStatus,
-      verifiedByUid: order.verifiedByUid, verifiedAtIso: order.verifiedAtIso,
+      verifiedByUid: order.verifiedByUid, verifiedAtIso: order.verifiedAtIso, paymentEvidence: order.paymentEvidence || null,
       commissionBreakdown: { currency: order.currency, commissionRateBps: order.commissionRateBps,
         grossAmountMinor: order.grossAmountMinor, platformCommissionMinor: order.platformCommissionMinor,
         sellerShareBeforeFeesMinor: order.sellerShareBeforeFeesMinor, gatewayFeeMinor: order.gatewayFeeMinor,
         sellerNetEarningsMinor: order.sellerNetEarningsMinor } }));
-    res.json({ orders, audits: [], commissionSummary: null });
+    const audits = rows.flatMap(order => Array.isArray(order.paymentAudit) ? order.paymentAudit : []);
+    const profile = principal.emailVerified ? await deps.profiles.find(principal) : null;
+    const commissionSummary = profile?.role === 'seller' && deps.finance?.commissionRecords
+      ? await statusSummary(principal.uid, deps.finance) : undefined;
+    res.json({ orders, audits, ...(commissionSummary ? { commissionSummary } : {}) });
   })().catch(next);
   app.get('/api/orders/list', list); app.get('/api/orders/sync', list);
   app.post('/api/orders/refund', (req, res, next) => (async () => {

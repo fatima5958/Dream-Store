@@ -8,7 +8,8 @@ export function commissionBreakdown(grossAmountMinor: number, currency: string, 
   if (!Number.isSafeInteger(grossAmountMinor) || grossAmountMinor < 0) {
     throw new ApiError(422, 'commission/invalid-amount', 'Order amount must be a non-negative integer in minor units.');
   }
-  const platformCommissionMinor = Math.floor((grossAmountMinor * COMMISSION_RATE_BPS + 5000) / 10000);
+  // BigInt keeps the half-up 5% rounding exact even near Number.MAX_SAFE_INTEGER.
+  const platformCommissionMinor = Number((BigInt(grossAmountMinor) * BigInt(COMMISSION_RATE_BPS) + 5000n) / 10000n);
   const sellerShareBeforeFeesMinor = grossAmountMinor - platformCommissionMinor;
   return { currency, commissionRateBps: COMMISSION_RATE_BPS, grossAmountMinor, platformCommissionMinor,
     sellerShareBeforeFeesMinor, gatewayFeeMinor: 0, sellerNetEarningsMinor: sellerShareBeforeFeesMinor };

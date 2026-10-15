@@ -1,6 +1,6 @@
 # Backend V2 — Existing API Route Inventory
 
-Status checked against `server/v2/app.ts` after the Store + Digital Products phase. V2 runs only in isolated staging; production remains on V1.
+Status checked against `server/v2/app.ts` after the financial administration slice. V2 runs only in isolated staging; production remains on V1.
 
 Derived from the **actual `server.ts` route declarations** on `main` at the start of the V2 implementation. These are 79 statically declared `/api` route registrations (including one `USE` middleware). Handlers registered dynamically require separate verification.
 
@@ -17,7 +17,7 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 | GET | `/api/auth/email/migration-status` | 3712 | Pending — V1 remains authoritative |
 | POST | `/api/auth/email/migrate` | 3728 | Pending — V1 remains authoritative |
 | GET | `/api/auth/email/reset-audit` | 3745 | Pending — V1 remains authoritative |
-| GET | `/api/payments/gateway-status` | 3804 | Pending — V1 remains authoritative |
+| GET | `/api/payments/gateway-status` | 3804 | Implemented — reports disabled gateways without inspecting or exposing credentials |
 | GET | `/api/payments/payoneer-readiness` | 3838 | Pending — V1 remains authoritative |
 | GET | `/api/admin/verify-session` | 3894 | Implemented in isolated V2 emulator staging |
 | POST | `/api/admin/verify-session` | 3895 | Implemented in isolated V2 emulator staging |
@@ -52,8 +52,8 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 | POST | `/api/products` | 5768 | Implemented — alias |
 | POST | `/api/products/delete` | 5770 | Implemented — owner-only tombstone |
 | POST | `/api/commission/calculate` | 5812 | Implemented — supported manual methods, integer-minor 5% calculation |
-| POST | `/api/admin/commission-config` | 5851 | Pending — V1 remains authoritative |
-| POST | `/api/admin/commission-rate` | 5852 | Pending — V1 remains authoritative |
+| POST | `/api/admin/commission-config` | 5851 | Implemented — verified Super Admin only; fixed 500 bps, rejects rate changes |
+| POST | `/api/admin/commission-rate` | 5852 | Implemented — compatible alias; same fixed 500 bps policy |
 | GET | `/api/ledger` | 5955 | Pending — V1 remains authoritative |
 | GET | `/api/ledger/transactions` | 5956 | Pending — V1 remains authoritative |
 | POST | `/api/checkout/validate-and-prepare` | 5959 | Implemented — authoritative Firestore pricing and durable idempotency; paid flow isolated and opt-in |
@@ -62,25 +62,26 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 | GET | `/api/orders/list` | 6872 | Implemented — Buyer/Seller identity-filtered |
 | GET | `/api/orders/:orderNumber/email-notification` | 6876 | Pending — V1 remains authoritative |
 | POST | `/api/orders/refund` | 6918 | Implemented — Seller-only evidence-confirmed refund, commission reversal, download revocation |
-| POST | `/api/ledger/commission-status` | 7014 | Pending — V1 remains authoritative |
-| GET | `/api/commission/status` | 7154 | Pending — V1 remains authoritative |
-| GET | `/api/commissions/invoices` | 7155 | Pending — V1 remains authoritative |
-| GET | `/api/commission/admin-overview` | 7244 | Pending — V1 remains authoritative |
-| GET | `/api/commission/admin/overview` | 7245 | Pending — V1 remains authoritative |
+| POST | `/api/ledger/commission-status` | 7014 | Implemented — Seller may file one reasoned dispute; cannot mark paid/reversed |
+| GET | `/api/commission/status` | 7154 | Implemented — Seller own summary; Admin may request a specific seller |
+| GET | `/api/commissions/invoices` | 7155 | Implemented — compatible Seller summary alias |
+| POST | `/api/commission/invoices/issue` | V2 only | Implemented — idempotent 5-verified-sale invoice issuance for the authenticated Seller |
+| GET | `/api/commission/admin-overview` | 7244 | Implemented — Admin-only invoice/payment/adjustment data; traffic/store metrics omitted until migrated |
+| GET | `/api/commission/admin/overview` | 7245 | Implemented — compatible Admin financial overview alias |
 | POST | `/api/commission/admin/grant-pro` | 7351 | Pending — V1 remains authoritative |
 | POST | `/api/admin/subscriptions/grant-pro` | 7352 | Pending — V1 remains authoritative |
 | POST | `/api/admin/stores/status` | 7354 | Pending — V1 remains authoritative |
 | POST | `/api/admin/stores/control` | 7379 | Pending — V1 remains authoritative |
-| POST | `/api/commission/submit-payment` | 7478 | Pending — V1 remains authoritative |
-| POST | `/api/commission/verify-payment` | 7731 | Pending — V1 remains authoritative |
-| POST | `/api/admin/commission/verify-payment` | 7732 | Pending — V1 remains authoritative |
-| POST | `/api/commissions/verify-payment` | 7733 | Pending — V1 remains authoritative |
+| POST | `/api/commission/submit-payment` | 7478 | Implemented — owning Seller only; unique reference, integer amount, auditable Seller-submitted evidence |
+| POST | `/api/commission/verify-payment` | 7731 | Implemented — verified Super Admin only; independent cleared-funds attestation and idempotent transition |
+| POST | `/api/admin/commission/verify-payment` | 7732 | Implemented — compatible alias |
+| POST | `/api/commissions/verify-payment` | 7733 | Implemented — compatible alias |
 | POST | `/api/commission/simulate-overdue` | 7736 | Pending — V1 remains authoritative |
 | GET | `/api/entitlements/:sellerId` | 7792 | Pending — V1 remains authoritative |
 | GET | `/api/subscriptions` | 7915 | Pending — V1 remains authoritative |
 | GET | `/api/subscription/status` | 7916 | Pending — V1 remains authoritative |
 | POST | `/api/subscriptions` | 7920 | Pending — V1 remains authoritative |
-| POST | `/api/webhooks/:provider` | 7973 | Pending — V1 remains authoritative |
+| POST | `/api/webhooks/:provider` | 7973 | Implemented as disabled — always returns truthful 503; no gateway webhook is active |
 | POST | `/api/downloads/token` | 7977 | Implemented — Buyer-owned paid order only |
 | POST | `/api/delivery/verify-download` | 7991 | Implemented — signed scoped expiring one-use access to private Storage bytes |
 | POST | `/api/test-suite/run` | 8274 | Pending — V1 remains authoritative |
@@ -96,9 +97,17 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 - `src/components/screens/StoreOwnerDashboard.tsx`: `/api/commission/status`, `/api/commission/submit-payment`, `/api/uploads/product`
 - `src/components/GeminiChatWidget.tsx`: `/api/gemini/chat`
 
+## Phase 5 financial compatibility and limitations
+
+- Invoice records use the V1 `commission_invoices`, `commission_payments`, `commission_payment_refs`, `commission_adjustments` and `ledger_audit` collections and field names. Five verified, unbilled paid sales in one currency issue a deterministic seven-day invoice. Reads do not issue invoices; Seller payment verification invokes issuance, with a Seller-only retry endpoint.
+- Commission payment evidence is a seller-declared manual reference and note. The Admin must explicitly attest that cleared funds were checked externally. V2 does not independently verify a bank, wallet or gateway statement.
+- Refunds create compatible adjustment records and reduce unpaid invoice balances. Reversal of already settled commission is recorded as a positive invoice adjustment; no real transfer or automatic credit occurs.
+- `/api/commission/admin-overview` currently returns financial records only. Store roster and visit/conversion metrics are omitted rather than fabricated.
+- Super Admin store controls/grants, subscription entitlements and requests, order email notifications, Payoneer readiness, authentication email routes and AI routes remain unsupported. Unsupported routes return 501; webhooks return 503 disabled.
+
 ## Compatibility note
 
-Backend V2 currently includes only the explicitly implemented route subset. All other `/api/*` routes return HTTP 501 on the isolated V2 staging process; the production V1 backend continues to serve them unchanged. **Do not route production frontend traffic to V2 yet.**
+Backend V2 includes only the explicitly implemented route subset above. Other unsupported `/api/*` routes return HTTP 501 on isolated V2; disabled webhooks return 503. The production V1 backend continues to serve them unchanged. **Do not route production frontend traffic to V2 yet.**
 
 
 ## Store + catalog phase

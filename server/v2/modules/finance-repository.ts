@@ -1,12 +1,19 @@
-import { createHash, randomUUID } from 'node:crypto';
-import type { Firestore } from 'firebase-admin/firestore';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
+import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
 import type { Bucket } from '@google-cloud/storage';
 import type { FinancialRepository } from '../contracts.ts';
 import { ApiError } from '../errors.ts';
-import { commissionEntry } from './commissions.ts';
+import { commissionBreakdown, commissionEntry } from './commissions.ts';
 import { validateFileMetadata } from './uploads.ts';
 
-export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket): FinancialRepository {
+const COMMISSION_INVOICE_THRESHOLD = 5;
+const COMMISSION_INVOICE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function createFirestoreFinancialRepository(
+  db: Firestore,
+  bucket: Bucket,
+  invoiceSigningSecret = String(process.env.SERVER_SIGNING_SECRET || process.env.DOWNLOAD_SIGNING_SECRET || process.env.TOKEN_SIGNING_SECRET || ''),
+): FinancialRepository {
   const ledger = db.collection('ledger'); const orders = db.collection('orders');
   return {
     async store(target) {
@@ -43,6 +50,14 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
     },
     async createOrder(input) {
       const idem = createHash('sha256').update(`${input.buyerId}:${input.idempotencyKey}`).digest('hex');
+      const requestHash = createHash('sha256').update(JSON.stringify({
+        buyerId: input.buyerId, sellerId: input.sellerId, storeId: input.storeId,
+        primaryProductId: input.primaryProductId, currency: input.currency,
+        grossAmountMinor: input.grossAmountMinor, paymentMethod: input.paymentMethod,
+        paymentReference: String(input.paymentReference || '').trim().toUpperCase(),
+        customerName: String(input.customerName || ''), customerEmail: String(input.customerEmail || '').trim().toLowerCase(),
+        itemTitlesSummary: String(input.itemTitlesSummary || ''), itemCount: Number(input.itemCount || 1),
+      })).digest('hex');
       const idemRef = db.collection('checkout_idempotency').doc(idem);
       const ledgerRef = ledger.doc(input.orderNumber); const orderRef = orders.doc(input.orderId);
       const referenceKey = input.grossAmountMinor > 0 ? createHash('sha256').update(`${input.sellerId}:${input.paymentMethod}:${String(input.paymentReference).trim().toUpperCase()}`).digest('hex') : '';
@@ -53,6 +68,17 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
           const savedNumber = String(prior.get('orderNumber') || '');
           const saved = await tx.get(ledger.doc(savedNumber));
           if (!saved.exists) throw new ApiError(503, 'orders/idempotency-corrupt', 'Existing checkout key points to an unavailable order.');
+          const savedOrder = saved.data() || {};
+          const legacyIntentMatches = savedOrder.buyerId === input.buyerId && savedOrder.sellerId === input.sellerId &&
+            savedOrder.storeId === input.storeId && savedOrder.primaryProductId === input.primaryProductId &&
+            savedOrder.currency === input.currency && Number(savedOrder.grossAmountMinor) === Number(input.grossAmountMinor) &&
+            savedOrder.paymentMethod === input.paymentMethod && String(savedOrder.paymentReference || '').trim().toUpperCase() ===
+              String(input.paymentReference || '').trim().toUpperCase() && String(savedOrder.customerName || '') === String(input.customerName || '') &&
+            String(savedOrder.customerEmail || '').trim().toLowerCase() === String(input.customerEmail || '').trim().toLowerCase() &&
+            String(savedOrder.itemTitlesSummary || '') === String(input.itemTitlesSummary || '') && Number(savedOrder.itemCount || 1) === Number(input.itemCount || 1);
+          if ((prior.get('requestHash') && prior.get('requestHash') !== requestHash) || (!prior.get('requestHash') && !legacyIntentMatches)) {
+            throw new ApiError(409, 'orders/idempotency-conflict', 'This checkout key was already used for different purchase details. Start a new checkout.');
+          }
           return { duplicate: true, order: saved.data() || {} };
         }
         const [store, product, settings, legacySettings, priorReference] = await Promise.all([
@@ -91,7 +117,8 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
           paymentStatus: input.paymentStatus, paymentReference: input.paymentReference,
           itemTitlesSummary: input.itemTitlesSummary, itemCount: input.itemCount, downloadCount: 0,
           maxDownloads: input.maxDownloads, expiresAtMs: input.expiresAtMs, createdAt: new Date(), updatedAt: new Date() });
-        tx.create(idemRef, { buyerId: input.buyerId, orderNumber: input.orderNumber, orderId: input.orderId, createdAtIso: new Date().toISOString() });
+        tx.create(idemRef, { buyerId: input.buyerId, orderNumber: input.orderNumber, orderId: input.orderId,
+          requestHash, createdAtIso: new Date().toISOString() });
         if (paymentRef) tx.create(paymentRef, { sellerId: input.sellerId, paymentMethod: input.paymentMethod,
           orderNumber: input.orderNumber, referenceHash: referenceKey, createdAtIso: new Date().toISOString() });
         return { duplicate: false, order: input };
@@ -100,6 +127,187 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
     async order(orderNumber) {
       const snap = await ledger.doc(orderNumber).get();
       return snap.exists ? snap.data() || null : null;
+    },
+    async issueCommissionInvoices(sellerId) {
+      if (invoiceSigningSecret.length < 32) throw new ApiError(503, 'commission/signing-unavailable', 'Commission invoice signing is unavailable.');
+      const rows = await ledger.where('sellerId', '==', sellerId).get();
+      const eligible = rows.docs.map(doc => ({ id: doc.id, data: doc.data() || {} }))
+        .filter(row => row.data.paymentStatus === 'Paid' && Number(row.data.grossAmountMinor) > 0 &&
+          Number.isSafeInteger(row.data.platformCommissionMinor) && row.data.platformCommissionMinor >= 0 &&
+          !row.data.invoiceId && row.data.commissionStatus !== 'reversed' && row.data.commissionStatus !== 'disputed' &&
+          ['Manually Verified by Seller', 'Gateway Verified'].includes(String(row.data.verificationMode)))
+        .sort((a, b) => String(a.data.createdAtIso || '').localeCompare(String(b.data.createdAtIso || '')) || a.id.localeCompare(b.id));
+      const groups = new Map<string, typeof eligible>();
+      for (const row of eligible) groups.set(String(row.data.currency), [...(groups.get(String(row.data.currency)) || []), row]);
+      const issued: Array<Record<string, any>> = [];
+      for (const [currency, group] of groups) {
+        for (let offset = 0; offset + COMMISSION_INVOICE_THRESHOLD <= group.length; offset += COMMISSION_INVOICE_THRESHOLD) {
+          const batch = group.slice(offset, offset + COMMISSION_INVOICE_THRESHOLD);
+          const numbers = batch.map(row => row.id);
+          const digest = createHash('sha256').update([sellerId, currency, ...numbers].join(':')).digest('hex');
+          const invoiceId = `inv-${digest.slice(0, 28)}`;
+          const invoiceRef = db.collection('commission_invoices').doc(invoiceId);
+          const created = await db.runTransaction(async tx => {
+            const [existing, ...latest] = await Promise.all([tx.get(invoiceRef), ...numbers.map(number => tx.get(ledger.doc(number)))]);
+            if (existing.exists) return existing.data() || null;
+            const fresh = latest.map(snap => snap.exists ? snap.data() || {} : null);
+            if (fresh.some(row => !row || row.sellerId !== sellerId || row.currency !== currency || row.paymentStatus !== 'Paid' ||
+              row.invoiceId || row.commissionStatus === 'reversed' || row.commissionStatus === 'disputed' ||
+              !['Manually Verified by Seller', 'Gateway Verified'].includes(String(row.verificationMode)))) return null;
+            if (fresh.some(row => {
+              try {
+                const expected = commissionBreakdown(Number(row!.grossAmountMinor), String(row!.currency), String(row!.paymentMethod));
+                return row!.commissionRateBps !== 500 || expected.platformCommissionMinor !== row!.platformCommissionMinor ||
+                  !Number.isSafeInteger(row!.grossAmountMinor);
+              } catch { return true; }
+            })) throw new ApiError(409, 'commission/invalid-snapshot', 'Commission source entries do not match the fixed 5% ledger policy.');
+            const grossSalesMinor = fresh.reduce((sum, row) => sum + Number(row!.grossAmountMinor), 0);
+            const commissionAmountMinor = fresh.reduce((sum, row) => sum + Number(row!.platformCommissionMinor), 0);
+            if (!Number.isSafeInteger(grossSalesMinor) || !Number.isSafeInteger(commissionAmountMinor) || commissionAmountMinor < 0) {
+              throw new ApiError(409, 'commission/invalid-snapshot', 'Commission invoice source records need review.');
+            }
+            const issuedAtMs = Date.now(); const dueAtMs = issuedAtMs + COMMISSION_INVOICE_WINDOW_MS;
+            const storeId = String(fresh[0]!.storeId || '');
+            if (!storeId || fresh.some(row => row!.storeId !== storeId)) throw new ApiError(409, 'commission/store-mismatch', 'Invoice orders must belong to one Seller store.');
+            const payload = { invoiceId, sellerId, orderNumbers: numbers, commissionAmountMinor, dueAtMs };
+            const invoice = { ...payload, invoiceNumber: `INV-${new Date(issuedAtMs).getFullYear()}-${digest.slice(0, 8).toUpperCase()}`,
+              storeId, currency, verifiedSalesCount: numbers.length, grossSalesMinor, paidAmountMinor: 0,
+              adjustedAmountMinor: 0, remainingBalanceMinor: commissionAmountMinor, status: 'open', issuedAtMs, dueAtMs,
+              issuedAtIso: new Date(issuedAtMs).toISOString(), dueAtIso: new Date(dueAtMs).toISOString(),
+              serverSignature: createHmac('sha256', invoiceSigningSecret).update(
+                `inv:${invoiceId}:${sellerId}:${numbers.join(',')}:${commissionAmountMinor}:${dueAtMs}`,
+              ).digest('hex') };
+            const auditId = randomUUID();
+            tx.create(invoiceRef, invoice);
+            for (const number of numbers) tx.update(ledger.doc(number), { invoiceId, updatedAtIso: new Date().toISOString() });
+            tx.create(db.collection('ledger_audit').doc(auditId), { auditId, invoiceId, sellerId,
+              actorUid: 'system', action: 'INVOICE_GENERATED', previousStatus: 'unbilled', newStatus: 'open',
+              atIso: new Date(issuedAtMs).toISOString(), createdAtIso: new Date(issuedAtMs).toISOString() });
+            return invoice;
+          });
+          if (created) issued.push(created);
+        }
+      }
+      return issued;
+    },
+    async commissionRecords(sellerId) {
+      const read = async (name: string) => {
+        const query = sellerId ? db.collection(name).where('sellerId', '==', sellerId).limit(1000) : db.collection(name).limit(1000);
+        const snap = await query.get();
+        return snap.docs.map(doc => ({ ...doc.data(), [name === 'commission_invoices' ? 'invoiceId' : name === 'commission_payments' ? 'paymentId' : 'adjustmentId']: doc.id }));
+      };
+      const [invoices, payments, adjustments] = await Promise.all([
+        read('commission_invoices'), read('commission_payments'), read('commission_adjustments'),
+      ]);
+      return { invoices, payments, adjustments };
+    },
+    async submitCommissionPayment(input) {
+      const invoiceId = String(input.invoiceId || '');
+      const invoiceRef = db.collection('commission_invoices').doc(invoiceId);
+      const paymentId = `cpay-${randomUUID()}`;
+      const paymentRef = db.collection('commission_payments').doc(paymentId);
+      const reference = String(input.paymentReference || '').trim().toUpperCase();
+      const referenceHash = createHash('sha256').update(reference).digest('hex');
+      const refRef = db.collection('commission_payment_refs').doc(referenceHash);
+      const now = new Date().toISOString();
+      return db.runTransaction(async tx => {
+        const [invoiceSnap, referenceSnap] = await Promise.all([tx.get(invoiceRef), tx.get(refRef)]);
+        if (!invoiceSnap.exists) throw new ApiError(404, 'commission/invoice-not-found', 'Commission invoice not found.');
+        if (referenceSnap.exists) throw new ApiError(409, 'commission/duplicate-reference', 'This transfer reference has already been submitted.');
+        const invoice = invoiceSnap.data() || {};
+        if (invoice.sellerId !== input.sellerId) throw new ApiError(403, 'commission/invoice-forbidden', 'Invoice belongs to another Seller.');
+        const balance = Number(invoice.remainingBalanceMinor); const amount = input.amountMinor === undefined ? balance : Number(input.amountMinor);
+        if (invoice.status === 'payment_submitted') throw new ApiError(409, 'commission/proof-pending', 'This invoice already has payment evidence awaiting review.');
+        if (!Number.isSafeInteger(balance) || balance <= 0 || !Number.isSafeInteger(amount) || amount <= 0 || amount > balance || invoice.status === 'paid') {
+          throw new ApiError(409, 'commission/invalid-amount', 'Payment must be a positive integer amount up to the outstanding invoice balance.');
+        }
+        if (!reference || reference.length > 160) throw new ApiError(422, 'commission/invalid-reference', 'A valid transfer reference is required.');
+        const payment = { paymentId, invoiceId, invoiceNumber: invoice.invoiceNumber, sellerId: invoice.sellerId,
+          storeId: invoice.storeId, currency: invoice.currency, amountMinor: amount,
+          paymentMethod: String(input.paymentMethod), paymentReference: reference,
+          proofNote: String(input.proofNote || '').slice(0, 500), status: 'submitted', submittedByUid: input.sellerId,
+          evidenceSubmittedAtIso: now, createdAtIso: now, updatedAtIso: now };
+        const updatedInvoice = { ...invoice, status: 'payment_submitted', lastPaymentMethod: payment.paymentMethod,
+          lastPaymentReference: reference, lastPaymentProofNote: payment.proofNote, submittedAtIso: now };
+        tx.create(paymentRef, payment); tx.create(refRef, { paymentId, invoiceId, sellerId: input.sellerId, createdAtIso: now });
+        tx.update(invoiceRef, { status: updatedInvoice.status, lastPaymentMethod: payment.paymentMethod,
+          lastPaymentReference: reference, lastPaymentProofNote: payment.proofNote, submittedAtIso: now });
+        const auditId = randomUUID();
+        tx.create(db.collection('ledger_audit').doc(auditId), { auditId, invoiceId, paymentId,
+          sellerId: input.sellerId, actorUid: input.sellerId, action: 'COMMISSION_PAYMENT_SUBMITTED',
+          previousStatus: invoice.status, newStatus: 'payment_submitted', verificationMode: 'Seller Attestation', atIso: now, createdAtIso: now });
+        return { payment, invoice: updatedInvoice };
+      });
+    },
+    async reviewCommissionPayment(input) {
+      const paymentRef = db.collection('commission_payments').doc(String(input.paymentId));
+      const now = new Date().toISOString();
+      return db.runTransaction(async tx => {
+        const paymentSnap = await tx.get(paymentRef);
+        if (!paymentSnap.exists) throw new ApiError(404, 'commission/payment-not-found', 'Submitted commission payment was not found.');
+        const payment = paymentSnap.data() || {};
+        if (payment.invoiceId !== input.invoiceId || payment.status !== 'submitted') throw new ApiError(409, 'commission/payment-reviewed', 'Payment was already reviewed or does not match the invoice.');
+        if (payment.sellerId === input.actorUid) throw new ApiError(403, 'commission/self-approval', 'A Seller cannot approve their own commission settlement.');
+        const invoiceRef = db.collection('commission_invoices').doc(String(payment.invoiceId));
+        const invoiceSnap = await tx.get(invoiceRef);
+        if (!invoiceSnap.exists) throw new ApiError(409, 'commission/invoice-missing', 'Payment invoice is unavailable.');
+        const invoice = invoiceSnap.data() || {};
+        const amount = Number(payment.amountMinor); const remaining = Number(invoice.remainingBalanceMinor);
+        if (invoice.sellerId !== payment.sellerId || invoice.storeId !== payment.storeId || invoice.currency !== payment.currency ||
+            !Number.isSafeInteger(amount) || amount <= 0 || !Number.isSafeInteger(remaining) || amount > remaining) {
+          throw new ApiError(409, 'commission/record-mismatch', 'Saved payment and invoice totals require administrative review.');
+        }
+        if (input.decision === 'approve' && input.fundsConfirmed !== true) throw new ApiError(422, 'commission/evidence-required', 'Confirm cleared funds were independently checked against external account evidence.');
+        const previousPaidAmountMinor = Number(invoice.paidAmountMinor || 0);
+        if (!Number.isSafeInteger(previousPaidAmountMinor) || previousPaidAmountMinor < 0 || !Number.isSafeInteger(Number(invoice.dueAtMs))) {
+          throw new ApiError(409, 'commission/invoice-invalid', 'Commission invoice totals or due date require review.');
+        }
+        const paidAmountMinor = previousPaidAmountMinor + (input.decision === 'approve' ? amount : 0);
+        if (!Number.isSafeInteger(paidAmountMinor)) throw new ApiError(409, 'commission/amount-overflow', 'Commission settlement amount exceeds safe accounting limits.');
+        const remainingBalanceMinor = remaining - (input.decision === 'approve' ? amount : 0);
+        const invoiceStatus = input.decision === 'approve' ? (remainingBalanceMinor === 0 ? 'paid' : 'open') :
+          (Date.now() > Number(invoice.dueAtMs) ? 'overdue' : 'open');
+        const newPayment = { ...payment, status: input.decision === 'approve' ? 'verified' : 'rejected',
+          reviewMode: input.decision === 'approve' ? 'Super Admin Attested Cleared Funds' : 'Super Admin Rejected',
+          reviewedByUid: input.actorUid, reviewedAtIso: now, reviewNote: String(input.note || '').slice(0, 300), updatedAtIso: now };
+        const newInvoice = { ...invoice, status: invoiceStatus, paidAmountMinor, remainingBalanceMinor,
+          ...(input.decision === 'approve' ? { verifiedByAdminUid: input.actorUid, verifiedAtIso: now } : {}) };
+        const orderNumbers = Array.isArray(invoice.orderNumbers) ? invoice.orderNumbers as string[] : [];
+        const ledgerRefs: DocumentReference[] = input.decision === 'approve' && remainingBalanceMinor === 0
+          ? orderNumbers.map(n => ledger.doc(n)) : [];
+        const ledgerSnaps = await Promise.all(ledgerRefs.map(ref => tx.get(ref)));
+        tx.update(paymentRef, { status: newPayment.status, reviewMode: newPayment.reviewMode, reviewedByUid: input.actorUid,
+          reviewedAtIso: now, reviewNote: newPayment.reviewNote, updatedAtIso: now });
+        tx.update(invoiceRef, { status: invoiceStatus, paidAmountMinor, remainingBalanceMinor,
+          ...(input.decision === 'approve' ? { verifiedByAdminUid: input.actorUid, verifiedAtIso: now } : {}) });
+        for (let i = 0; i < ledgerSnaps.length; i++) if (ledgerSnaps[i].exists && ledgerSnaps[i].get('invoiceId') === invoice.invoiceId && ledgerSnaps[i].get('sellerId') === invoice.sellerId) {
+          tx.update(ledgerRefs[i], { commissionStatus: 'paid', updatedAtIso: now });
+        }
+        const auditId = randomUUID();
+        tx.create(db.collection('ledger_audit').doc(auditId), { auditId, invoiceId: invoice.invoiceId,
+          paymentId: payment.paymentId, sellerId: payment.sellerId, actorUid: input.actorUid,
+          action: input.decision === 'approve' ? 'COMMISSION_PAYMENT_VERIFIED' : 'COMMISSION_PAYMENT_REJECTED',
+          previousStatus: 'payment_submitted', newStatus: newPayment.status, verificationMode: newPayment.reviewMode, atIso: now, createdAtIso: now });
+        return { payment: newPayment, invoice: newInvoice };
+      });
+    },
+    async disputeCommission(orderNumber, sellerId, note) {
+      const ref = ledger.doc(orderNumber); const now = new Date().toISOString();
+      return db.runTransaction(async tx => {
+        const snap = await tx.get(ref);
+        if (!snap.exists) throw new ApiError(404, 'commission/order-not-found', 'Order not found.');
+        const old = snap.data() || {};
+        if (old.sellerId !== sellerId) throw new ApiError(403, 'commission/order-forbidden', 'Order belongs to another Seller.');
+        if (old.paymentStatus !== 'Paid' || !['outstanding', 'disputed'].includes(String(old.commissionStatus)) || old.invoiceId) {
+          throw new ApiError(409, 'commission/dispute-conflict', 'This commission record is invoiced or cannot be disputed.');
+        }
+        if (old.commissionStatus === 'disputed') throw new ApiError(409, 'commission/dispute-duplicate', 'A dispute is already open for this order.');
+        const auditId = randomUUID();
+        tx.update(ref, { commissionStatus: 'disputed', commissionDisputeNote: note.slice(0, 500), updatedAtIso: now });
+        tx.create(db.collection('ledger_audit').doc(auditId), { auditId, orderNumber, orderId: old.orderId, sellerId,
+          actorUid: sellerId, action: 'COMMISSION_DISPUTED', previousStatus: old.commissionStatus, newStatus: 'disputed', atIso: now, createdAtIso: now });
+        return { ...old, commissionStatus: 'disputed', commissionDisputeNote: note.slice(0, 500), updatedAtIso: now };
+      });
     },
     async listOrders(uid, admin) {
       let snapshots;
@@ -121,12 +329,21 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
         const orderRef = orders.doc(String(old.orderId));
         const commissionRef = db.collection('commission_entries').doc(orderNumber);
         const commissionSnap = (patch.paymentStatus === 'Paid' || patch.paymentStatus === 'Refunded') && Number(old.grossAmountMinor) > 0 ? await tx.get(commissionRef) : null;
-        const adjustmentRef = db.collection('commission_adjustments').doc(`${orderNumber}:refund`);
-        const adjustmentSnap = patch.paymentStatus === 'Refunded' && Number(old.grossAmountMinor) > 0 ? await tx.get(adjustmentRef) : null;
+        const hasRefundAdjustment = patch.paymentStatus === 'Refunded' && Number(old.grossAmountMinor) > 0;
+        const adjustmentId = hasRefundAdjustment ? (old.invoiceId
+          ? 'adj-' + createHash('sha256').update(`${old.invoiceId}:${orderNumber}:refund`).digest('hex').slice(0, 32)
+          : `${orderNumber}:refund`) : '';
+        const adjustmentRef = hasRefundAdjustment ? db.collection('commission_adjustments').doc(adjustmentId) : null;
+        const [adjustmentSnap, invoiceSnap] = hasRefundAdjustment
+          ? await Promise.all([tx.get(adjustmentRef!), old.invoiceId
+            ? tx.get(db.collection('commission_invoices').doc(String(old.invoiceId))) : Promise.resolve(null)])
+          : [null, null];
+        if (adjustmentSnap?.exists) throw new ApiError(409, 'orders/refund-already-adjusted', 'Refund adjustment already exists; financial records require review.');
         const now = new Date().toISOString();
         const audit = { auditId: randomUUID(), orderNumber, orderId: old.orderId, sellerId: old.sellerId,
           actorUid, action: patch.paymentStatus === 'Paid' ? 'MANUAL_PAYMENT_VERIFIED' : 'PAYMENT_REJECTED',
-          previousStatus: old.paymentStatus, newStatus: patch.paymentStatus, atIso: now };
+          previousStatus: old.paymentStatus, newStatus: patch.paymentStatus, atIso: now, createdAtIso: now,
+          ...(next.paymentEvidence ? { paymentEvidence: next.paymentEvidence } : {}) };
         next.paymentAudit = [...(Array.isArray(old.paymentAudit) ? old.paymentAudit : []), audit];
         next.updatedAtIso = now;
         tx.set(ledgerRef, next);
@@ -134,16 +351,45 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
           commissionStatus: next.commissionStatus, payoutStatus: next.payoutStatus,
           verifiedByUid: next.verifiedByUid || null, verifiedAtIso: next.verifiedAtIso || null,
           refundedAtIso: next.refundedAtIso || null, refundReference: next.refundReference || null,
-          downloadTokenId: next.downloadTokenId, updatedAt: new Date(), paymentReference: old.paymentReference }, { merge: true });
+          downloadTokenId: next.downloadTokenId, paymentEvidence: next.paymentEvidence || null,
+          updatedAt: new Date(), paymentReference: old.paymentReference }, { merge: true });
         tx.create(db.collection('ledger_audit').doc(audit.auditId), audit);
         if (patch.paymentStatus === 'Paid' && commissionSnap && !commissionSnap.exists) tx.create(commissionRef, commissionEntry(next));
         if (patch.paymentStatus === 'Refunded' && commissionSnap?.exists) {
           tx.set(commissionRef, { status: 'reversed', reversedAtIso: now, updatedAtIso: now }, { merge: true });
-          if (adjustmentSnap && !adjustmentSnap.exists) tx.create(adjustmentRef, {
-            adjustmentId: `${orderNumber}:refund`, orderNumber, orderId: old.orderId, sellerId: old.sellerId,
-            currency: old.currency, amountMinor: -Number(old.platformCommissionMinor || 0),
-            reason: 'order_refunded', refundReference: patch.refundReference, actorUid, createdAtIso: now,
-          });
+          if (adjustmentRef) {
+            const originalCommission = Number(old.platformCommissionMinor || 0);
+            if (!Number.isSafeInteger(originalCommission) || originalCommission < 0 ||
+                Number(old.commissionRateBps) !== 500 ||
+                commissionBreakdown(Number(old.grossAmountMinor), String(old.currency), String(old.paymentMethod)).platformCommissionMinor !== originalCommission) {
+              throw new ApiError(409, 'orders/refund-commission-invalid', 'Refund commission snapshot requires administrative review.');
+            }
+            const invoice = invoiceSnap?.exists ? invoiceSnap.data() || {} : null;
+            let reduction = 0; let invoiceNumber = '';
+            if (invoice) {
+              if (invoice.sellerId !== old.sellerId || invoice.currency !== old.currency ||
+                  !Array.isArray(invoice.orderNumbers) || !invoice.orderNumbers.includes(orderNumber) ||
+                  !Number.isSafeInteger(invoice.remainingBalanceMinor) || !Number.isSafeInteger(invoice.adjustedAmountMinor)) {
+                throw new ApiError(409, 'orders/refund-invoice-mismatch', 'Refund invoice ownership or balance needs review.');
+              }
+              reduction = Math.min(Number(invoice.remainingBalanceMinor), originalCommission);
+              if (!Number.isSafeInteger(Number(invoice.adjustedAmountMinor) + originalCommission)) throw new ApiError(409, 'orders/refund-adjustment-overflow', 'Refund adjustment exceeds safe accounting limits.');
+              const remaining = Number(invoice.remainingBalanceMinor) - reduction;
+              const invoiceStatus = remaining === 0 ? Number(invoice.paidAmountMinor || 0) > 0 ? 'paid' : 'voided' : invoice.status;
+              invoiceNumber = String(invoice.invoiceNumber || '');
+              tx.update(db.collection('commission_invoices').doc(String(old.invoiceId)), {
+                adjustedAmountMinor: Number(invoice.adjustedAmountMinor) + originalCommission,
+                remainingBalanceMinor: remaining, status: invoiceStatus,
+              });
+            }
+            tx.create(adjustmentRef, {
+              adjustmentId, invoiceId: String(old.invoiceId || ''), invoiceNumber,
+              orderNumber, sellerId: old.sellerId, currency: old.currency,
+              adjustmentAmountMinor: originalCommission, amountMinor: -originalCommission,
+              reason: 'order_refunded', detail: 'Reversal of platform commission on refunded order.',
+              refundReference: patch.refundReference, actorUid, createdAtIso: now,
+            });
+          }
         }
         return next;
       });
