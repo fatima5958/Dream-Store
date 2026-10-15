@@ -194,3 +194,14 @@ test('moderated store data is recoverable across server restarts', () => {
   assert.match(helper, /status: 'Pending'/);
   assert.match(server, /void hydrateModeratedStoresFromAdminFirestore\(\)/);
 });
+
+test('seller plan and suspension checks use fresh Firestore permissions', () => {
+  const create = server.slice(server.indexOf('const handleCreateOrUpsertStore'), server.indexOf("app.post('/api/stores/create'"));
+  assert.match(create, /!user\.emailVerified/);
+  assert.match(create, /existingDoc\.get\('status'\) !== 'Active'/);
+  const edit = server.slice(server.indexOf("app.post('/api/stores/update'"), server.indexOf('const resolveOwnedStoreForUser'));
+  assert.match(edit, /store\.status !== 'Active'/);
+  assert.match(edit, /fresh\.get\('status'\) !== 'Active'/);
+  assert.match(edit, /fresh\.get\('plan'\) !== 'Pro'/);
+  assert.doesNotMatch(edit, /sellerProEntitlements\.get\(store\.ownerId\)/);
+});

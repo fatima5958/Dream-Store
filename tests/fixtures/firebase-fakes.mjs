@@ -3,7 +3,7 @@ const permissionError = () => Object.assign(new Error('PERMISSION_DENIED fixture
 const store = { ownerId: 'seller-test', storeSlug: 'test-shop', storeName: 'Test Shop', status: 'Active', plan: 'Free', currency: 'USD' };
 const deliverable = { ownerId: 'seller-test', productId: 'product-test', fileDataUrl: 'storage://deliverables/seller-test/product-test/original.pdf' };
 function snapshot(path) {
-  const data = path.startsWith('stores/') ? store : path.endsWith('/deliverables/main') ? deliverable : undefined;
+  const data = path.startsWith('stores/') ? (scenario === 'suspended-store' ? { ...store, status: 'Pending' } : store) : path.endsWith('/deliverables/main') ? deliverable : undefined;
   return { id: path.split('/').at(-1), exists: Boolean(data), data: () => data, get: key => data?.[key] };
 }
 function ref(path) {
@@ -44,7 +44,7 @@ export function getAuth() {
       if (checkRevoked !== true) throw new Error('Revocation checking is required.');
       const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
       if (payload.sub === 'revoked-user') throw new Error('auth/id-token-revoked');
-      return { ...payload, uid: payload.sub, email: 'seller@example.test', email_verified: true, name: 'Test Seller' };
+      return { ...payload, uid: payload.sub, email: 'seller@example.test', email_verified: payload.email_verified !== false, name: 'Test Seller' };
     },
     async setCustomUserClaims() { throw permissionError(); },
   };

@@ -149,3 +149,24 @@ test('admin bulk payment approval is blocked and store mutations fail closed', a
   assert.equal(pro.status, 503);
   assert.notEqual((await pro.json()).ok, true);
 });
+
+test('unverified sellers cannot create a store or edit one', async t => {
+  const origin = await boot(t);
+  const unverified = token('seller-test', { email_verified: false });
+  const created = await request(origin, '/api/stores/create', { storeName: 'Invalid', storeSlug: 'invalid' }, unverified);
+  assert.equal(created.status, 403);
+  assert.match((await created.json()).error, /Verify your email/);
+  assert.equal((await request(origin, '/api/stores/update', {
+    storeId: 'store-seller-test', updates: { storeName: 'No' },
+  }, unverified)).status, 403);
+});
+
+test('suspended stores reject both upsert and editing despite cached records', async t => {
+  const origin = await boot(t, 'suspended-store');
+  const upsert = await request(origin, '/api/stores/create',
+    { storeId: 'store-seller-test', storeName: 'Trying', storeSlug: 'test-shop' }, token());
+  assert.equal(upsert.status, 403, JSON.stringify(await upsert.json()));
+  const change = await request(origin, '/api/stores/update',
+    { storeId: 'store-seller-test', updates: { storeName: 'Trying' } }, token());
+  assert.equal(change.status, 403, JSON.stringify(await change.json()));
+});

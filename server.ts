@@ -4585,6 +4585,10 @@ async function startServer() {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
+    if (!user.emailVerified) {
+      res.status(403).json({ error: 'Verify your email before creating or updating a store.' });
+      return;
+    }
 
     if (!isSuper && isVerifiedBuyerOnly(user.uid)) {
       res.status(403).json({
@@ -4724,6 +4728,9 @@ async function startServer() {
         if (existingDoc.exists && String(existingDoc.get('ownerId') || '') !== ownerId) {
           throw Object.assign(new Error('Store belongs to another seller.'), { code: 'owner-conflict' });
         }
+        if (existingDoc.exists && !isSuper && existingDoc.get('status') !== 'Active') {
+          throw Object.assign(new Error('Suspended stores cannot be edited.'), { code: 'store-suspended' });
+        }
         if ((reservation.exists && reservation.get('storeId') !== storeId) ||
             slugMatches.docs.some(doc => doc.id !== storeId)) {
           throw Object.assign(new Error('Store URL already taken.'), { code: 'slug-conflict' });
@@ -4773,6 +4780,10 @@ async function startServer() {
       }
       if (code === 'owner-conflict') {
         res.status(403).json({ error: 'This store belongs to another seller.' });
+        return;
+      }
+      if (code === 'store-suspended') {
+        res.status(403).json({ error: 'This store is suspended and cannot be edited.' });
         return;
       }
       console.error('Verified store creation failed:', err);
@@ -4827,7 +4838,7 @@ async function startServer() {
       });
       return;
     }
-    if (!isSuper && String(store.status) === 'Suspended') {
+    if (!isSuper && store.status !== 'Active') {
       res.status(403).json({ error: 'This store is suspended and cannot be edited.' });
       return;
     }
@@ -4863,8 +4874,7 @@ async function startServer() {
       updates?.theme &&
       updates.theme !== store.theme &&
       PRO_THEME_IDS.has(String(updates.theme)) &&
-      store.plan !== 'Pro' &&
-      !sellerProEntitlements.get(store.ownerId)
+      store.plan !== 'Pro'
     ) {
       res.status(403).json({
         proEntitlementRequired: true,
@@ -4964,6 +4974,13 @@ async function startServer() {
         if (!fresh.exists || (!isSuper && fresh.get('ownerId') !== user.uid)) {
           throw Object.assign(new Error('Store ownership changed.'), { code: 'owner-conflict' });
         }
+        if (!isSuper && fresh.get('status') !== 'Active') {
+          throw Object.assign(new Error('Suspended stores cannot be edited.'), { code: 'store-suspended' });
+        }
+        if (!isSuper && patch.theme && patch.theme !== fresh.get('theme') &&
+            PRO_THEME_IDS.has(String(patch.theme)) && fresh.get('plan') !== 'Pro') {
+          throw Object.assign(new Error('Pro entitlement no longer active.'), { code: 'pro-required' });
+        }
         const nextSlug = updated.storeSlug;
         const currentSlug = String(fresh.get('storeSlug') || '').toLowerCase();
         const newRef = db.collection('store_slugs').doc(nextSlug);
@@ -4990,6 +5007,14 @@ async function startServer() {
       }
       if (code === 'owner-conflict') {
         res.status(403).json({ error: 'Store ownership changed. Please sign in again.' });
+        return;
+      }
+      if (code === 'store-suspended') {
+        res.status(403).json({ error: 'This store is suspended and cannot be edited.' });
+        return;
+      }
+      if (code === 'pro-required') {
+        res.status(403).json({ error: 'Pro entitlement is required for this theme.' });
         return;
       }
       console.error('Store update failed:', err);
