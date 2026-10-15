@@ -125,3 +125,27 @@ test('store editing rejects failed saves, invalid slugs and client-controlled Pr
   assert.equal(saved.status, 200);
   assert.equal((await saved.json()).store.storeName, 'Saved Name');
 });
+
+test('admin bulk payment approval is blocked and store mutations fail closed', async t => {
+  const origin = await boot(t);
+  const adminToken = token('seller-test', { role: 'super_admin', superAdmin: true });
+  const bulkPaid = await request(origin, '/api/admin/stores/control',
+    { action: 'approve_all_pending_orders' }, adminToken);
+  assert.equal(bulkPaid.status, 409);
+  assert.notEqual((await bulkPaid.json()).ok, true);
+  const bulkStores = await request(origin, '/api/admin/stores/control',
+    { action: 'activate_all_stores' }, adminToken);
+  assert.equal(bulkStores.status, 409);
+  const badStatus = await request(origin, '/api/admin/stores/status',
+    { storeId: 'store-seller-test', status: 'arbitrary' }, adminToken);
+  assert.equal(badStatus.status, 400);
+  // Firebase test doubles reject updates; the API must not report success.
+  const moderate = await request(origin, '/api/admin/stores/status',
+    { storeId: 'store-seller-test', status: 'pending' }, adminToken);
+  assert.equal(moderate.status, 503);
+  assert.notEqual((await moderate.json()).ok, true);
+  const pro = await request(origin, '/api/admin/subscriptions/grant-pro',
+    { storeId: 'store-seller-test', grantPro: true }, adminToken);
+  assert.equal(pro.status, 503);
+  assert.notEqual((await pro.json()).ok, true);
+});

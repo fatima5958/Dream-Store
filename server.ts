@@ -7013,205 +7013,232 @@ async function startServer() {
   app.get('/api/commission/admin-overview', asyncRoute(handleAdminCommissionOverview));
   app.get('/api/commission/admin/overview', asyncRoute(handleAdminCommissionOverview));
 
-  // POST /api/commission/admin/grant-pro — Strictly Super Admin Pro Entitlement Grant/Revoke
+  // Admin store mutations must commit to the authoritative database BEFORE any
+  // success response or per-instance cache update. Never PATCH entire cached stores.
+  const saveAdminStorePatch = async (
+    storeId: string,
+    patch: Partial<ServerStoreRecord>
+  ): Promise<ServerStoreRecord | null> => {
+    if (!adminFirestoreDb) throw new Error('Secure store database is unavailable.');
+    const db = adminFirestoreDb;
+    const ref = db.collection('stores').doc(storeId);
+    const saved = await db.runTransaction(async (tx) => {
+      const current = await tx.get(ref);
+      if (!current.exists) return null;
+      tx.update(ref, { ...patch, updatedAt: new Date() });
+      return { ...(current.data() || {}), storeId, ...patch } as ServerStoreRecord;
+    });
+    if (saved) serverStores.set(storeId, saved);
+    return saved;
+  };
+
+  // Grant/revoke Pro against fresh owner records, as one durable transaction.
   const handleAdminGrantPro = async (req: express.Request, res: express.Response) => {
     const adminUser = await requireSuperAdminUser(req, res);
     if (!adminUser) return;
-
     const { targetSellerId, sellerId, storeId, grantPro = true } = req.body || {};
-    const targetStore = storeId ? await resolveVerifiedStoreRecord(String(storeId)) : undefined;
-    const resolvedSellerId = String(
-      targetSellerId ||
-        sellerId ||
-        targetStore?.ownerId ||
-        ''
-    ).trim();
-
-    if (!resolvedSellerId && !targetStore) {
+    const suppliedSellerId = String(targetSellerId || sellerId || '').trim();
+    const targetStoreId = String(storeId || '').trim();
+    if (!suppliedSellerId && !targetStoreId) {
       res.status(400).json({ error: 'targetSellerId or storeId is required.' });
       return;
     }
-
-    const enabled = Boolean(grantPro);
-    if (resolvedSellerId) {
-      sellerProEntitlements.set(resolvedSellerId, enabled);
+    if (targetStoreId && !/^[a-zA-Z0-9_-]{1,128}$/.test(targetStoreId)) {
+      res.status(400).json({ error: 'Invalid store ID.' });
+      return;
     }
-    for (const st of serverStores.values()) {
-      if (st.ownerId === resolvedSellerId || (storeId && st.storeId === String(storeId))) {
-        st.plan = enabled ? 'Pro' : 'Free';
-        serverStores.set(st.storeId, st);
-        syncFirestoreDoc(
-          'stores',
-          st.storeId,
-          st as unknown as Record<string, unknown>,
-          adminUser.rawToken
-        );
+    if (typeof grantPro !== 'boolean') {
+      res.status(400).json({ error: 'grantPro must be a boolean.' });
+      return;
+    }
+    if (!adminFirestoreDb) {
+      res.status(503).json({ error: 'Secure store database is unavailable.' });
+      return;
+    }
+
+    const db = adminFirestoreDb;
+    try {
+      let resolvedSellerId = suppliedSellerId;
+      let storeIds: string[];
+      if (targetStoreId) {
+        const storeSnapshot = await db.collection('stores').doc(targetStoreId).get();
+        if (!storeSnapshot.exists) {
+          res.status(404).json({ error: 'Store not found.' });
+          return;
+        }
+        const actualOwner = String(storeSnapshot.get('ownerId') || '');
+        if (!actualOwner || (suppliedSellerId && suppliedSellerId !== actualOwner)) {
+          res.status(403).json({ error: 'Seller does not own this store.' });
+          return;
+        }
+        resolvedSellerId = actualOwner;
+        storeIds = [targetStoreId];
+      } else {
+        const owned = await db.collection('stores').where('ownerId', '==', suppliedSellerId).get();
+        storeIds = owned.docs.map((doc) => doc.id);
       }
+      if (storeIds.length === 0) {
+        res.status(404).json({ error: 'No stores found for this seller.' });
+        return;
+      }
+      // Bound transaction size; do not partially grant an entitlement.
+      if (storeIds.length > 100) {
+        res.status(409).json({ error: 'Too many stores for one atomic plan change.' });
+        return;
+      }
+      const plan: 'Pro' | 'Free' = grantPro ? 'Pro' : 'Free';
+      const saved = await db.runTransaction(async (tx) => {
+        const snapshots = await Promise.all(
+          storeIds.map((id) => tx.get(db.collection('stores').doc(id)))
+        );
+        if (snapshots.some((snap) => !snap.exists || snap.get('ownerId') !== resolvedSellerId)) {
+          throw new Error('Store ownership changed during entitlement update.');
+        }
+        const updatedAt = new Date();
+        for (const snap of snapshots) {
+          tx.update(snap.ref, { plan, updatedAt });
+        }
+        return snapshots.map((snap) => ({
+          ...(snap.data() || {}),
+          storeId: snap.id,
+          plan,
+        } as ServerStoreRecord));
+      });
+      for (const store of saved) serverStores.set(store.storeId, store);
+      sellerProEntitlements.set(resolvedSellerId, grantPro);
+      res.json({
+        ok: true, targetSellerId: resolvedSellerId, storeId: targetStoreId || undefined,
+        plan, hasProEntitlement: grantPro, updatedByUid: adminUser.uid,
+        updatedStoreCount: saved.length,
+      });
+    } catch (err) {
+      console.error('Durable admin Pro entitlement update failed:', err);
+      res.status(503).json({ error: 'Plan change was not saved securely. Please retry.' });
     }
-
-    res.json({
-      ok: true,
-      targetSellerId: resolvedSellerId,
-      storeId: targetStore?.storeId || storeId,
-      plan: enabled ? 'Pro' : 'Free',
-      hasProEntitlement: enabled,
-      updatedByUid: adminUser.uid,
-    });
   };
 
   app.post('/api/commission/admin/grant-pro', asyncRoute(handleAdminGrantPro));
   app.post('/api/admin/subscriptions/grant-pro', asyncRoute(handleAdminGrantPro));
 
-  // POST /api/admin/stores/status — Strictly Super Admin Store Moderation Mutation
   app.post('/api/admin/stores/status', asyncRoute(async (req, res) => {
     const adminUser = await requireSuperAdminUser(req, res);
     if (!adminUser) return;
-
-    const { storeId, status } = req.body || {};
-    const targetStoreId = String(storeId || '').trim();
-    const store =
-      serverStores.get(targetStoreId) || (await resolveVerifiedStoreRecord(targetStoreId));
-    if (!store) {
-      res.status(404).json({ error: `Store "${targetStoreId}" not found.` });
+    const targetStoreId = String(req.body?.storeId || '').trim();
+    const statusInput = String(req.body?.status || '').trim().toLowerCase();
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(targetStoreId) ||
+        !['active', 'pending', 'suspended'].includes(statusInput)) {
+      res.status(400).json({ error: 'Valid storeId and status are required.' });
       return;
     }
-
-    const normalizedStatus: 'Active' | 'Pending' =
-      String(status).toLowerCase() === 'active' ? 'Active' : 'Pending';
-    store.status = normalizedStatus;
-    serverStores.set(store.storeId, store);
-    syncFirestoreDoc(
-      'stores',
-      store.storeId,
-      store as unknown as Record<string, unknown>,
-      adminUser.rawToken
-    );
-
-    res.json({
-      ok: true,
-      storeId: store.storeId,
-      status: store.status,
-      updatedByUid: adminUser.uid,
-    });
+    try {
+      const saved = await saveAdminStorePatch(targetStoreId, {
+        status: statusInput === 'active' ? 'Active' : 'Pending',
+      });
+      if (!saved) {
+        res.status(404).json({ error: 'Store not found.' });
+        return;
+      }
+      res.json({ ok: true, storeId: saved.storeId, status: saved.status, updatedByUid: adminUser.uid });
+    } catch (err) {
+      console.error('Durable admin store status update failed:', err);
+      res.status(503).json({ error: 'Store status was not saved securely. Please retry.' });
+    }
   }));
 
-  // POST /api/admin/stores/control — Instant Super Admin Multi-Store Command Endpoint
   app.post('/api/admin/stores/control', asyncRoute(async (req, res) => {
     const adminUser = await requireSuperAdminUser(req, res);
     if (!adminUser) return;
-
     const { action, storeId, updates } = req.body || {};
     const cleanAction = String(action || '').trim().toLowerCase();
-
-    if (cleanAction === 'activate_all_stores') {
-      let updatedCount = 0;
-      for (const st of serverStores.values()) {
-        if (st.status !== 'Active') {
-          st.status = 'Active';
-          serverStores.set(st.storeId, st);
-          syncFirestoreDoc(
-            'stores',
-            st.storeId,
-            st as unknown as Record<string, unknown>,
-            adminUser.rawToken
-          );
-          updatedCount += 1;
-        }
-      }
-      res.json({ ok: true, action: cleanAction, updatedCount });
+    // Unverified bulk approval could unlock a paid download without evidence of
+    // cleared funds. Bulk activation can also bypass per-store review.
+    if (cleanAction === 'approve_all_pending_orders' || cleanAction === 'activate_all_stores') {
+      res.status(409).json({
+        error: 'Bulk financial or moderation actions are disabled for beta safety. Review each store and payment individually.',
+      });
       return;
     }
-
-    if (cleanAction === 'approve_all_pending_orders') {
-      let verifiedCount = 0;
-      const nowIso = new Date().toISOString();
-      for (const entry of persistentLedger.values()) {
-        if (entry.paymentStatus === 'Pending' && (!storeId || entry.storeId === String(storeId))) {
-          entry.paymentStatus = 'Paid';
-          entry.verificationMode = 'Manually Verified by Seller';
-          entry.verifiedByUid = adminUser.uid;
-          entry.verifiedAtIso = nowIso;
-          entry.updatedAtIso = nowIso;
-          entry.downloadToken = createSignedDownloadToken({
-            orderNumber: entry.orderNumber,
-            productId: entry.primaryProductId,
-            buyerId: entry.buyerId,
-            expiresAtMs: entry.expiresAtMs,
-          });
-          await triggerBuyerPaidOrderEmail(entry, adminUser.uid, adminUser.rawToken);
-          syncFirestoreDoc(
-            'ledger',
-            entry.orderNumber,
-            entry as unknown as Record<string, unknown>,
-            adminUser.rawToken
-          );
-          reconcileSellerCommissionState(entry.sellerId, Date.now(), adminUser.rawToken);
-          verifiedCount += 1;
-        }
-      }
-      res.json({ ok: true, action: cleanAction, verifiedCount });
-      return;
-    }
-
     const targetStoreId = String(storeId || '').trim();
-    const store =
-      serverStores.get(targetStoreId) || (await resolveVerifiedStoreRecord(targetStoreId));
-    if (!store) {
-      res.status(404).json({ error: `Store "${targetStoreId}" not found.` });
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(targetStoreId)) {
+      res.status(400).json({ error: 'Valid storeId is required.' });
       return;
     }
-
+    const patch: Partial<ServerStoreRecord> = {};
     if (cleanAction === 'activate' || cleanAction === 'suspend') {
-      store.status = cleanAction === 'activate' ? 'Active' : 'Pending';
+      patch.status = cleanAction === 'activate' ? 'Active' : 'Pending';
     } else if (cleanAction === 'grant_pro' || cleanAction === 'revoke_pro') {
-      const isPro = cleanAction === 'grant_pro';
-      store.plan = isPro ? 'Pro' : 'Free';
-      sellerProEntitlements.set(store.ownerId, isPro);
-    } else if (cleanAction === 'update_store' && updates && typeof updates === 'object') {
-      if (updates.storeName) store.storeName = String(updates.storeName).trim().slice(0, 100);
-      if (updates.storeSlug) {
-        const nextSlug = String(updates.storeSlug)
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-z0-9_.-]/g, '')
-          .slice(0, 40);
-        if (nextSlug.length >= 2) store.storeSlug = nextSlug;
+      patch.plan = cleanAction === 'grant_pro' ? 'Pro' : 'Free';
+    } else if (cleanAction === 'update_store' && updates && typeof updates === 'object' && !Array.isArray(updates)) {
+      // Slug changes need atomic reservations; disallow this older control route.
+      if (updates.storeSlug !== undefined) {
+        res.status(409).json({ error: 'Store URL edits require the dedicated store editor and slug checks.' });
+        return;
       }
-      if (updates.currency && String(updates.currency) in SUPPORTED_CURRENCIES) {
-        store.currency = String(updates.currency);
+      if (updates.storeName !== undefined) {
+        const name = String(updates.storeName).trim();
+        if (!name || name.length > 100) {
+          res.status(400).json({ error: 'Store name must be 1 to 100 characters.' });
+          return;
+        }
+        patch.storeName = name;
       }
-      if (updates.theme) store.theme = String(updates.theme);
-      if (updates.plan) {
-        const isPro = String(updates.plan).toLowerCase() === 'pro';
-        store.plan = isPro ? 'Pro' : 'Free';
-        sellerProEntitlements.set(store.ownerId, isPro);
+      if (updates.currency !== undefined) {
+        const currency = String(updates.currency);
+        if (!Object.hasOwn(SUPPORTED_CURRENCIES, currency)) {
+          res.status(400).json({ error: 'Unsupported currency.' });
+          return;
+        }
+        patch.currency = currency;
       }
-      if (updates.status) {
-        store.status = String(updates.status).toLowerCase() === 'active' ? 'Active' : 'Pending';
+      if (updates.theme !== undefined) patch.theme = String(updates.theme).trim().slice(0, 80);
+      if (updates.plan !== undefined) {
+        const planInput = String(updates.plan).toLowerCase();
+        if (planInput !== 'pro' && planInput !== 'free') {
+          res.status(400).json({ error: 'Invalid store plan.' });
+          return;
+        }
+        patch.plan = planInput === 'pro' ? 'Pro' : 'Free';
       }
+      if (updates.status !== undefined) {
+        const statusInput = String(updates.status).toLowerCase();
+        if (!['active', 'pending', 'suspended'].includes(statusInput)) {
+          res.status(400).json({ error: 'Invalid store status.' });
+          return;
+        }
+        patch.status = statusInput === 'active' ? 'Active' : 'Pending';
+      }
+    } else {
+      res.status(400).json({ error: 'Unsupported admin store action.' });
+      return;
     }
-
-    serverStores.set(store.storeId, store);
-    syncFirestoreDoc(
-      'stores',
-      store.storeId,
-      store as unknown as Record<string, unknown>,
-      adminUser.rawToken
-    );
-
-    const visits = getOrInitStoreVisits(store.storeId);
-    res.json({
-      ok: true,
-      action: cleanAction,
-      store: {
-        ...store,
-        planId: store.plan === 'Pro' ? 'pro' : 'free',
-        status: store.status === 'Active' ? 'active' : 'suspended',
-        visitsCount: visits.visitsCount,
-        checkoutViewsCount: visits.checkoutViewsCount,
-        lastVisitedAtIso: visits.lastVisitedAtIso,
-      },
-    });
+    if (Object.keys(patch).length === 0) {
+      res.status(400).json({ error: 'No store changes supplied.' });
+      return;
+    }
+    try {
+      const saved = await saveAdminStorePatch(targetStoreId, patch);
+      if (!saved) {
+        res.status(404).json({ error: 'Store not found.' });
+        return;
+      }
+      if (patch.plan) sellerProEntitlements.set(saved.ownerId, patch.plan === 'Pro');
+      const visits = getOrInitStoreVisits(saved.storeId);
+      res.json({
+        ok: true,
+        action: cleanAction,
+        store: {
+          ...saved,
+          planId: saved.plan === 'Pro' ? 'pro' : 'free',
+          status: saved.status === 'Active' ? 'active' : 'suspended',
+          visitsCount: visits.visitsCount,
+          checkoutViewsCount: visits.checkoutViewsCount,
+          lastVisitedAtIso: visits.lastVisitedAtIso,
+        },
+      });
+    } catch (err) {
+      console.error('Durable admin store control update failed:', err);
+      res.status(503).json({ error: 'Store changes were not saved securely. Please retry.' });
+    }
   }));
 
   // POST /api/commission/submit-payment — Seller submits commission payment details & proof
