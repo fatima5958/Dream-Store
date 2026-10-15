@@ -228,3 +228,30 @@ test('refund requires separately confirmed returned funds and a transfer referen
   assert.equal(refund.status, 400);
   assert.match((await refund.json()).error, /refunded funds/i);
 });
+
+test('first 100 launch: 98 -> 99 -> 100, full rejection and idempotent retries', async t => {
+  const origin = await boot(t, 'founder-campaign');
+  const status = async () => {
+    const response = await request(origin, '/api/launch/creator-spots');
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  assert.deepEqual((({ claimed, remaining, limit }) => ({ claimed, remaining, limit }))(await status()),
+    { claimed: 98, remaining: 2, limit: 100 });
+  const claim = (uid, slug) => request(origin, '/api/stores/create',
+    { storeName: 'My Creator Store', storeSlug: slug }, token(uid));
+  const first = await claim('creator-first', 'creator-one');
+  assert.equal(first.status, 201, await first.text().catch(() => ''));
+  assert.equal((await status()).remaining, 1);
+  const repeat = await claim('creator-first', 'creator-one');
+  assert.equal(repeat.status, 200);
+  assert.equal((await status()).remaining, 1, 'same user update must not consume another spot');
+  const last = await claim('creator-last', 'creator-last');
+  assert.equal(last.status, 201);
+  assert.equal((await status()).remaining, 0);
+  const soldOut = await claim('creator-101', 'creator-too-late');
+  assert.equal(soldOut.status, 409);
+  const soldOutBody = await soldOut.json();
+  assert.equal(soldOutBody.code, 'creator-spots-full');
+  assert.equal((await status()).claimed, 100, 'failed extra claim must never increment the counter');
+});

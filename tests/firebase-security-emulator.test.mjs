@@ -265,3 +265,14 @@ test('client SDK cannot fabricate a financial order, commission, or immutable au
     adjustmentId: 'fake-adjustment', sellerId: 'seller-one', adjustmentAmountMinor: 90000,
   }));
 });
+
+test('Creators cannot forge, change or inspect the launch counter or their claim proof', async () => {
+  const creator = user('seller-one').firestore();
+  const outsider = env.unauthenticatedContext().firestore();
+  const campaign = doc(creator, 'creator_launch_campaigns', 'first-100-creators');
+  const claim = doc(creator, 'creator_launch_claims', 'seller-one');
+  await assertFails(setDoc(campaign, { claimedCount: 100 }));
+  await assertFails(setDoc(claim, { ownerId: 'seller-one', claimNumber: 1 }));
+  await assertFails(getDoc(campaign));
+  await assertFails(getDoc(doc(outsider, 'creator_launch_campaigns', 'first-100-creators')));
+});
