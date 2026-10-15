@@ -217,5 +217,6 @@ test('subscription requests cannot locally activate Pro plans without server gra
   assert.equal(directPro.status, 409);
   assert.notEqual((await directPro.json()).ok, true);
   const simulated = await request(origin, '/api/commission/simulate-overdue', {}, token());
-  assert.equal(simulated.status, 403);
+  // The production start entrypoint deliberately hides this test-only route.
+  assert.equal(simulated.status, 404);
 });
