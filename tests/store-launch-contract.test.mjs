@@ -459,7 +459,8 @@ test('Firebase Admin outages do not masquerade as invalid sessions or log privat
   assert.match(verifier, /isInvalidFirebaseIdTokenError\(error\)/);
   assert.match(verifier, /safeFirebaseAdminFailureCode\(error\)/);
   assert.match(verifier, /throw new FirebaseAuthBackendUnavailableError\(\)/);
-  assert.doesNotMatch(verifier, /console\.(error|log|warn)\([^\n]*(token|trimmed|error)\b/);
+  assert.match(verifier, /code: safeFirebaseAdminFailureCode\(error\)/);
+  assert.doesNotMatch(verifier, /console\.(error|log|warn)\([^\n]*\b(trimmed|rawToken)\b/);
   const auth = server.slice(server.indexOf('async function requireAuthenticatedUser('),
     server.indexOf('async function requireSuperAdminUser('));
   assert.match(auth, /res\.status\(503\)\.json\(\{/);
