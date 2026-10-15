@@ -745,7 +745,12 @@ export default function App() {
 
   // 2. Listen to Firebase & Email Authentication state
   useEffect(() => {
+    // Only the newest auth event can commit restored profile and navigation
+    // state; invalidated on auth change, retry, and effect cleanup.
+    let authRunSeq = 0;
     const unsub = subscribeAuthState(async (user) => {
+      const runId = ++authRunSeq;
+      const isStale = () => runId !== authRunSeq;
       setCurrentUser(user);
       setAuthReady(true);
       // Clear any previous session's orders & audit logs immediately to prevent cross-account leakage
@@ -779,23 +784,25 @@ export default function App() {
         // Verify whether the authenticated user's UID matches the server's SUPER_ADMIN_UID
         try {
           const authHeaders = await getAuthHeaders();
+          if (isStale()) return;
           const adminRes = await fetch('/api/admin/verify-session', {
             method: 'POST',
             headers: authHeaders,
             body: JSON.stringify({}),
           });
+          if (isStale()) return;
           if (adminRes.ok) {
             const adminData = await adminRes.json();
+            if (isStale()) return;
             verifiedSuperAdmin = Boolean(
               adminData.isSuperAdmin && adminData.uid === user.uid
             );
-            setIsSuperAdminVerified(verifiedSuperAdmin);
-          } else {
-            setIsSuperAdminVerified(false);
           }
         } catch {
-          setIsSuperAdminVerified(false);
+          // Keep the account unprivileged if the server cannot verify Admin.
         }
+        if (isStale()) return;
+        setIsSuperAdminVerified(verifiedSuperAdmin);
 
         const userStoreId = `store-${user.uid.slice(0, 20)}`;
         const freshDefault = buildFreshUserStoreConfig(user);
@@ -828,6 +835,7 @@ export default function App() {
           }
 
         }
+        if (isStale()) return;
 
         if (!existingRole) {
           // Role and onboarding state must come from the verified backend.
@@ -837,17 +845,20 @@ export default function App() {
             // for revocation by the backend. Forcing a network refresh on every
             // first render caused avoidable failures on slow embedded previews.
             const authHeaders = await getAuthHeaders({}, { requireAuth: true });
+            if (isStale()) return;
             let profRes = await fetch('/api/users/profile', {
               headers: authHeaders,
               cache: 'no-store',
               signal: AbortSignal.timeout(15000),
             });
+            if (isStale()) return;
             // The freshly minted Firebase token may not be accepted by the
             // first backend instance yet. Retry once with a refreshed signed
             // token, but NEVER fall back to browser-cached roles.
             if (profRes.status === 401 && hasFirebaseSdkSession()) {
               try {
                 const retryHeaders = await getAuthHeaders({}, { forceRefresh: true, requireAuth: true });
+                if (isStale()) return;
                 profRes = await fetch('/api/users/profile', {
                   headers: retryHeaders,
                   cache: 'no-store',
@@ -856,6 +867,7 @@ export default function App() {
               } catch {
                 // Report the verification problem without creating a login loop.
               }
+              if (isStale()) return;
             }
             if (profRes.status === 401) {
               setUserProfile(null);
@@ -868,8 +880,11 @@ export default function App() {
                 );
                 return;
               }
+              // Never sign out a newer identity because of an older 401.
+              if (isStale()) return;
               invalidateRejectedLegacyEmailSession();
               await signOutUser().catch(() => {});
+              if (isStale()) return;
               setAuthVerificationIssue(false);
               setAuthModalMode('signin');
               setAuthModalOpen(true);
@@ -887,6 +902,7 @@ export default function App() {
               const errorBody = profRes.status === 503
                 ? await profRes.json().catch(() => null)
                 : null;
+              if (isStale()) return;
               setUserProfile(null);
               setRoleOnboardingOpen(false);
               setAuthVerificationIssue(true);
@@ -900,6 +916,7 @@ export default function App() {
               return;
             }
             const profData = await profRes.json();
+            if (isStale()) return;
             if (!profData || profData.ok !== true) {
               throw new Error('Server returned invalid account verification data.');
             }
@@ -927,6 +944,7 @@ export default function App() {
               existingEmail = String(profData.profile.email || defaultEmail);
             }
           } catch (error) {
+            if (isStale()) return;
             console.warn('Account verification failed without changing the signed-in identity:', error);
             setUserProfile(null);
             setRoleOnboardingOpen(false);
@@ -1143,7 +1161,10 @@ export default function App() {
         }
       }
     });
-    return () => unsub();
+    return () => {
+      authRunSeq += 1; // Invalidate in-flight calls on logout, retry or unmount.
+      unsub();
+    };
   }, [authRestoreAttempt]);
 
   // 3. Real-time Firestore listeners once authenticated

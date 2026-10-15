@@ -474,3 +474,35 @@ test('Firebase Admin outages do not masquerade as invalid sessions or log privat
     app.indexOf('const profData = await profRes.json()'));
   assert.match(getProfile, /errorBody\?\.code === 'auth\/backend-unavailable'/);
 });
+
+test('auth restoration ignores stale async runs before applying roles, modal and store state', () => {
+  const start = app.indexOf('  // 2. Listen to Firebase & Email Authentication state');
+  const end = app.indexOf('  }, [authRestoreAttempt]);', start);
+  assert.ok(start >= 0 && end > start, 'auth effect exists');
+  const effect = app.slice(start, end);
+  assert.match(effect, /let authRunSeq = 0/);
+  assert.match(effect, /const runId = \+\+authRunSeq/);
+  assert.match(effect, /const isStale = \(\) => runId !== authRunSeq/);
+  assert.ok((effect.match(/if \(isStale\(\)\) return;/g) || []).length >= 12);
+  const adminDone = effect.indexOf('setIsSuperAdminVerified(verifiedSuperAdmin)');
+  assert.ok(adminDone > 0 && effect.lastIndexOf('if (isStale()) return;', adminDone) > effect.indexOf('const adminRes'));
+  assert.match(effect, /if \(isStale\(\)\) return;\s*invalidateRejectedLegacyEmailSession\(\)/);
+  assert.match(effect, /authRunSeq \+= 1;[\s\S]*unsub\(\)/);
+  assert.doesNotMatch(effect, /localStorage\.getItem\(`dreamstore_user_profile_/);
+});
+
+test('readiness failures are logged safely without changing the public API response', () => {
+  const ready = server.slice(server.indexOf('let lastReadinessWarningAt'),
+    server.indexOf('// 0B. Firebase OAuth'));
+  assert.match(ready, /\[DreamStore Ready\] not ready:/);
+  assert.match(ready, /adminFirestoreInitialized: Boolean\(adminFirestoreDb\)/);
+  assert.match(ready, /safeFirebaseAdminFailureCode\(error\)/);
+  assert.match(ready, /dependency check timed out/);
+  assert.match(ready, /now - lastReadinessWarningAt < 60000/);
+  assert.doesNotMatch(ready, /console\.\w+\([^)]*(error\.message|process\.env\.[A-Z_]*SECRET|rawToken|Authorization)/);
+  assert.match(ready, /json\(\{ status: ready \? 'ready' : 'not_ready' \}\)/);
+});
+
+test('OAuth diagnostics flag redirect URI names as unverified source-code values', () => {
+  assert.match(server, /registeredRedirectUrisSource: 'source-code-list-unverified'/);
+});

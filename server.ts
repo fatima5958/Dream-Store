@@ -3233,24 +3233,52 @@ async function startServer() {
     });
   }));
 
+  // Throttle public readiness-triggered warnings to avoid flooding Cloud Run
+  // logs, and never include credential values, identities, tokens or messages.
+  let lastReadinessWarningAt = 0;
+  const logReadinessFailure = (reason: string, details?: Record<string, boolean | string>) => {
+    const now = Date.now();
+    if (now - lastReadinessWarningAt < 60000) return;
+    lastReadinessWarningAt = now;
+    console.warn(`[DreamStore Ready] not ready: ${reason}`, details || {});
+  };
+
   app.get('/api/ready', asyncRoute(async (_req, res) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const ready = await Promise.race([
         (async () => {
-          if (!adminFirestoreDb || !FIREBASE_STORAGE_BUCKET ||
-            (process.env.NODE_ENV === 'production' && !HAS_DURABLE_PRODUCTION_SIGNING_SECRET)) return false;
-          if (!(await refreshFinancialReadiness())) return false;
+          const prerequisites = {
+            adminFirestoreInitialized: Boolean(adminFirestoreDb),
+            storageBucketConfigured: Boolean(FIREBASE_STORAGE_BUCKET),
+            durableSigningSecret: process.env.NODE_ENV !== 'production' || HAS_DURABLE_PRODUCTION_SIGNING_SECRET,
+          };
+          if (!adminFirestoreDb || !Object.values(prerequisites).every(Boolean)) {
+            logReadinessFailure('missing prerequisite', prerequisites);
+            return false;
+          }
+          if (!(await refreshFinancialReadiness())) {
+            logReadinessFailure('financial readiness check failed');
+            return false;
+          }
           await Promise.all([
             adminFirestoreDb.collection('ledger').limit(1).get(),
             getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).getMetadata(),
           ]);
           return true;
         })(),
-        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), 5000); }),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => {
+            logReadinessFailure('dependency check timed out');
+            resolve(false);
+          }, 5000);
+        }),
       ]);
       res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready' });
-    } catch {
+    } catch (error) {
+      logReadinessFailure('backend dependency failed', {
+        code: safeFirebaseAdminFailureCode(error),
+      });
       res.status(503).json({ status: 'not_ready' });
     } finally { if (timer) clearTimeout(timer); }
   }));
@@ -3344,6 +3372,8 @@ async function startServer() {
       googleProviderEnabled,
       googleRedirectUri: activeRedirectUri,
       registeredRedirectUris,
+      // Source-code list only; does not prove Google OAuth registration.
+      registeredRedirectUrisSource: 'source-code-list-unverified',
       googleAuthUriReady: Boolean(googleAuthUriSample),
       requestedHostname,
       isHostnameAuthorized,
