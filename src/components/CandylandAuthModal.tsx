@@ -23,6 +23,7 @@ import {
   FIREBASE_PROJECT_ID,
   FIREBASE_AUTH_DOMAIN,
   FIREBASE_API_KEY,
+  isPreviewIframeEnvironment,
 } from '../lib/firebase';
 import { ClayIcon, CandySparkleStar } from './ui/DreamUI';
 
@@ -40,6 +41,7 @@ interface FriendlyAuthNotice {
   title: string;
   message: string;
   offerRedirectFallback?: boolean;
+  offerFullPageLink?: boolean;
 }
 
 function getFriendlyAuthNotice(
@@ -51,6 +53,13 @@ function getFriendlyAuthNotice(
     err instanceof Error ? err.message : String(err || '')
   ).toLowerCase();
 
+  if (rawCode.includes('embedded-preview')) {
+    return {
+      title: 'Open DreamStore in a Browser Tab',
+      message: 'Google sign-in cannot reliably finish inside the AI Studio preview. Open the published DreamStore website in a new tab and sign in there.',
+      offerFullPageLink: true,
+    };
+  }
   if (
     rawCode.includes('popup-closed-by-user') ||
     rawCode.includes('cancelled-popup-request') ||
@@ -64,6 +73,17 @@ function getFriendlyAuthNotice(
     };
   }
 
+  if (
+    rawCode.includes('invalid-api-key') ||
+    rawCode.includes('configuration-not-found') ||
+    rawCode.includes('invalid-app-credential') ||
+    rawCode.includes('requests-from-referer-blocked')
+  ) {
+    return {
+      title: 'Firebase Sign-In Configuration Needed',
+      message: 'The live Firebase API key or Authentication provider configuration is invalid or unavailable. The DreamStore operator needs to fix this in Firebase Console.',
+    };
+  }
   if (rawCode.includes('unauthorized-domain') || rawMessage.includes('unauthorized-domain')) {
     return { title: 'Sign-In Setup Required', message: 'Sign-in is not enabled for this website address. Please contact the store operator.' };
   }
@@ -165,6 +185,8 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
 
   const currentHostname =
     typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  const insidePreview = isPreviewIframeEnvironment();
+  const publishedDreamStoreUrl = 'https://dreamstore.ai.studio/';
 
   useEffect(() => {
     if (isOpen) {
@@ -177,20 +199,40 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
     }
   }, [isOpen, initialMode]);
 
-  // Verify Firebase Authorized Domains and OAuth configuration silently when modal opens
+  // A static frontend can display the app but cannot save creator accounts
+  // or stores. Surface missing server/Firebase setup instead of silent fetches.
   useEffect(() => {
-    if (!isOpen) return;
-    fetch(
-      `/api/auth/oauth-diagnostics?hostname=${encodeURIComponent(currentHostname)}`
-    ).catch(() => {
-      if (FIREBASE_API_KEY) {
-        fetch(
-          `https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig?key=${encodeURIComponent(
-            FIREBASE_API_KEY
-          )}`
-        ).catch(() => {});
+    if (!isOpen || isPreviewIframeEnvironment()) return;
+    let mounted = true;
+    const checkSetup = async () => {
+      try {
+        const response = await fetch(
+          `/api/auth/oauth-diagnostics?hostname=${encodeURIComponent(currentHostname)}`,
+          { cache: 'no-store', signal: AbortSignal.timeout(8000) }
+        );
+        if (!response.headers.get('content-type')?.includes('application/json')) {
+          throw new Error('Backend returned a webpage, not the auth API.');
+        }
+        if (!response.ok) throw new Error('Auth diagnostics unavailable.');
+        const status = await response.json();
+        if (!mounted) return;
+        if (status.identityToolkitReachable === true && status.isHostnameAuthorized === false) {
+          setNotice({
+            title: 'This Domain Is Not Authorized for Sign-In',
+            message: `DreamStore operator: add ${currentHostname} to Firebase Authentication > Settings > Authorized domains, and register the Google OAuth redirect URI.`,
+          });
+        }
+      } catch {
+        if (mounted) {
+          setNotice((existing) => existing || {
+            title: 'DreamStore Backend Not Verified',
+            message: 'This preview may not have the Node server required for creator accounts. Open the published website and confirm /api/ready before inviting creators.',
+          });
+        }
       }
-    });
+    };
+    void checkSetup();
+    return () => { mounted = false; };
   }, [isOpen, currentHostname]);
 
   useEffect(() => {
@@ -215,6 +257,11 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
     if (isLoadingGoogle || isLoadingRedirect || isLoadingEmail) return;
     setNotice(null);
     setSuccessBanner(null);
+
+    if (insidePreview) {
+      setNotice(getFriendlyAuthNotice({ code: 'auth/embedded-preview' }, mode));
+      return;
+    }
 
     if (!FIREBASE_AUTH_DOMAIN || !FIREBASE_PROJECT_ID) {
       setNotice({
@@ -248,6 +295,10 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
   const handleGoogleRedirectFallback = async () => {
     if (isLoadingRedirect || isLoadingGoogle || isLoadingEmail) return;
     setNotice(null);
+    if (insidePreview) {
+      setNotice(getFriendlyAuthNotice({ code: 'auth/embedded-preview' }, mode));
+      return;
+    }
     setSuccessBanner('Connecting securely to Google Sign-In...');
     setIsLoadingRedirect(true);
     try {
@@ -499,6 +550,16 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
 
                 {/* Primary Raised 3D "Continue with Google" Button */}
                 <div className="space-y-2">
+                  {insidePreview && (
+                    <div data-testid="auth-embedded-preview-guidance"
+                      className="rounded-2xl bg-[#FFF1F7] border border-[#F58CB7] p-3 text-xs text-[#50352F]">
+                      Google sign-in works in a full browser tab, not inside the embedded AI Studio preview.
+                      <a href={publishedDreamStoreUrl} target="_blank" rel="noopener noreferrer"
+                        className="block mt-2 font-extrabold underline">
+                        Open DreamStore to Sign In ↗
+                      </a>
+                    </div>
+                  )}
                   <button
                     type="button"
                     data-testid="auth-continue-with-google-btn"
@@ -565,7 +626,17 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
                         </div>
                       </div>
 
-                      {notice.offerRedirectFallback && (
+                      {notice.offerFullPageLink && (
+                        <a
+                          href={publishedDreamStoreUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex rounded-xl candy-btn-white px-3 py-2 text-xs font-extrabold text-[#50352F]"
+                        >
+                          Open DreamStore in New Tab ↗
+                        </a>
+                      )}
+                      {notice.offerRedirectFallback && !insidePreview && (
                         <div className="pt-1 flex flex-wrap items-center gap-2">
                           <button
                             type="button"

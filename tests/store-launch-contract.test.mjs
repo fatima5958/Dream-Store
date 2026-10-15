@@ -410,3 +410,22 @@ test('first wizard step visibly explains verified founder spots and when they ar
   assert.match(wizard, /remainingFounderSpots === null/);
   assert.match(wizard, /Your spot counts only after you finish setup and launch your store/);
 });
+
+test('embedded AI Studio preview does not retry a failed popup as a redirect', () => {
+  const sdk = read('src/lib/firebase.ts');
+  const modal = read('src/components/CandylandAuthModal.tsx');
+  assert.match(sdk, /code: 'auth\/embedded-preview'/);
+  assert.doesNotMatch(sdk, /if \(isPreviewIframeEnvironment\(\)\) \{\s*await signInWithPopup/);
+  assert.match(modal, /auth-embedded-preview-guidance/);
+  assert.match(modal, /Open DreamStore in New Tab/);
+  assert.match(modal, /!insidePreview/);
+  assert.match(modal, /DreamStore Backend Not Verified/);
+});
+test('OAuth readiness never self-authorizes the visitor hostname', () => {
+  const diagnostics = server.slice(server.indexOf("app.get('/api/auth/oauth-diagnostics'"),
+    server.indexOf("app.use('/api/auth/email'"));
+  assert.doesNotMatch(diagnostics, /\.\.\.REQUIRED_AUTHORIZED_DOMAINS/);
+  assert.doesNotMatch(diagnostics, /\.\.\.firebaseConsoleAuthorizedDomains,\s*\.\.\.REQUIRED_AUTHORIZED_DOMAINS/);
+  assert.match(diagnostics, /identityToolkitReachable &&/);
+  assert.match(diagnostics, /isHostnameAuthorized/);
+});

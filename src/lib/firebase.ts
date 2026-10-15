@@ -67,9 +67,7 @@ function resolveEffectiveAuthDomain(): string {
     // Use same-origin authDomain on dreamstore.app, preview .run.app, and localhost so /__/auth/handler
     // runs through our server proxy without cross-origin storage partitioning.
     if (
-      SAME_ORIGIN_AUTH_HOSTS.has(host) ||
-      host.endsWith('.run.app') ||
-      host.endsWith('.ai.studio')
+      SAME_ORIGIN_AUTH_HOSTS.has(host)
     ) {
       return window.location.host;
     }
@@ -110,13 +108,21 @@ export function isPreviewIframeEnvironment(): boolean {
 
 export async function signInWithGoogleRedirect(): Promise<void> {
   if (isPreviewIframeEnvironment()) {
-    await signInWithPopup(auth, googleProvider);
-    return;
+    // Google/Firebase redirects cannot complete reliably inside AI Studio's
+    // embedded preview. Never claim to redirect and secretly retry a popup.
+    throw Object.assign(new Error('Open the published website in a full browser tab to sign in.'), {
+      code: 'auth/embedded-preview',
+    });
   }
   await signInWithRedirect(auth, googleProvider);
 }
 
 export async function signInWithGooglePopup(): Promise<'popup' | 'redirect'> {
+  if (isPreviewIframeEnvironment()) {
+    throw Object.assign(new Error('Open the published website in a full browser tab to sign in.'), {
+      code: 'auth/embedded-preview',
+    });
+  }
   try {
     await signInWithPopup(auth, googleProvider);
     return 'popup';

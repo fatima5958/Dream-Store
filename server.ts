@@ -3270,17 +3270,13 @@ async function startServer() {
       }
     }
 
-    const authorizedDomains = Array.from(
-      new Set([
-        ...firebaseConsoleAuthorizedDomains,
-        ...REQUIRED_AUTHORIZED_DOMAINS,
-        requestedHostname,
-      ])
-    ).filter(Boolean);
-
-    const isHostnameAuthorized = authorizedDomains.some(
-      (d) => d.toLowerCase() === requestedHostname
-    );
+    // Only domains returned by Firebase are confirmed authorized. Never
+    // label a hostname authorized merely because it is in a source-code list
+    // or because the visitor requested it.
+    const authorizedDomains = Array.from(new Set(firebaseConsoleAuthorizedDomains))
+      .filter(Boolean);
+    const isHostnameAuthorized = identityToolkitReachable &&
+      authorizedDomains.some((d) => d.toLowerCase() === requestedHostname);
 
     const registeredRedirectUris = Array.from(GOOGLE_OAUTH_REGISTERED_HOSTS).map(
       (h) => `https://${h}/__/auth/handler`
@@ -3300,8 +3296,9 @@ async function startServer() {
       googleAuthUriReady: Boolean(googleAuthUriSample),
       requestedHostname,
       isHostnameAuthorized,
-      productionUrlAuthorized: authorizedDomains.includes('dreamstore.app'),
+      productionUrlAuthorized: identityToolkitReachable && authorizedDomains.includes('dreamstore.app'),
       previewUrlAuthorized:
+        identityToolkitReachable &&
         authorizedDomains.includes(
           'ais-dev-lpudubz2xpbak4vt26y6me-149594180953.asia-southeast1.run.app'
         ) &&
@@ -3313,8 +3310,13 @@ async function startServer() {
       coopPolicy: 'same-origin-allow-popups',
       sameOriginAuthProxyEnabled: true,
       diagnosticError,
-      recommendation:
-        'Production URL (dreamstore.app) and preview environment URLs are verified in Authorized Domains, and Google Sign-In redirect URIs are active.',
+      recommendation: !identityToolkitReachable
+        ? 'Could not verify Firebase Authorized Domains. Check the actual Firebase Console Authentication settings.'
+        : !isHostnameAuthorized
+        ? 'Add this host under Firebase Authentication Authorized domains and configure the OAuth redirect URI.'
+        : !googleProviderEnabled
+        ? 'Google login has not been verified. Enable the Google provider and verify the OAuth client redirect.'
+        : 'Hostname appears authorized by Firebase. Verify the Google OAuth client redirect URI and deployed same-origin helper.',
     });
   }));
 
