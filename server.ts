@@ -1320,12 +1320,64 @@ async function commitFinancialOrderTransition(
   if (!adminFirestoreDb || !(await refreshFinancialReadiness())) {
     throw new Error('Secure financial database unavailable.');
   }
-  const ledgerRef = adminFirestoreDb.collection('ledger').doc(entry.orderNumber);
-  const orderRef = adminFirestoreDb.collection('orders').doc(entry.orderId);
-  await adminFirestoreDb.runTransaction(async (tx) => {
+  const db = adminFirestoreDb;
+  const ledgerRef = db.collection('ledger').doc(entry.orderNumber);
+  const orderRef = db.collection('orders').doc(entry.orderId);
+  const committed = await db.runTransaction(async (tx) => {
     const current = await tx.get(ledgerRef);
-    if (!current.exists || current.get('paymentStatus') !== expectedStatus) {
-      throw new Error('Payment status changed in another session. Please refresh the order.');
+    if (!current.exists || current.get('paymentStatus') !== expectedStatus ||
+        current.get('sellerId') !== entry.sellerId ||
+        current.get('buyerId') !== entry.buyerId) {
+      throw new Error('Order ownership or payment state changed in another session.');
+    }
+    let invoiceAdjustment: { invoice: CommissionInvoiceRecord; adjustment: CommissionAdjustmentEntry } | null = null;
+    const invoiceId = String(current.get('invoiceId') || '');
+    // Refund reversal must be ATOMIC with the ledger and buyer-order transition.
+    // An unsuccessful invoice/adjustment write must not report a refund success.
+    if (entry.paymentStatus === 'Refunded' && invoiceId) {
+      const invoiceRef = db.collection('commission_invoices').doc(invoiceId);
+      const adjustmentId = 'adj-' + crypto.createHash('sha256')
+        .update(invoiceId + ':' + entry.orderNumber + ':refund').digest('hex').slice(0, 32);
+      const adjustmentRef = db.collection('commission_adjustments').doc(adjustmentId);
+      const [invoiceSnap, adjustmentSnap] = await Promise.all([
+        tx.get(invoiceRef), tx.get(adjustmentRef),
+      ]);
+      if (!invoiceSnap.exists || adjustmentSnap.exists) {
+        throw new Error('Refund invoice reversal could not be safely reconciled.');
+      }
+      const invoice = invoiceSnap.data() as CommissionInvoiceRecord;
+      if (invoice.sellerId !== entry.sellerId || invoice.currency !== entry.currency ||
+          !invoice.orderNumbers.includes(entry.orderNumber)) {
+        throw new Error('Refund invoice ownership mismatch.');
+      }
+      const originalCommission = Number(current.get('platformCommissionMinor') || 0);
+      if (!Number.isSafeInteger(originalCommission) || originalCommission < 0 ||
+          !Number.isSafeInteger(invoice.remainingBalanceMinor)) {
+        throw new Error('Invalid refund commission amount.');
+      }
+      const reduction = Math.min(invoice.remainingBalanceMinor, originalCommission);
+      const remaining = invoice.remainingBalanceMinor - reduction;
+      const status: CommissionInvoiceRecord['status'] = remaining === 0
+        ? invoice.paidAmountMinor > 0 ? 'paid' : 'voided'
+        : invoice.status;
+      const updatedInvoice: CommissionInvoiceRecord = {
+        ...invoice, adjustedAmountMinor: invoice.adjustedAmountMinor + originalCommission,
+        remainingBalanceMinor: remaining, status,
+      };
+      const adjustment: CommissionAdjustmentEntry = {
+        adjustmentId, invoiceId, invoiceNumber: invoice.invoiceNumber,
+        orderNumber: entry.orderNumber, sellerId: entry.sellerId,
+        currency: entry.currency, adjustmentAmountMinor: originalCommission,
+        reason: 'order_refunded', detail: 'Reversal of platform commission on refunded order.',
+        createdAtIso: new Date().toISOString(),
+      };
+      invoiceAdjustment = { invoice: updatedInvoice, adjustment };
+      // Firestore requires all transaction reads to finish before writes.
+      tx.update(invoiceRef, {
+        adjustedAmountMinor: updatedInvoice.adjustedAmountMinor,
+        remainingBalanceMinor: remaining, status,
+      });
+      tx.create(adjustmentRef, adjustment as unknown as Record<string, unknown>);
     }
     entry.downloadCount = Number(current.get('downloadCount') || 0);
     tx.set(ledgerRef, entry as unknown as Record<string, unknown>);
@@ -1335,9 +1387,15 @@ async function commitFinancialOrderTransition(
       downloadCount: entry.downloadCount,
       updatedAt: new Date(),
     }, { merge: true });
+    return invoiceAdjustment;
   });
+  if (committed) {
+    commissionInvoices.set(committed.invoice.invoiceId, committed.invoice);
+    if (!commissionAdjustments.some(a => a.adjustmentId === committed.adjustment.adjustmentId)) {
+      commissionAdjustments.unshift(committed.adjustment);
+    }
+  }
 }
-
 
 function signInvoiceRecord(payload: {
   invoiceId: string;
@@ -6848,15 +6906,7 @@ async function startServer() {
         user.rawToken
       );
 
-      // If this order was already billed in an invoice, adjust the invoice balance automatically
-      applyOrderCommissionReversalToInvoice(
-        entry.orderNumber,
-        entry.sellerId,
-        oldCommission,
-        entry.currency,
-        'order_refunded',
-        user.rawToken
-      );
+      // Invoice adjustment was committed atomically with the refund above.
 
       const commissionSummary = reconcileSellerCommissionState(
         entry.sellerId,

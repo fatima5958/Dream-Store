@@ -273,3 +273,17 @@ test('dispute status cannot self-approve platform fee or mutate invoices without
   assert.doesNotMatch(section, /syncFirestoreDoc\(/);
   assert.doesNotMatch(section, /applyOrderCommissionReversalToInvoice\(/);
 });
+
+test('refunded paid order updates invoice and adjustment in the same transaction', () => {
+  const fn = server.slice(server.indexOf('async function commitFinancialOrderTransition'),
+    server.indexOf('function signInvoiceRecord'));
+  assert.match(fn, /entry\.paymentStatus === 'Refunded' && invoiceId/);
+  assert.match(fn, /tx\.get\(invoiceRef\)/);
+  assert.match(fn, /tx\.create\(adjustmentRef/);
+  assert.match(fn, /tx\.update\(invoiceRef/);
+  assert.match(fn, /tx\.set\(ledgerRef/);
+  assert.match(fn, /tx\.set\(orderRef/);
+  const refund = server.slice(server.indexOf("app.post('/api/orders/refund'"),
+    server.indexOf('// 10B. Commission'));
+  assert.doesNotMatch(refund, /applyOrderCommissionReversalToInvoice\(/);
+});
