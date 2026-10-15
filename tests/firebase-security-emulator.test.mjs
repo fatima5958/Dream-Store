@@ -248,3 +248,20 @@ test('Admin custom claims can read another seller private Storage only if verifi
   await assertSucceeds(getBytes(storageObject(admin, path)));
   await assertFails(getBytes(storageObject(unverified, path)));
 });
+
+test('client SDK cannot fabricate a financial order, commission, or immutable audit', async () => {
+  const sellerDb = user('seller-one').firestore();
+  const buyerDb = user('other-buyer').firestore();
+  await assertFails(setDoc(doc(buyerDb, 'orders', 'fake-order'), {
+    orderNumber: 'fake-order', sellerId: 'seller-one', buyerId: 'other-buyer', paymentStatus: 'Paid',
+  }));
+  await assertFails(setDoc(doc(sellerDb, 'commission_invoices', 'fake-invoice'), {
+    invoiceId: 'fake-invoice', sellerId: 'seller-one', status: 'paid', remainingBalanceMinor: 0,
+  }));
+  await assertFails(setDoc(doc(sellerDb, 'ledger_audit', 'fake-audit'), {
+    auditId: 'fake-audit', sellerId: 'seller-one', action: 'COMMISSION_SETTLED',
+  }));
+  await assertFails(setDoc(doc(sellerDb, 'commission_adjustments', 'fake-adjustment'), {
+    adjustmentId: 'fake-adjustment', sellerId: 'seller-one', adjustmentAmountMinor: 90000,
+  }));
+});

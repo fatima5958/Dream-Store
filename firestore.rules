@@ -779,55 +779,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(orderId) &&
-        isValidOrder(incoming()) &&
-        incoming().buyerId == request.auth.uid &&
-        incoming().downloadCount == 0 &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time &&
-        (
-          (incoming().totalAmount == 0 && incoming().paymentMethod == 'free_instant' && incoming().paymentStatus == 'Paid') ||
-          (incoming().totalAmount > 0 && incoming().paymentMethod != 'free_instant' && incoming().paymentStatus == 'Pending')
-        ) &&
-        (
-          !exists(/databases/$(database)/documents/stores/$(incoming().storeId)) ||
-          get(/databases/$(database)/documents/stores/$(incoming().storeId)).data.ownerId == incoming().sellerId
-        ) &&
-        (
-          !exists(/databases/$(database)/documents/products/$(incoming().primaryProductId)) ||
-          get(/databases/$(database)/documents/products/$(incoming().primaryProductId)).data.ownerId == incoming().sellerId
-        );
-
-      allow update: if isVerifiedUser() &&
-        isValidId(orderId) &&
-        isValidOrder(incoming()) &&
-        incoming().orderNumber == existing().orderNumber &&
-        incoming().storeId == existing().storeId &&
-        incoming().sellerId == existing().sellerId &&
-        incoming().buyerId == existing().buyerId &&
-        incoming().primaryProductId == existing().primaryProductId &&
-        incoming().currency == existing().currency &&
-        incoming().subtotal == existing().subtotal &&
-        incoming().totalAmount == existing().totalAmount &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().sellerId) &&
-            !(existing().paymentStatus in ['Refunded', 'Failed']) &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'paymentReference', 'downloadToken', 'updatedAt'])
-          ) ||
-          (
-            isOwner(existing().buyerId) &&
-            existing().paymentStatus == 'Paid' &&
-            incoming().downloadCount == existing().downloadCount + 1 &&
-            incoming().downloadCount <= existing().maxDownloads &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['downloadCount', 'updatedAt'])
-          )
-        );
-
-      allow delete: if isValidId(orderId) && isAdmin();
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 7. Seller-Isolated Customers Collection (Order-related customer info per seller)
@@ -889,32 +842,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(analyticsId) &&
-        isValidAnalyticsRecord(incoming()) &&
-        incoming().analyticsId == analyticsId &&
-        incoming().updatedAt == request.time && (
-          isOwner(incoming().sellerId) ||
-          isAdmin()
-        );
-
-      allow update: if isVerifiedUser() &&
-        isValidId(analyticsId) &&
-        isValidAnalyticsRecord(incoming()) &&
-        incoming().analyticsId == existing().analyticsId &&
-        incoming().sellerId == existing().sellerId &&
-        incoming().storeId == existing().storeId &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().sellerId) &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'verifiedSalesCount', 'grossRevenueMinor', 'netEarningsMinor', 'updatedAt'
-            ])
-          )
-        );
-
-      allow delete: if isValidId(analyticsId) && isAdmin();
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 9. Protected Digital Downloads Audit Collection
@@ -932,17 +861,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(downloadId) &&
-        isValidDownloadLog(incoming()) &&
-        incoming().downloadId == downloadId &&
-        incoming().createdAt == request.time && (
-          isOwner(incoming().buyerId) ||
-          isOwner(incoming().sellerId) ||
-          isAdmin()
-        );
-
-      allow update, delete: if false;
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 10. Subscriptions & Pro Waitlist Collection (Only Admin can activate Pro)
@@ -958,35 +878,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(subscriptionId) &&
-        isValidSubscriptionRecord(incoming()) &&
-        incoming().subscriptionId == subscriptionId &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(incoming().sellerId) &&
-            (incoming().plan == 'Free' || incoming().status == 'Waitlist')
-          )
-        );
-
-      allow update: if isVerifiedUser() &&
-        isValidId(subscriptionId) &&
-        isValidSubscriptionRecord(incoming()) &&
-        incoming().subscriptionId == existing().subscriptionId &&
-        incoming().sellerId == existing().sellerId &&
-        incoming().storeId == existing().storeId &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().sellerId) &&
-            incoming().plan == existing().plan &&
-            incoming().status == 'Waitlist' &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
-          )
-        );
-
-      allow delete: if isValidId(subscriptionId) && isAdmin();
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 11. Persistent Financial Ledger Collection (Atomically synchronized with Orders)
@@ -1023,17 +916,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(auditId) &&
-        isValidLedgerAuditLog(incoming()) &&
-        incoming().auditId == auditId &&
-        incoming().createdAt == request.time && (
-          incoming().sellerId == request.auth.uid ||
-          existsAfter(/databases/$(database)/documents/orders/$(incoming().orderId)) ||
-          isAdmin()
-        );
-
-      allow update, delete: if false;
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 13A. Automated 5% Commission Invoices (camelCase: /commissionInvoices/{invoiceId})
@@ -1049,43 +933,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(invoiceId) &&
-        isValidCommissionInvoice(incoming()) &&
-        incoming().invoiceId == invoiceId &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (isOwner(incoming().sellerId) && incoming().status in ['open', 'overdue', 'payment_submitted'])
-        );
-
-      allow update: if isVerifiedUser() &&
-        isValidId(invoiceId) &&
-        isValidCommissionInvoice(incoming()) &&
-        incoming().invoiceId == existing().invoiceId &&
-        incoming().invoiceNumber == existing().invoiceNumber &&
-        incoming().sellerId == existing().sellerId &&
-        incoming().storeId == existing().storeId &&
-        incoming().currency == existing().currency &&
-        incoming().grossSalesMinor == existing().grossSalesMinor &&
-        incoming().commissionAmountMinor == existing().commissionAmountMinor &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().sellerId) &&
-            existing().status != 'paid' &&
-            incoming().status == 'payment_submitted' &&
-            incoming().paidAmountMinor == existing().paidAmountMinor &&
-            incoming().remainingBalanceMinor == existing().remainingBalanceMinor &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'status', 'lastPaymentMethod', 'lastPaymentReference',
-              'lastPaymentProofNote', 'submittedAtIso', 'updatedAt'
-            ])
-          )
-        );
-
-      allow delete: if false;
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 13B. Automated 5% Commission Invoices (snake_case: /commission_invoices/{invoiceId})
@@ -1101,43 +950,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(invoiceId) &&
-        isValidCommissionInvoice(incoming()) &&
-        incoming().invoiceId == invoiceId &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (isOwner(incoming().sellerId) && incoming().status in ['open', 'overdue', 'payment_submitted'])
-        );
-
-      allow update: if isVerifiedUser() &&
-        isValidId(invoiceId) &&
-        isValidCommissionInvoice(incoming()) &&
-        incoming().invoiceId == existing().invoiceId &&
-        incoming().invoiceNumber == existing().invoiceNumber &&
-        incoming().sellerId == existing().sellerId &&
-        incoming().storeId == existing().storeId &&
-        incoming().currency == existing().currency &&
-        incoming().grossSalesMinor == existing().grossSalesMinor &&
-        incoming().commissionAmountMinor == existing().commissionAmountMinor &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().sellerId) &&
-            existing().status != 'paid' &&
-            incoming().status == 'payment_submitted' &&
-            incoming().paidAmountMinor == existing().paidAmountMinor &&
-            incoming().remainingBalanceMinor == existing().remainingBalanceMinor &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'status', 'lastPaymentMethod', 'lastPaymentReference',
-              'lastPaymentProofNote', 'submittedAtIso', 'updatedAt'
-            ])
-          )
-        );
-
-      allow delete: if false;
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 14A. Commission Payments Collection (camelCase: /commissionPayments/{paymentId})
@@ -1153,34 +967,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(paymentId) &&
-        isValidCommissionPayment(incoming()) &&
-        incoming().paymentId == paymentId &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(incoming().sellerId) &&
-            incoming().submittedByUid == request.auth.uid &&
-            incoming().status == 'submitted'
-          )
-        );
-
-      allow update: if isAdmin() &&
-        isValidId(paymentId) &&
-        isValidCommissionPayment(incoming()) &&
-        incoming().paymentId == existing().paymentId &&
-        incoming().invoiceId == existing().invoiceId &&
-        incoming().sellerId == existing().sellerId &&
-        incoming().amountMinor == existing().amountMinor &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'status', 'verifiedByAdminEmail', 'updatedAt'
-        ]);
-
-      allow delete: if false;
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 14B. Commission Payments Collection (snake_case: /commission_payments/{paymentId})
@@ -1196,34 +984,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(paymentId) &&
-        isValidCommissionPayment(incoming()) &&
-        incoming().paymentId == paymentId &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(incoming().sellerId) &&
-            incoming().submittedByUid == request.auth.uid &&
-            incoming().status == 'submitted'
-          )
-        );
-
-      allow update: if isAdmin() &&
-        isValidId(paymentId) &&
-        isValidCommissionPayment(incoming()) &&
-        incoming().paymentId == existing().paymentId &&
-        incoming().invoiceId == existing().invoiceId &&
-        incoming().sellerId == existing().sellerId &&
-        incoming().amountMinor == existing().amountMinor &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'status', 'verifiedByAdminEmail', 'updatedAt'
-        ]);
-
-      allow delete: if false;
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 15. Commission Adjustments Collection (Append-only credit adjustments from refunds/disputes)
@@ -1239,16 +1001,8 @@ service cloud.firestore {
         isAdmin()
       );
 
-      allow create: if isVerifiedUser() &&
-        isValidId(adjustmentId) &&
-        isValidCommissionAdjustment(incoming()) &&
-        incoming().adjustmentId == adjustmentId &&
-        incoming().createdAt == request.time && (
-          isOwner(incoming().sellerId) ||
-          isAdmin()
-        );
-
-      allow update, delete: if false;
+      // Secure server-side financial/administrative writes only.
+      allow create, update, delete: if false;
     }
 
     // 16. Consumed Password Reset Tokens Collection (Restart-safe, immutable single-use hash records)

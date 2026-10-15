@@ -545,32 +545,6 @@ function parseFirestoreDocumentFields(
   return parsed;
 }
 
-function syncFirestoreDoc(
-  collectionName: string,
-  docId: string,
-  data: Record<string, unknown>,
-  bearerToken?: string
-) {
-  if (!FIREBASE_PROJECT_ID || !FIREBASE_API_KEY) return;
-  const dbPath = `projects/${FIREBASE_PROJECT_ID}/databases/${encodeURIComponent(
-    FIRESTORE_DATABASE_ID
-  )}/documents/${collectionName}/${encodeURIComponent(docId)}?key=${FIREBASE_API_KEY}`;
-  const url = `https://firestore.googleapis.com/v1/${dbPath}`;
-  const fields: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(data)) {
-    if (v !== undefined) fields[k] = toFirestoreValue(v);
-  }
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
-  fetch(url, {
-    method: 'PATCH',
-    headers,
-    body: JSON.stringify({ fields }),
-  }).catch(() => {
-    // Non-blocking background Firestore sync when called from unauthenticated server context
-  });
-}
-
 function isRealCredentialValue(val: string | undefined | null): boolean {
   if (!val) return false;
   const trimmed = String(val).trim();
@@ -1424,7 +1398,20 @@ function appendAuditEntry(
     createdAtIso: new Date().toISOString(),
   };
   immutableAuditLog.unshift(full);
-  syncFirestoreDoc('ledger_audit', full.auditId, full as unknown as Record<string, unknown>, bearerToken);
+  // Audit entries are written through the privileged Admin SDK, never with a
+  // seller/buyer bearer token. Surface persistence errors rather than hiding them.
+  if (adminFirestoreDb) {
+    void adminFirestoreDb.collection('ledger_audit').doc(full.auditId)
+      .create({ ...full, createdAt: new Date(full.createdAtIso) })
+      .catch((err: unknown) => {
+        console.error('Immutable financial audit persistence failed:', {
+          auditId: full.auditId,
+          reason: err instanceof Error ? err.message : 'Unknown Firestore failure',
+        });
+      });
+  } else {
+    console.error('Immutable financial audit persistence unavailable:', full.auditId);
+  }
   return full;
 }
 
@@ -1888,81 +1875,6 @@ async function issueDurableCommissionInvoicesForSeller(sellerId: string): Promis
     }
   }
   return issued;
-}
-
-function applyOrderCommissionReversalToInvoice(
-  orderNumber: string,
-  sellerId: string,
-  reversedCommissionMinor: number,
-  currency: string,
-  reason: 'order_refunded' | 'order_disputed',
-  bearerToken?: string
-) {
-  const invoiceId = billedOrderNumbers.get(orderNumber);
-  if (!invoiceId || reversedCommissionMinor <= 0) return null;
-  const inv = commissionInvoices.get(invoiceId);
-  if (!inv) return null;
-
-  const alreadyAdjusted = commissionAdjustments.some(
-    (a) => a.invoiceId === invoiceId && a.orderNumber === orderNumber
-  );
-  if (alreadyAdjusted) return inv;
-
-  const effectiveReduction = Math.min(inv.remainingBalanceMinor, reversedCommissionMinor);
-  inv.adjustedAmountMinor += reversedCommissionMinor;
-  inv.remainingBalanceMinor = Math.max(0, inv.remainingBalanceMinor - effectiveReduction);
-
-  if (inv.remainingBalanceMinor === 0) {
-    inv.status = inv.paidAmountMinor > 0 ? 'paid' : 'voided';
-  }
-
-  const adj: CommissionAdjustmentEntry = {
-    adjustmentId: `adj-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`,
-    invoiceId: inv.invoiceId,
-    invoiceNumber: inv.invoiceNumber,
-    orderNumber,
-    sellerId,
-    currency,
-    adjustmentAmountMinor: reversedCommissionMinor,
-    reason,
-    detail: `Invoice ${inv.invoiceNumber} adjusted by -${(reversedCommissionMinor / 100).toFixed(
-      2
-    )} ${currency} due to ${reason === 'order_refunded' ? 'order refund' : 'commission dispute'} on ${orderNumber}. Remaining balance: ${(
-      inv.remainingBalanceMinor / 100
-    ).toFixed(2)} ${currency}.`,
-    createdAtIso: new Date().toISOString(),
-  };
-
-  commissionAdjustments.unshift(adj);
-  syncFirestoreDoc(
-    'commission_invoices',
-    inv.invoiceId,
-    inv as unknown as Record<string, unknown>,
-    bearerToken
-  );
-  syncFirestoreDoc(
-    'commission_adjustments',
-    adj.adjustmentId,
-    adj as unknown as Record<string, unknown>,
-    bearerToken
-  );
-
-  appendAuditEntry(
-    {
-      orderNumber,
-      orderId: inv.invoiceId,
-      sellerId,
-      actorUid: 'system:commission-engine',
-      action: 'COMMISSION_ADJUSTED',
-      previousStatus: 'billed',
-      newStatus: inv.status,
-      verificationMode: 'Server Automated',
-      detail: adj.detail,
-    },
-    bearerToken
-  );
-
-  return inv;
 }
 
 function computeServerCommissionMinor(

@@ -252,7 +252,7 @@ test('commission reconciliation cannot write invoices during GET requests', () =
 });
 test('commission invoice issuance is durable, idempotent and uses one currency per invoice', () => {
   const issue = server.slice(server.indexOf('async function issueDurableCommissionInvoicesForSeller'),
-    server.indexOf('function applyOrderCommissionReversalToInvoice('));
+    server.indexOf('function computeServerCommissionMinor('));
   assert.match(issue, /commissionHydrationPromise/);
   assert.match(issue, /groups\.get\(entry\.currency\)/);
   assert.match(issue, /db\.runTransaction/);
@@ -327,4 +327,24 @@ test('manual payment confirmation cannot be auto-checked and refunds require ref
     server.indexOf('// A seller may dispute'));
   assert.match(refund, /refundConfirmed !== true/);
   assert.match(refund, /cleanRefundReference\.length < 3/);
+});
+
+test('financial documents are Admin SDK only; browser cannot forge orders or audits', () => {
+  const rules = read('firestore.rules');
+  const collections = [
+    'orders/{orderId}', 'analytics/{analyticsId}', 'downloads/{downloadId}',
+    'ledger_audit/{auditId}', 'subscriptions/{subscriptionId}',
+    'commissionInvoices/{invoiceId}', 'commission_invoices/{invoiceId}',
+    'commissionPayments/{paymentId}', 'commission_payments/{paymentId}',
+    'commission_adjustments/{adjustmentId}',
+  ];
+  for (const segment of collections) {
+    const pos = rules.indexOf('match /' + segment);
+    assert.ok(pos >= 0, segment + ' exists');
+    const block = rules.slice(pos, rules.indexOf('\n    }', pos));
+    assert.match(block, /allow create, update, delete: if false/);
+  }
+  assert.doesNotMatch(server, /syncFirestoreDoc\(/);
+  assert.doesNotMatch(server, /function applyOrderCommissionReversalToInvoice/);
+  assert.match(server, /adminFirestoreDb\.collection\('ledger_audit'\)/);
 });
