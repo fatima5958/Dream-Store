@@ -49,7 +49,7 @@ export function registerCheckoutRoutes(app: Express, deps: V2Dependencies) {
     const order = { orderNumber, orderId, storeId: store.storeId, sellerId: store.ownerId, buyerId: buyer.uid,
       primaryProductId: productId, customerName: String(body.customerName || buyer.displayName || 'Buyer').slice(0, 120),
       customerEmail: buyer.email, itemTitlesSummary: String(product.title || 'Digital Product').slice(0, 1000), itemCount: 1,
-      currency, subtotal: amount, totalAmount: amount, grossAmountMinor: amountMinor, ...commission,
+      subtotal: amount, totalAmount: amount, ...commission,
       paymentMethod: method, paymentReference: isFree ? 'FREE-INSTANT' : String(body.paymentReference).trim().slice(0, 200),
       paymentStatus: isFree ? 'Paid' : 'Pending', verificationMode: isFree ? 'Instant Free' : 'Unverified',
       commissionStatus: isFree ? 'not_applicable' : 'outstanding', payoutStatus: isFree ? 'Not Applicable (Free)' : 'Pending Payment Verification',
