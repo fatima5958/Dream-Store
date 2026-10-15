@@ -178,6 +178,11 @@ test('V2 public directory is limited to active stores and never exposes Seller s
   const queryCalls = [];
   const db = {
     collection(name) {
+      // Repository eagerly declares Slug/Campaign collections even when the
+      // directory test only exercises its read-only stores query.
+      if (name === 'store_slugs' || name === 'creator_launch_campaigns') {
+        return { doc: () => ({}) };
+      }
       assert.equal(name, 'stores');
       return {
         where(...args) {
