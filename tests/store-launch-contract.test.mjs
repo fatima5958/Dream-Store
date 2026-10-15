@@ -153,3 +153,16 @@ test('returning Firebase users never inherit seller or buyer privileges from pub
   assert.match(restoration, /const profRes = await fetch\('\/api\/users\/profile'/);
   assert.match(restoration, /profRes\.status === 401/);
 });
+
+test('admin interface never invents usage metrics or approves orders in bulk', () => {
+  const admin = read('src/components/screens/SuperAdminDashboard.tsx');
+  assert.doesNotMatch(admin, /visitsCount: 42 \+ idx \* 19|checkoutViewsCount: 9 \+ idx \* 4/);
+  assert.doesNotMatch(admin, /productCount:.*\.length \|\| 2/);
+  assert.doesNotMatch(admin, /handleInstantControlCommand\('approve_all_pending_orders'\)/);
+  assert.doesNotMatch(admin, /triggerOrderUpdate\(ord\.id, 'Paid', 'Super Admin instant/);
+  const statusHandler = admin.slice(admin.indexOf('const handleToggleStoreStatus'), admin.indexOf('const handleToggleStorePlan'));
+  assert.ok(statusHandler.indexOf('if (!res.ok') < statusHandler.indexOf('setStores((prev)'));
+  const planHandler = admin.slice(admin.indexOf('const handleToggleStorePlan'), admin.indexOf('const handleInstantControlCommand'));
+  assert.ok(planHandler.indexOf('if (!res.ok') < planHandler.indexOf('setStores((prev)'));
+  assert.match(admin, /Bulk payment approvals and mass store activation are disabled/);
+});

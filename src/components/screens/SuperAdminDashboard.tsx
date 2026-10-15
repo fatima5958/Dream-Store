@@ -132,14 +132,13 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   gatewayStatus,
   onUpdateOrderStatus,
   onAdminUpdateOrderStatus,
-  onToggleStoreStatus: onTogglePlatformStoreStatus,
   onAdminControlStore,
   onNavigate,
 }) => {
   const verifiedSuperAdmin = Boolean(isSuperAdminVerified ?? isSuperAdmin);
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [stores, setStores] = useState<AdminStoreRecord[]>(() =>
-    platformStores.map((ps, idx) => ({
+    platformStores.map((ps) => ({
       storeId: ps.id,
       storeName: ps.storeName,
       storeSlug: ps.storeSlug || ps.id,
@@ -148,10 +147,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       country: ps.country || 'PK',
       currency: ps.currency || 'PKR',
       planId: ps.plan === 'Pro' ? 'pro' : 'free',
-      productCount: products.filter((p) => p.storeId === ps.id).length || 2,
+      productCount: products.filter((p) => p.storeId === ps.id).length,
       status: ps.status === 'Active' ? 'active' : 'pending_review',
-      visitsCount: 42 + idx * 19,
-      checkoutViewsCount: 9 + idx * 4,
+      visitsCount: 0,
+      checkoutViewsCount: 0,
       ordersCount: orders.filter((o) => o.storeId === ps.id).length,
       paidOrdersCount: orders.filter((o) => o.storeId === ps.id && o.paymentStatus === 'Paid').length,
       pendingOrdersCount: orders.filter((o) => o.storeId === ps.id && o.paymentStatus === 'Pending').length,
@@ -249,7 +248,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       });
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data.stores) && data.stores.length > 0) {
+        if (Array.isArray(data.stores)) {
           setStores(data.stores);
         }
         if (typeof data.totalPlatformVisits === 'number') {
@@ -322,79 +321,36 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     storeId: string,
     newStatus: 'active' | 'suspended' | 'pending_review'
   ) => {
-    const targetStore = stores.find((s) => s.storeId === storeId);
-    const previousStatus = targetStore?.status || 'active';
-    const displayStoreName = targetStore?.storeName || storeId;
-    const statusLabel =
-      newStatus === 'active'
-        ? 'ACTIVE'
-        : newStatus === 'suspended'
-        ? 'SUSPENDED'
-        : 'PENDING REVIEW';
-
-    // Optimistic instant update & immediate toast confirmation
-    setStores((prev) =>
-      prev.map((s) => (s.storeId === storeId ? { ...s, status: newStatus } : s))
-    );
-    if (onTogglePlatformStoreStatus) {
-      onTogglePlatformStoreStatus(storeId);
-    }
-    showToast(
-      `Store "${displayStoreName}" (${storeId}) status changed to ${statusLabel} instantly.`,
-      {
-        title:
-          newStatus === 'active'
-            ? 'Store Status Activated'
-            : 'Store Status Suspended',
-        variant: newStatus === 'active' ? 'active' : 'suspended',
-        storeId,
-      }
-    );
-
+    const displayStoreName = stores.find((s) => s.storeId === storeId)?.storeName || storeId;
     try {
       const authHeaders = await getAuthHeaders();
       const res = await fetch('/api/admin/stores/status', {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({
-          storeId,
-          status: newStatus === 'active' ? 'Active' : 'Pending',
-        }),
+        body: JSON.stringify({ storeId, status: newStatus === 'active' ? 'Active' : 'Pending' }),
       });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        setStores((prev) =>
-          prev.map((s) => (s.storeId === storeId ? { ...s, status: previousStatus } : s))
-        );
-        showToast(errData.error || 'Failed to update store status on server.', {
-          title: 'Status Update Failed',
-          variant: 'error',
-          storeId,
-        });
-      }
-    } catch {
-      // Keep optimistic state if offline
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok !== true) throw new Error(data.error || 'Store status was not saved.');
+      setStores((prev) => prev.map((s) =>
+        s.storeId === storeId ? { ...s, status: newStatus } : s
+      ));
+      showToast(`Store "${displayStoreName}" status was saved as ${newStatus.replace('_', ' ')}.`, {
+        title: 'Store Status Saved',
+        variant: newStatus === 'active' ? 'active' : 'suspended',
+        storeId,
+      });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not save store status.', {
+        title: 'Status Update Failed', variant: 'error', storeId,
+      });
     }
   };
 
   const handleToggleStorePlan = async (store: AdminStoreRecord) => {
     const nextPlanId: 'pro' | 'free' = store.planId === 'pro' ? 'free' : 'pro';
-    setStores((prev) =>
-      prev.map((s) => (s.storeId === store.storeId ? { ...s, planId: nextPlanId } : s))
-    );
-    showToast(
-      `Store "${store.storeName}" plan configuration updated to ${
-        nextPlanId === 'pro' ? 'PRO UNLIMITED' : 'FREE STARTER'
-      } instantly.`,
-      {
-        title: 'Store Plan Configuration Saved',
-        variant: 'config',
-        storeId: store.storeId,
-      }
-    );
     try {
       const authHeaders = await getAuthHeaders();
-      await fetch('/api/commission/admin/grant-pro', {
+      const res = await fetch('/api/commission/admin/grant-pro', {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({
@@ -403,91 +359,66 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           grantPro: nextPlanId === 'pro',
         }),
       });
-    } catch {
-      // Local optimistic update stays active
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok !== true) throw new Error(data.error || 'Plan change was not saved.');
+      setStores((prev) => prev.map((s) =>
+        s.storeId === store.storeId ? { ...s, planId: nextPlanId } : s
+      ));
+      showToast(`Store "${store.storeName}" plan changed to ${nextPlanId.toUpperCase()}.`, {
+        title: 'Store Plan Saved', variant: 'config', storeId: store.storeId,
+      });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not save plan.', {
+        title: 'Plan Update Failed', variant: 'error', storeId: store.storeId,
+      });
     }
   };
 
+  // Bulk approval is intentionally absent: payment references are not proof of cleared funds.
   const handleInstantControlCommand = async (
-    action: 'activate_all_stores' | 'approve_all_pending_orders' | 'update_store',
+    action: 'update_store',
     storeId?: string,
     updates?: Partial<AdminStoreRecord>
   ) => {
-    if (action === 'activate_all_stores') {
-      setStores((prev) => prev.map((s) => ({ ...s, status: 'active' })));
-      showToast(
-        `All ${stores.length} stores set to ACTIVE status across the platform instantly!`,
-        {
-          title: 'All Stores Activated Instantly',
-          variant: 'active',
-        }
-      );
-    } else if (action === 'update_store' && storeId && updates) {
-      const existingStore = stores.find((s) => s.storeId === storeId);
-      setStores((prev) =>
-        prev.map((s) => (s.storeId === storeId ? { ...s, ...updates } : s))
-      );
-      if (onAdminControlStore) {
-        onAdminControlStore(storeId, 'super-admin', {
-          storeName: updates.storeName,
-          storeSlug: updates.storeSlug,
-          currency: updates.currency,
-          theme: updates.theme as StoreConfig['theme'] | undefined,
-        });
-      }
-      const changedDetails: string[] = [];
-      if (updates.storeName) changedDetails.push(`Name: "${updates.storeName}"`);
-      if (updates.storeSlug) changedDetails.push(`Slug: /${updates.storeSlug}`);
-      if (updates.currency) changedDetails.push(`Currency: ${updates.currency}`);
-      if (updates.planId) changedDetails.push(`Plan: ${updates.planId.toUpperCase()}`);
-      if (updates.status) changedDetails.push(`Status: ${updates.status.toUpperCase()}`);
-      if (updates.theme) changedDetails.push(`Theme: ${updates.theme}`);
-
-      setEditingStore(null);
-      showToast(
-        `Store "${updates.storeName || existingStore?.storeName || storeId}" configuration saved (${changedDetails.join(' · ') || 'Updated'}).`,
-        {
-          title: 'Store Configuration Modified',
-          variant:
-            updates.status === 'suspended'
-              ? 'suspended'
-              : updates.status === 'active'
-              ? 'active'
-              : 'config',
-          storeId,
-        }
-      );
-    }
-
+    if (action !== 'update_store' || !storeId || !updates) return;
     try {
       const authHeaders = await getAuthHeaders();
-      await fetch('/api/admin/stores/control', {
+      const res = await fetch('/api/admin/stores/control', {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({
           action,
           storeId,
-          updates: updates
-            ? {
-                ...updates,
-                plan: updates.planId === 'pro' ? 'Pro' : updates.planId === 'free' ? 'Free' : undefined,
-              }
-            : undefined,
+          updates: {
+            storeName: updates.storeName,
+            currency: updates.currency,
+            theme: updates.theme,
+            plan: updates.planId === 'pro' ? 'Pro' : updates.planId === 'free' ? 'Free' : undefined,
+            status: updates.status === 'pending_review' ? 'pending' : updates.status,
+          },
         }),
       });
-    } catch {
-      // Best-effort server sync
-    }
-
-    if (action === 'approve_all_pending_orders') {
-      for (const ord of orders.filter(
-        (o) => o.paymentStatus === 'Pending' && (!storeId || o.storeId === storeId)
-      )) {
-        await triggerOrderUpdate(ord.id, 'Paid', 'Super Admin instant batch verification');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok !== true || !data.store) {
+        throw new Error(data.error || 'Store changes were not saved.');
       }
-      showToast('All pending orders verified & unlocked instantly!', {
-        title: 'Batch Order Verification Complete',
-        variant: 'active',
+      setStores((prev) => prev.map((s) =>
+        s.storeId === storeId ? { ...s, ...data.store } : s
+      ));
+      setEditingStore(null);
+      if (onAdminControlStore) {
+        onAdminControlStore(storeId, 'super-admin', {
+          storeName: data.store.storeName,
+          currency: data.store.currency,
+          theme: data.store.theme,
+        });
+      }
+      showToast(`Changes to "${data.store.storeName}" saved successfully.`, {
+        title: 'Store Changes Saved', variant: 'config', storeId,
+      });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not save store changes.', {
+        title: 'Store Save Failed', variant: 'error', storeId,
       });
     }
   };
@@ -922,10 +853,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
             <div className="space-y-1">
               <div className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-[#D66795]">
                 <Zap className="w-3.5 h-3.5" />
-                <span>Instant Super Admin Command Center · Zero-Delay Actions</span>
+                <span>Super Admin Store Controls</span>
               </div>
               <h2 className="text-base sm:text-lg font-extrabold font-wordmark text-[#50352F]">
-                Control All Stores, Traffic Visits &amp; Critical Approvals in One Click
+                Review Stores, Traffic &amp; Payments
               </h2>
               <p className="text-xs text-[#6E4D45]">
                 Currently controlling store:{' '}
@@ -944,25 +875,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5">
-              <button
-                type="button"
-                data-testid="instant-approve-all-orders-btn"
-                onClick={() => handleInstantControlCommand('approve_all_pending_orders')}
-                className="candy-btn-mint px-3.5 py-2 rounded-xl text-xs font-extrabold cursor-pointer inline-flex items-center gap-1.5"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Approve All Pending Orders ({pendingOrders.length})</span>
-              </button>
-
-              <button
-                type="button"
-                data-testid="instant-activate-all-stores-btn"
-                onClick={() => handleInstantControlCommand('activate_all_stores')}
-                className="candy-btn-butter px-3.5 py-2 rounded-xl text-xs font-extrabold cursor-pointer inline-flex items-center gap-1.5"
-              >
-                <Zap className="w-3.5 h-3.5" />
-                <span>Activate All Stores ({stores.length})</span>
-              </button>
+              <p className="text-xs text-[#8A5A19] max-w-sm leading-relaxed">
+                Bulk payment approvals and mass store activation are disabled for beta safety.
+                Verify received funds and review stores individually.
+              </p>
 
               <button
                 type="button"
@@ -1010,15 +926,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 />
               </div>
               <div>
-                <label className="ds-label block mb-1">Store Slug</label>
+                <label className="ds-label block mb-1">Store Slug (read-only)</label>
                 <input
                   type="text"
                   data-testid="edit-store-slug-input"
                   value={editingStore.storeSlug}
-                  onChange={(e) =>
-                    setEditingStore({ ...editingStore, storeSlug: e.target.value })
-                  }
-                  className="candy-input"
+                  readOnly
+                  title="Store URL changes require dedicated slug verification."
+                  className="candy-input bg-[#FFF9FC] opacity-75"
                 />
               </div>
               <div>
@@ -1085,7 +1000,6 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 onClick={() =>
                   handleInstantControlCommand('update_store', editingStore.storeId, {
                     storeName: editingStore.storeName,
-                    storeSlug: editingStore.storeSlug,
                     currency: editingStore.currency,
                     planId: editingStore.planId,
                     status: editingStore.status,
@@ -1093,7 +1007,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                 }
                 className="candy-btn-pink px-4 py-2 rounded-xl text-xs font-extrabold cursor-pointer"
               >
-                Save Store Changes Instantly
+                Save Store Changes
               </button>
             </div>
           </div>
