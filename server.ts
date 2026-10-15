@@ -4736,11 +4736,24 @@ async function startServer() {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
+    if (!user.emailVerified) {
+      res.status(403).json({ error: 'Verify your email before editing your store.' });
+      return;
+    }
 
     const { storeId: rawStoreId, updates: rawUpdates } = req.body || {};
     const storeId = String(rawStoreId || '').trim();
     const updates = rawUpdates || req.body || {};
-    const store = serverStores.get(storeId);
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(storeId)) {
+      res.status(400).json({ error: 'Valid storeId is required.' });
+      return;
+    }
+    if (!adminFirestoreDb) {
+      res.status(503).json({ error: 'Secure store database is unavailable.' });
+      return;
+    }
+    const storeDoc = await adminFirestoreDb.collection('stores').doc(storeId).get();
+    const store = storeDoc.exists ? { ...storeDoc.data(), storeId } as ServerStoreRecord : undefined;
     const canonicalUserStoreId = `store-${user.uid.slice(0, 20)}`;
     const fullUidStoreId = `store-${user.uid}`;
 
@@ -4760,6 +4773,10 @@ async function startServer() {
       res.status(403).json({
         error: `Forbidden: Seller "${user.uid}" cannot modify store "${store.storeName}" owned by "${store.ownerId}".`,
       });
+      return;
+    }
+    if (!isSuper && String(store.status) === 'Suspended') {
+      res.status(403).json({ error: 'This store is suspended and cannot be edited.' });
       return;
     }
     if (!isSuper && (updates?.status || updates?.ownerId || updates?.plan)) {
@@ -4795,8 +4812,7 @@ async function startServer() {
       updates.theme !== store.theme &&
       PRO_THEME_IDS.has(String(updates.theme)) &&
       store.plan !== 'Pro' &&
-      !sellerProEntitlements.get(store.ownerId) &&
-      req.body?.enforceProEntitlement === true
+      !sellerProEntitlements.get(store.ownerId)
     ) {
       res.status(403).json({
         proEntitlementRequired: true,
@@ -4807,6 +4823,10 @@ async function startServer() {
 
     if (updates?.storeSlug) {
       const candidateSlug = String(updates.storeSlug).trim().toLowerCase();
+      if (!SLUG_REGEX.test(candidateSlug) || RESERVED_SLUGS.has(candidateSlug)) {
+        res.status(400).json({ error: 'Choose a valid, non-reserved store URL.' });
+        return;
+      }
       const conflict = Array.from(serverStores.values()).find(
         (s) =>
           s.storeSlug.toLowerCase() === candidateSlug &&
@@ -4863,17 +4883,39 @@ async function startServer() {
       heroButtonText: updates?.heroButtonText
         ? String(updates.heroButtonText).slice(0, 60)
         : store.heroButtonText,
-      heroImage: updates?.heroImage ? String(updates.heroImage) : store.heroImage,
-      logoUrl: updates?.logoUrl ? String(updates.logoUrl) : store.logoUrl,
+      heroImage: updates?.heroImage !== undefined ? String(updates.heroImage).slice(0, 500000) : store.heroImage,
+      logoUrl: updates?.logoUrl !== undefined ? String(updates.logoUrl).slice(0, 500000) : store.logoUrl,
     };
-    serverStores.set(store.storeId, updated);
-    syncFirestoreDoc(
-      'stores',
-      store.storeId,
-      updated as unknown as Record<string, unknown>,
-      user.rawToken
-    );
-    res.json({ ok: true, store: updated });
+    // Commit only public store fields, and acknowledge only after persistence.
+    const publicFields = ['storeName', 'storeSlug', 'instagramHandle', 'sellerCountry',
+      'productType', 'currency', 'theme', 'plan', 'status', 'announcementText',
+      'heroHeadingLine1', 'heroHeadingLine2', 'heroSubheading', 'heroButtonText', 'heroImage', 'logoUrl'];
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    for (const key of publicFields) {
+      const value = (updated as unknown as Record<string, unknown>)[key];
+      if (value !== undefined && Object.hasOwn(updates, key)) patch[key] = value;
+    }
+    if (updates.customAccentColor !== undefined) patch.customAccentColor = String(updates.customAccentColor).slice(0, 20);
+    if (updates.exchangeRatePkr !== undefined) {
+      const rate = Number(updates.exchangeRatePkr);
+      if (!Number.isFinite(rate) || rate < 1 || rate > 10000) {
+        res.status(400).json({ error: 'Exchange rate must be between 1 and 10000.' });
+        return;
+      }
+      patch.exchangeRatePkr = rate;
+    }
+    await adminFirestoreDb.runTransaction(async tx => {
+      const ref = adminFirestoreDb!.collection('stores').doc(storeId);
+      const fresh = await tx.get(ref);
+      if (!fresh.exists || (!isSuper && fresh.get('ownerId') !== user.uid)) throw new Error('Store ownership changed.');
+      const matches = await tx.get(adminFirestoreDb!.collection('stores').where('storeSlug', '==', updated.storeSlug));
+      if (matches.docs.some(doc => doc.id !== storeId)) throw new Error('Store URL already taken.');
+      if (!isSuper) { patch.plan = fresh.get('plan') || 'Free'; patch.status = fresh.get('status') || 'Active'; }
+      tx.set(ref, patch, { merge: true });
+    });
+    const saved = { ...updated, ...patch } as ServerStoreRecord;
+    serverStores.set(store.storeId, saved);
+    res.json({ ok: true, store: saved });
   }));
 
   // Helper to verify whether a user is a registered store owner (seller) in memory or Firestore

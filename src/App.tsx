@@ -1865,64 +1865,21 @@ export default function App() {
     }
 
     const next: StoreConfig = { ...current, ...partial };
-    setConfig(next);
-
-    if (
-      currentUser &&
-      hasFirebaseSdkSession() &&
-      (next.storeId === userStoreId ||
-        next.ownerId === currentUser.uid ||
-        isSuperAdminVerified) &&
-      next.storeId.startsWith('store-')
-    ) {
-      const storeRef = doc(db, 'stores', next.storeId);
-      const validSlug =
-        (next.storeSlug || '')
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-z0-9_.-]/g, '')
-          .slice(0, 40);
-      if (validSlug.length >= 2 && (next.storeName || '').trim().length >= 1) {
-        try {
-          const existingSnap = await getDoc(storeRef);
-          // Wizard inputs are local drafts. Never create an Active public store
-          // until the final Launch action has been durably accepted by the backend.
-          if (!existingSnap.exists()) return;
-          const existingData = existingSnap.data();
-          await setDoc(
-            storeRef,
-            {
-              ownerId:
-                existingData?.ownerId ||
-                (isSuperAdminVerified && next.ownerId ? next.ownerId : currentUser.uid),
-              storeSlug: validSlug,
-              storeName: (next.storeName || validSlug).trim().slice(0, 100),
-              ownerName: (next.ownerName || currentUser.displayName || 'Creator').slice(0, 100),
-              instagramHandle: (next.instagramHandle || '').slice(0, 100),
-              sellerCountry: (next.sellerCountry || 'Pakistan').slice(0, 80),
-              productType: (next.productType || 'Ebooks & Guides').slice(0, 100),
-              announcementText: (next.announcementText || 'Welcome').slice(0, 240),
-              heroHeadingLine1: (next.heroHeadingLine1 || 'Small Steps').slice(0, 120),
-              heroHeadingLine2: (next.heroHeadingLine2 || 'Big Changes.').slice(0, 120),
-              heroSubheading: (next.heroSubheading || 'Digital products').slice(0, 500),
-              heroButtonText: (next.heroButtonText || 'Shop Now').slice(0, 60),
-              heroImage: next.heroImage || NEUTRAL_PUBLIC_STORE_CONFIG.heroImage,
-              logoUrl: next.logoUrl || NEUTRAL_PUBLIC_STORE_CONFIG.logoUrl,
-              theme: next.theme || 'blush-bloom',
-              customAccentColor: (next.customAccentColor || '').slice(0, 20),
-              currency: next.currency || 'PKR',
-              exchangeRatePkr: Number(next.exchangeRatePkr) || 278,
-              status: existingData?.status || 'Active',
-              plan: existingData?.plan || 'Free',
-              ...(existingSnap.exists() ? {} : { createdAt: serverTimestamp() }),
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
-        } catch (err) {
-          reportFirestoreError(err, OperationType.UPDATE, `stores/${next.storeId}`);
-        }
-      }
+    if (activeScreen === 'wizard' || !currentUser) {
+      setConfig(next);
+      return;
+    }
+    try {
+      const response = await fetch('/api/stores/update', {
+        method: 'POST',
+        headers: await getAuthHeaders({}, { forceRefresh: true, requireAuth: true }),
+        body: JSON.stringify({ storeId: current.storeId, updates: partial }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Store changes could not be saved.');
+      setConfig({ ...next, ...data.store });
+    } catch (error) {
+      setBlockedAccessNotice(error instanceof Error ? error.message : 'Store changes could not be saved. Please retry.');
     }
   };
 

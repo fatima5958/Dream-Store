@@ -64,6 +64,16 @@ function getFriendlyAuthNotice(
     };
   }
 
+  if (rawCode.includes('unauthorized-domain') || rawMessage.includes('unauthorized-domain')) {
+    return { title: 'Sign-In Setup Required', message: 'Sign-in is not enabled for this website address. Please contact the store operator.' };
+  }
+  if (rawCode.includes('operation-not-allowed')) {
+    return { title: 'Sign-In Method Unavailable', message: 'This sign-in method is not enabled. Please try another available method or contact the store operator.' };
+  }
+  if (rawCode.includes('too-many-requests')) {
+    return { title: 'Please Wait Before Retrying', message: 'Too many sign-in attempts. Wait a few minutes, then try again.' };
+  }
+
   if (
     rawCode.includes('popup-blocked') ||
     rawCode.includes('operation-not-supported') ||

@@ -64,6 +64,8 @@ test('Cart starts empty for guests; mobile landing CTA stays usable', async () =
     const text = await cart.getByTestId('buyer-cart-section').innerText();
     assert.match(text, /empty|no items|bag/i);
     assert.doesNotMatch(text, /30.Day Reset|Mindful Journal/i);
+    assert.equal(await cart.getByTestId('submit-checkout-order-btn').isDisabled(), true);
+    assert.match(await cart.getByTestId('checkout-cart-requirement').innerText(), /one digital product/);
   } finally { await cart.close(); }
   const mobile = await visit('/', { width: 375, height: 812 });
   try {
