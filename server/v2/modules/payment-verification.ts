@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Express } from 'express';
 import type { V2Dependencies } from '../contracts.ts';
 import { ApiError } from '../errors.ts';
@@ -19,6 +19,12 @@ export function registerPaymentVerificationRoutes(app: Express, deps: V2Dependen
     if (!order) throw new ApiError(404, 'orders/not-found', 'Order not found.');
     if (order.sellerId !== principal.uid) throw new ApiError(403, 'orders/seller-forbidden', 'Only the Seller who owns this order may verify payment.');
     if (order.buyerId === principal.uid) throw new ApiError(403, 'orders/self-approval', 'Buyers cannot verify their own payment.');
+    const evidenceType = String(req.body?.evidenceType ?? 'unspecified');
+    if (!['unspecified', 'bank_statement', 'wallet_statement', 'payment_app', 'other'].includes(evidenceType)) throw new ApiError(422, 'orders/invalid-evidence-type', 'Unsupported evidence type.');
+    const receivedRaw = req.body?.receivedAmountMinor;
+    if (receivedRaw !== undefined && receivedRaw !== null && (!Number.isSafeInteger(receivedRaw) || receivedRaw !== order.grossAmountMinor)) {
+      throw new ApiError(409, 'orders/amount-mismatch', 'The amount you received does not match the order total. Nothing was recorded.');
+    }
     if (status === 'Paid' && req.body?.statementConfirmed !== true) throw new ApiError(422, 'orders/evidence-required', 'Confirm that external bank or wallet evidence was independently reviewed.');
     if (status === 'Paid') {
       const expected = commissionBreakdown(Number(order.grossAmountMinor), String(order.currency), String(order.paymentMethod));
@@ -32,10 +38,19 @@ export function registerPaymentVerificationRoutes(app: Express, deps: V2Dependen
     const next = status === 'Paid' ? { paymentStatus: 'Paid', verificationMode: 'Manually Verified by Seller',
       commissionStatus: order.grossAmountMinor > 0 ? 'outstanding' : 'not_applicable',
       payoutStatus: 'Direct Manual Receipt by Seller (5% Commission Outstanding)', verifiedByUid: principal.uid,
-      verifiedAtIso: now, updatedAtIso: now, downloadTokenId: randomUUID() } : { paymentStatus: 'Failed',
+      verifiedAtIso: now, updatedAtIso: now, downloadTokenId: randomUUID(),
+      // A Seller's own statement. Never labelled bank- or gateway-verified. The note text itself is deliberately not stored.
+      attestation: { statement: 'seller_manual_attestation_v1', attestedByUid: principal.uid, attestedAtIso: now, evidenceType,
+        declaredPaymentMethod: String(order.paymentMethod), paymentReferenceHash: createHash('sha256').update(String(order.paymentReference).trim().toUpperCase()).digest('hex'),
+        receivedAmountMinor: Number.isSafeInteger(receivedRaw) ? receivedRaw : null, evidenceNoteProvided: typeof req.body?.evidenceNote === 'string' && req.body.evidenceNote.trim().length > 0 } } : { paymentStatus: 'Failed',
       verificationMode: 'Unverified', commissionStatus: 'reversed', payoutStatus: 'Failed', updatedAtIso: now,
       downloadTokenId: randomUUID() };
     const changed = await deps.finance!.transitionOrder(orderNumber, 'Pending', next, principal.uid);
+    if (changed.paymentStatus === 'Paid' && changed.commissionStatus === 'outstanding') {
+      // Best effort and idempotent: a failure here never undoes a recorded verification; the next verification re-attempts it.
+      try { await deps.commissions?.issueInvoices(String(changed.sellerId)); }
+      catch (error) { console.warn('[DreamStore V2] invoice issuance deferred', { code: (error as { code?: unknown })?.code ?? 'unclassified' }); }
+    }
     res.json({ ok: true, orderNumber, orderId: changed.orderId, paymentStatus: changed.paymentStatus,
       verificationMode: changed.verificationMode, commissionStatus: changed.commissionStatus, payoutStatus: changed.payoutStatus,
       downloadToken: changed.paymentStatus === 'Paid' ? createDownloadToken(changed, deps.downloadTokenSecret || '') : 'LOCKED-UNTIL-PAYMENT-VERIFIED',

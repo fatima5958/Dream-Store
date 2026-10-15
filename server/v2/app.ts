@@ -12,6 +12,7 @@ import { registerOrderRoutes } from './modules/orders.ts';
 import { registerDownloadRoutes } from './modules/downloads.ts';
 import { registerPaymentVerificationRoutes } from './modules/payment-verification.ts';
 import { registerCommissionRoutes } from './modules/commissions.ts';
+import { registerCommissionLifecycleRoutes } from './modules/commission-routes.ts';
 
 const jsonRoute = (callback: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: (error?: unknown) => void) => {
@@ -274,6 +275,7 @@ export function createV2App(deps: V2Dependencies) {
     registerPaymentVerificationRoutes(app, deps);
     registerDownloadRoutes(app, deps);
     registerCommissionRoutes(app, deps);
+    registerCommissionLifecycleRoutes(app, deps);
   }
 
   // Financial, download and administrative modules remain deliberately unavailable.

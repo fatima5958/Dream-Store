@@ -50,6 +50,10 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
       return db.runTransaction(async tx => {
         const prior = await tx.get(idemRef);
         if (prior.exists) {
+          // Same key + different purchase details is a client bug or an attack, never a replay.
+          if (String(prior.get('requestFingerprint') ?? '') !== String(input.requestFingerprint ?? '')) {
+            throw new ApiError(409, 'checkout/idempotency-conflict', 'This checkout key was already used for a different purchase. Start a new checkout.');
+          }
           const savedNumber = String(prior.get('orderNumber') || '');
           const saved = await tx.get(ledger.doc(savedNumber));
           if (!saved.exists) throw new ApiError(503, 'orders/idempotency-corrupt', 'Existing checkout key points to an unavailable order.');
@@ -91,7 +95,7 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
           paymentStatus: input.paymentStatus, paymentReference: input.paymentReference,
           itemTitlesSummary: input.itemTitlesSummary, itemCount: input.itemCount, downloadCount: 0,
           maxDownloads: input.maxDownloads, expiresAtMs: input.expiresAtMs, createdAt: new Date(), updatedAt: new Date() });
-        tx.create(idemRef, { buyerId: input.buyerId, orderNumber: input.orderNumber, orderId: input.orderId, createdAtIso: new Date().toISOString() });
+        tx.create(idemRef, { buyerId: input.buyerId, orderNumber: input.orderNumber, orderId: input.orderId, requestFingerprint: input.requestFingerprint ?? '', createdAtIso: new Date().toISOString() });
         if (paymentRef) tx.create(paymentRef, { sellerId: input.sellerId, paymentMethod: input.paymentMethod,
           orderNumber: input.orderNumber, referenceHash: referenceKey, createdAtIso: new Date().toISOString() });
         return { duplicate: false, order: input };
@@ -123,10 +127,16 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
         const commissionSnap = (patch.paymentStatus === 'Paid' || patch.paymentStatus === 'Refunded') && Number(old.grossAmountMinor) > 0 ? await tx.get(commissionRef) : null;
         const adjustmentRef = db.collection('commission_adjustments').doc(`${orderNumber}:refund`);
         const adjustmentSnap = patch.paymentStatus === 'Refunded' && Number(old.grossAmountMinor) > 0 ? await tx.get(adjustmentRef) : null;
+        const invoiceId = patch.paymentStatus === 'Refunded' ? String(old.invoiceId || '') : '';
+        const invoiceRef = invoiceId ? db.collection('commission_invoices').doc(invoiceId) : null;
+        const invoiceAdjId = invoiceId ? 'adj-' + createHash('sha256').update(invoiceId + ':' + orderNumber + ':refund').digest('hex').slice(0, 32) : '';
+        const [invoiceSnap, invoiceAdjSnap] = invoiceRef ? await Promise.all([tx.get(invoiceRef), tx.get(db.collection('commission_adjustments').doc(invoiceAdjId))]) : [null, null];
         const now = new Date().toISOString();
         const audit = { auditId: randomUUID(), orderNumber, orderId: old.orderId, sellerId: old.sellerId,
           actorUid, action: patch.paymentStatus === 'Paid' ? 'MANUAL_PAYMENT_VERIFIED' : 'PAYMENT_REJECTED',
-          previousStatus: old.paymentStatus, newStatus: patch.paymentStatus, atIso: now };
+          previousStatus: old.paymentStatus, newStatus: patch.paymentStatus, atIso: now,
+          ...(patch.paymentStatus === 'Paid' && patch.attestation ? { attestation: patch.attestation } : {}),
+          ...(patch.paymentStatus === 'Refunded' ? { refundReference: patch.refundReference ?? null } : {}) };
         next.paymentAudit = [...(Array.isArray(old.paymentAudit) ? old.paymentAudit : []), audit];
         next.updatedAtIso = now;
         tx.set(ledgerRef, next);
@@ -144,6 +154,23 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
             currency: old.currency, amountMinor: -Number(old.platformCommissionMinor || 0),
             reason: 'order_refunded', refundReference: patch.refundReference, actorUid, createdAtIso: now,
           });
+        }
+        if (invoiceRef && invoiceSnap) {
+          if (!invoiceSnap.exists || invoiceAdjSnap?.exists) throw new ApiError(409, 'orders/refund-reconcile-failed', 'Refund could not be safely reconciled with its commission invoice. Nothing was changed.');
+          const invoice = invoiceSnap.data() || {};
+          const original = Number(old.platformCommissionMinor || 0);
+          if (invoice.sellerId !== old.sellerId || invoice.currency !== old.currency || !Array.isArray(invoice.orderNumbers) ||
+              !invoice.orderNumbers.includes(orderNumber) || !Number.isSafeInteger(original) || original < 0 || !Number.isSafeInteger(invoice.remainingBalanceMinor)) {
+            throw new ApiError(409, 'orders/refund-reconcile-failed', 'Refund could not be safely reconciled with its commission invoice. Nothing was changed.');
+          }
+          // Reduce only what is still owed; anything already paid becomes an auditable credit, never silently lost.
+          const reduction = Math.min(invoice.remainingBalanceMinor, original);
+          const remaining = invoice.remainingBalanceMinor - reduction;
+          const status = remaining === 0 ? (Number(invoice.paidAmountMinor) > 0 ? 'paid' : 'voided') : invoice.status;
+          tx.update(invoiceRef, { adjustedAmountMinor: Number(invoice.adjustedAmountMinor || 0) + original, remainingBalanceMinor: remaining, status });
+          tx.create(db.collection('commission_adjustments').doc(invoiceAdjId), { adjustmentId: invoiceAdjId, invoiceId, invoiceNumber: invoice.invoiceNumber,
+            orderNumber, sellerId: old.sellerId, currency: old.currency, adjustmentAmountMinor: original, creditDueMinor: original - reduction,
+            reason: 'order_refunded', detail: 'Reversal of platform commission on refunded order.', refundReference: patch.refundReference ?? null, actorUid, createdAtIso: now });
         }
         return next;
       });
@@ -171,8 +198,6 @@ export function createFirestoreFinancialRepository(db: Firestore, bucket: Bucket
         try {
           const [[bytes], [metadata]] = await Promise.all([file.download(), file.getMetadata()]);
           const contentType = String(metadata.contentType || deliverable.fileMimeType || 'application/octet-stream');
-          if (metadata.metadata?.firebaseStorageDownloadTokens) throw new ApiError(403, 'downloads/public-file-rejected', 'The stored original is not private.');
-          validateFileMetadata(String(deliverable.fileName || ''), contentType, Number(metadata.size), 'product');
           if (metadata.metadata?.firebaseStorageDownloadTokens) throw new ApiError(403, 'downloads/public-file-rejected', 'The stored original is not private.');
           validateFileMetadata(String(deliverable.fileName || ''), contentType, Number(metadata.size), 'product');
           const next = { ...order, downloadCount: Number(order.downloadCount || 0) + 1, downloadTokenId: randomUUID(), updatedAtIso: new Date().toISOString() };

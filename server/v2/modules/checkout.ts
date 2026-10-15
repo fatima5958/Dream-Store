@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import type { Express } from 'express';
 import type { V2Dependencies } from '../contracts.ts';
 import { ApiError } from '../errors.ts';
@@ -54,15 +54,21 @@ export function registerCheckoutRoutes(app: Express, deps: V2Dependencies) {
       paymentStatus: isFree ? 'Paid' : 'Pending', verificationMode: isFree ? 'Instant Free' : 'Unverified',
       commissionStatus: isFree ? 'not_applicable' : 'outstanding', payoutStatus: isFree ? 'Not Applicable (Free)' : 'Pending Payment Verification',
       downloadCount: 0, maxDownloads: 5, expiresAtMs, createdAtIso: new Date().toISOString(), updatedAtIso: new Date().toISOString(),
-      idempotencyKey: key, downloadTokenId: randomUUID(), paymentAudit: [{ action: 'ORDER_CREATED', actorUid: buyer.uid, atIso: new Date().toISOString() }] };
+      idempotencyKey: key, requestFingerprint: createHash('sha256').update(JSON.stringify([store.storeId, productId, currency, method, amountMinor,
+        isFree ? 'FREE-INSTANT' : String(body.paymentReference).trim().toUpperCase()])).digest('hex'), downloadTokenId: randomUUID(), paymentAudit: [{ action: 'ORDER_CREATED', actorUid: buyer.uid, atIso: new Date().toISOString() }] };
     const committed = await deps.finance!.createOrder(order);
-    const token = createDownloadToken(order, deps.downloadTokenSecret || '');
+    // Everything returned comes from the PERSISTED order, so a replay can never echo figures from a request that was not saved.
+    const saved = committed.order;
+    const token = createDownloadToken(saved, deps.downloadTokenSecret || '');
     res.status(committed.duplicate ? 200 : 201).json({ orderId: committed.order.orderId, orderNumber: committed.order.orderNumber,
-      storeId: committed.order.storeId, sellerId: committed.order.sellerId, calculatedSubtotal: amount, calculatedTotal: amount,
-      currency, initialPaymentStatus: committed.order.paymentStatus, verificationMode: committed.order.verificationMode,
-      commissionStatus: committed.order.commissionStatus, downloadToken: isFree ? token : 'LOCKED-PENDING-VERIFICATION',
-      expiresAtMs, maxDownloads: 5, commissionBreakdown: commission, payoutStatus: committed.order.payoutStatus,
-      gatewayNotice: isFree ? 'Free digital product verified. Instant download unlocked.' : 'Order recorded pending Seller payment verification. A transaction reference is not proof of payment.',
+      storeId: committed.order.storeId, sellerId: committed.order.sellerId, calculatedSubtotal: saved.subtotal, calculatedTotal: saved.totalAmount,
+      currency: saved.currency, initialPaymentStatus: committed.order.paymentStatus, verificationMode: committed.order.verificationMode,
+      commissionStatus: committed.order.commissionStatus, downloadToken: saved.paymentStatus === 'Paid' ? token : 'LOCKED-PENDING-VERIFICATION',
+      expiresAtMs: saved.expiresAtMs, maxDownloads: saved.maxDownloads, commissionBreakdown: { currency: saved.currency, commissionRateBps: saved.commissionRateBps,
+        grossAmountMinor: saved.grossAmountMinor, platformCommissionMinor: saved.platformCommissionMinor,
+        sellerShareBeforeFeesMinor: saved.sellerShareBeforeFeesMinor, gatewayFeeMinor: saved.gatewayFeeMinor,
+        sellerNetEarningsMinor: saved.sellerNetEarningsMinor }, payoutStatus: committed.order.payoutStatus,
+      gatewayNotice: saved.paymentStatus === 'Paid' ? 'Free digital product verified. Instant download unlocked.' : 'Order recorded pending Seller payment verification. A transaction reference is not proof of payment.',
       ...(committed.duplicate ? { duplicate: true } : {}) });
   })().catch(next));
 }

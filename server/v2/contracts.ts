@@ -62,6 +62,7 @@ export interface V2Dependencies {
   stores?: StoreRepository;
   products?: ProductRepository;
   finance?: FinancialRepository;
+  commissions?: CommissionRepository;
   uploads?: UploadRepository;
   covers?: { read(ownerId: string, fileName: string): Promise<{ data: Buffer; contentType: string }> };
   readiness: ReadinessService;
@@ -93,4 +94,13 @@ export interface FinancialRepository {
   listOrders(uid: string, admin: boolean): Promise<Array<Record<string, any>>>;
   transitionOrder(orderNumber: string, expectedStatus: string, patch: Record<string, unknown>, actorUid: string): Promise<Record<string, any>>;
   consumeDownload(orderNumber: string, buyerUid: string, productId: string, tokenId: string): Promise<{ order: Record<string, any>; deliverable: Record<string, any>; fileDataUrl: string }>;
+}
+
+export interface CommissionRepository {
+  /** Idempotent: deterministic invoice ids; returns how many NEW invoices were issued. */
+  issueInvoices(sellerId: string): Promise<number>;
+  summary(sellerId: string, nowMs?: number): Promise<Record<string, any>>;
+  submitPayment(input: { invoiceId: string; sellerUid: string; amountMinor?: number; method: string; reference: string; proofNote: string }): Promise<{ payment: Record<string, any>; invoice: Record<string, any> }>;
+  reviewPayment(input: { paymentId: string; invoiceId?: string; decision: 'approve' | 'reject'; adminUid: string; adminEmail: string; note: string }): Promise<{ payment: Record<string, any>; invoice: Record<string, any> }>;
+  adminOverview(): Promise<Record<string, any>>;
 }

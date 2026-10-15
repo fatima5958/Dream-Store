@@ -13,6 +13,7 @@ import { createFirestoreStoreRepository } from '../modules/stores.ts';
 import { createFirestoreProductRepository } from '../modules/products.ts';
 import { createFirebaseUploadRepository, validateFileBytes } from '../modules/uploads.ts';
 import { createFirestoreFinancialRepository } from '../modules/finance-repository.ts';
+import { createFirestoreCommissionRepository } from '../modules/commission-repository.ts';
 import type { ReadinessService, V2Dependencies } from '../contracts.ts';
 
 interface PublicFirebaseConfig {
@@ -90,6 +91,7 @@ export function createProductionV2Dependencies(): V2Dependencies {
     };
   })();
 
+  const signingSecret = String(process.env.SERVER_SIGNING_SECRET || process.env.DOWNLOAD_SIGNING_SECRET || process.env.TOKEN_SIGNING_SECRET || '');
   return {
     auth: createFirebaseVerifier(auth),
     profiles: createFirestoreProfileRepository(db),
@@ -97,6 +99,7 @@ export function createProductionV2Dependencies(): V2Dependencies {
     stores: createFirestoreStoreRepository(db),
     products: createFirestoreProductRepository(db, storage.bucket(config.storageBucket)),
     finance: createFirestoreFinancialRepository(db, storage.bucket(config.storageBucket)),
+    commissions: createFirestoreCommissionRepository(db, { signingSecret }),
     uploads: createFirebaseUploadRepository(db, storage.bucket(config.storageBucket)),
     covers: {
       async read(ownerId, fileName) {
@@ -117,6 +120,6 @@ export function createProductionV2Dependencies(): V2Dependencies {
     allowUnsignedEmulatorTokens: true,
     allowWrites: true, // All three loopback emulators + demo project validated above.
     paidCheckoutEnabled: process.env.DREAMSTORE_PAID_CHECKOUT_ENABLED === 'true' && process.env.NODE_ENV !== 'production',
-    downloadTokenSecret: String(process.env.SERVER_SIGNING_SECRET || process.env.DOWNLOAD_SIGNING_SECRET || process.env.TOKEN_SIGNING_SECRET || ''),
+    downloadTokenSecret: signingSecret,
   };
 }
