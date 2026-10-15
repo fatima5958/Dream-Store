@@ -60,8 +60,13 @@ export function createFirestoreProfileRepository(db: Firestore): ProfileReposito
         if (fields.role === 'super_admin') {
           // Admin role comes only from the verified Firebase claim + server UID,
           // never from a freely edited Firestore user document.
+          // Do not fall through to legacy store/order discovery either: an
+          // authoritative privileged/unknown record must not be reinterpreted.
           return null;
         }
+        // Preserve an existing role document as authoritative. Historical
+        // orders or stores may restore only accounts with no profile document.
+        return null;
       }
 
       // Compatibility with pre-profile Seller accounts: an existing store
@@ -75,6 +80,25 @@ export function createFirestoreProfileRepository(db: Firestore): ProfileReposito
           storeId: storeSnap.id, onboardingCompleted: true,
           createdAt: storeSnap.get('createdAt'), updatedAt: storeSnap.get('updatedAt'),
         }, 'seller');
+      }
+
+      // V1 retained returning Buyers in its ledger-backed profile restoration.
+      // V2 restores only an exact Firebase UID match, never by email, order
+      // number, or client-supplied identity. This is a read-only compatibility
+      // projection: it neither creates nor overwrites users/{uid}.
+      if (principal.emailVerified) {
+        const historicBuyerOrder = await db.collection('ledger')
+          .where('buyerId', '==', principal.uid).limit(1).get();
+        const legacyOrder = historicBuyerOrder.docs[0];
+        if (legacyOrder) {
+          const order = legacyOrder.data() || {};
+          return hydrated(principal, {
+            displayName: order.customerName || principal.displayName,
+            onboardingCompleted: true,
+            createdAt: order.createdAtIso || order.createdAt,
+            updatedAt: order.updatedAtIso || order.createdAtIso || order.createdAt,
+          }, 'buyer');
+        }
       }
       return null;
     },

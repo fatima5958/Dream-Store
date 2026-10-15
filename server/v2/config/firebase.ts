@@ -14,6 +14,7 @@ import { createFirestoreProductRepository } from '../modules/products.ts';
 import { createFirebaseUploadRepository, validateFileBytes } from '../modules/uploads.ts';
 import { createFirestoreFinancialRepository } from '../modules/finance-repository.ts';
 import { createFirestoreAdminManagementRepository } from '../modules/admin-management.ts';
+import { createGeminiService } from '../modules/assistant.ts';
 import type { ReadinessService, V2Dependencies } from '../contracts.ts';
 
 interface PublicFirebaseConfig {
@@ -116,6 +117,8 @@ export function createProductionV2Dependencies(): V2Dependencies {
       },
     },
     readiness,
+    ...(process.env.DREAMSTORE_V2_GEMINI_ENABLED === 'true' && process.env.GEMINI_API_KEY?.trim()
+      ? { assistant: createGeminiService(process.env.GEMINI_API_KEY.trim()), assistantEnabled: true } : {}),
     adminUid: String(process.env.SUPER_ADMIN_UID || '').trim(),
     // No production write until separate staging verification and owner approval.
     allowUnsignedEmulatorTokens: true,

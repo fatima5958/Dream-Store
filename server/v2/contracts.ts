@@ -55,6 +55,14 @@ export interface ReadinessService {
   check(): Promise<boolean>;
 }
 
+export interface AssistantService {
+  generate(input: {
+    model: string;
+    systemInstruction: string;
+    contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
+  }): Promise<string>;
+}
+
 export interface AdminManagementRepository {
   updateStore(storeId: string, patch: Record<string, unknown>, actorUid: string, action: string): Promise<Record<string, any> | null>;
   grantPro(input: { sellerId?: string; storeId?: string; grantPro: boolean; actorUid: string }): Promise<{ sellerId: string; storeIds: string[]; plan: 'Pro' | 'Free' }>;
@@ -77,6 +85,8 @@ export interface V2Dependencies {
   uploads?: UploadRepository;
   covers?: { read(ownerId: string, fileName: string): Promise<{ data: Buffer; contentType: string }> };
   readiness: ReadinessService;
+  assistant?: AssistantService;
+  assistantEnabled?: boolean;
   adminUid: string;
   // Staging writes are disabled by default. Real production cutover is separate.
   allowWrites: boolean;

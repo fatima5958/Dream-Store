@@ -49,6 +49,25 @@ test('legacy store restoration and update never consume another founder spot',as
  const saved=await f.profiles.save(owner,'seller','Returning');assert.equal(saved.storeId,'legacy-store');
  await assert.rejects(f.profiles.save(owner,'buyer','Returning'),code('profile/store-owner-role'));
 });
+test('returning Buyer restoration requires exact verified UID ledger ownership and remains read-only',async()=>{
+ const f=fixture();
+ f.db.seed('ledger/order-historic-buyer',{orderNumber:'order-historic-buyer',buyerId:'buyer-returning',customerName:'Historic Buyer',customerEmail:'old@example.test'});
+ const restored=await f.profiles.find({...p('buyer-returning'),email:'new-verified@example.test'});
+ assert.equal(restored.role,'buyer');assert.equal(restored.onboardingCompleted,true);assert.equal(restored.email,'new-verified@example.test');
+ assert.equal(f.db.data.has('users/buyer-returning'),false,'legacy restoration must not write or overwrite a profile');
+ assert.equal(await f.profiles.find({...p('buyer-returning'),emailVerified:false}),null,'unverified identities do not restore historical Buyer profiles');
+ assert.equal(await f.profiles.find(p('buyer-email-only')),null,'email alone is not ownership proof');
+});
+test('existing privileged/unknown profile records cannot fall through to legacy role discovery',async()=>{
+ const f=fixture();
+ f.db.seed('stores/admin-store',{...store,ownerId:'stored-admin'});
+ f.db.seed('ledger/admin-order',{buyerId:'stored-admin',orderNumber:'admin-order'});
+ f.db.seed('users/stored-admin',{uid:'stored-admin',role:'super_admin'});
+ assert.equal(await f.profiles.find(p('stored-admin')),null);
+ f.db.seed('users/unknown-role',{uid:'unknown-role',role:'platform_admin'});
+ f.db.seed('ledger/unknown-order',{buyerId:'unknown-role',orderNumber:'unknown-order'});
+ assert.equal(await f.profiles.find(p('unknown-role')),null);
+});
 test('failed slug collision and failed Firestore commits consume no spots',async()=>{
  const f=fixture();
  await assert.rejects(f.stores.create(p('other'),{storeName:'Other',storeSlug:'books'}),code('store/slug-taken'));
@@ -232,6 +251,14 @@ test('staging cannot mix emulator writes with production Firebase services',()=>
  for(const key of Object.keys(env)) assert.throws(()=>assertIsolatedV2Environment({...env,[key]:''}));
  assert.throws(()=>assertIsolatedV2Environment({...env,DREAMSTORE_V2_PROJECT_ID:'dulcet-trees-qk6n5'}));
  assert.throws(()=>assertIsolatedV2Environment({...env,FIRESTORE_EMULATOR_HOST:'remote:8080'}));
+});
+test('cloud staging flags and live Firebase endpoints cannot bypass the emulator-only runtime guard',()=>{
+ const env={DREAMSTORE_V2_STAGING:'1',DREAMSTORE_V2_PROJECT_ID:'demo-dreamstore-stage',
+  FIRESTORE_EMULATOR_HOST:'127.0.0.1:8080',FIREBASE_AUTH_EMULATOR_HOST:'127.0.0.1:9099',
+  FIREBASE_STORAGE_EMULATOR_HOST:'127.0.0.1:9199'};
+ assert.throws(()=>assertIsolatedV2Environment({...env,DREAMSTORE_V2_PROJECT_ID:'dulcet-trees-qk6n5',DREAMSTORE_V2_MODE:'cloud-staging'}));
+ assert.throws(()=>assertIsolatedV2Environment({...env,DREAMSTORE_V2_PROJECT_ID:'dreamstore-stage-1',DREAMSTORE_V2_CLOUD_STAGING:'1'}));
+ assert.throws(()=>assertIsolatedV2Environment({...env,FIRESTORE_EMULATOR_HOST:'firestore.googleapis.com:443'}));
 });
 
 test('replaced original file is scheduled for bounded staging cleanup only after publish commits',async()=>{

@@ -2,7 +2,7 @@
 
 ## Release gates
 
-**Phase 6 status:** disputes, Admin store controls, Pro entitlements/waitlist and safe financial read contracts are implemented and tested in isolated emulators. This is not a cloud staging approval or production readiness statement.
+**Phase 7 status:** read-only legacy Buyer restoration, safe OAuth-diagnostics compatibility, and bounded guest assistant compatibility are implemented and under isolated emulator/API verification. Cloud staging remains blocked until a dedicated staging Firebase project and Cloud Run service identity are provisioned and reviewed. This is not a cloud staging approval or production readiness statement.
 
 **Gate 0 (current):** V2 code isolated, modular typed interfaces, automated contract/API tests. No frontend redesign. Production and user data unchanged.
 
@@ -75,3 +75,11 @@ Never paste Firebase ID tokens, refresh tokens, service-account secrets, passwor
 - Approved disputes against unpaid invoices adjust only unpaid integer minor units. Paid or partially paid invoice balances remain unchanged and require explicit human reconciliation; no automatic credit/refund is created.
 - Rollback: stop the emulator/V2 process. The production `scripts/start.mjs`, Dockerfile and V1 backend are unchanged. No production data needs restoration because this phase only writes synthetic emulator state.
 - Release verdict: **PHASE 6 IN PROGRESS** until independent cloud staging, authenticated Buyer/Seller/Admin flows, distributed protections and rollback rehearsal are verified. Production cutover requires a separate explicit approval.
+
+## Phase 7 compatibility slice
+
+- Implemented: legacy Buyer profile restoration on exact verified Firebase UID → historical `ledger.buyerId`, read-only projection; V1 Seller restore remains based on exact Store ownership. Existing role docs cannot fall through to historical role inference.
+- Implemented: V2 OAuth diagnostics compatibility response reports external Firebase/Google registration as unqueried/unavailable; V2 never probes the production project's public API key from emulator staging.
+- Implemented: guest Gemini chat validation and local fallback; configured model calls are gated by `DREAMSTORE_V2_GEMINI_ENABLED=true` plus a server-only API key, with capped input/output, per-process rate limit, concurrency limit and timeout.
+- Replaced: email signup, signin, verification, reset and signout remain in Firebase Web SDK. V2 legacy server-password endpoints, password migration/reset tokens and server sessions stay unsupported. Admin bootstrap, internal runtime test suite and overdue simulation remain intentionally disabled.
+- Cloud staging deployment is not configured or verified. Current V2 startup remains emulator-only; do not supply live credentials to pass this guard. See `STAGING_SETUP.md` for provisioning and validation steps.

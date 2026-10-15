@@ -8,20 +8,20 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 |---|---|---:|---|
 | GET | `/api/health` | 3228 | Implemented in isolated V2 emulator staging |
 | GET | `/api/ready` | 3246 | Implemented in isolated V2 emulator staging |
-| GET | `/api/auth/oauth-diagnostics` | 3287 | Pending — V1 remains authoritative |
-| USE | `/api/auth/email` | 3404 | Pending — V1 remains authoritative |
-| POST | `/api/auth/email/signup` | 3416 | Pending — V1 remains authoritative |
-| POST | `/api/auth/email/signin` | 3498 | Pending — V1 remains authoritative |
-| POST | `/api/auth/email/reset-password` | 3553 | Pending — V1 remains authoritative |
-| POST | `/api/auth/email/signout` | 3699 | Pending — V1 remains authoritative |
-| GET | `/api/auth/email/migration-status` | 3712 | Pending — V1 remains authoritative |
-| POST | `/api/auth/email/migrate` | 3728 | Pending — V1 remains authoritative |
-| GET | `/api/auth/email/reset-audit` | 3745 | Pending — V1 remains authoritative |
+| GET | `/api/auth/oauth-diagnostics` | 3287 | Implemented — V1-compatible safe shape; external Firebase/Google registration is deliberately unqueried in isolated V2 |
+| USE | `/api/auth/email` | 3404 | Intentionally unsupported in V2 — Firebase Web SDK is the only supported password/session mechanism; legacy server sessions are not migrated |
+| POST | `/api/auth/email/signup` | 3416 | Replaced by existing Firebase `createUserWithEmailAndPassword` flow; API fallback is not enabled in V2 |
+| POST | `/api/auth/email/signin` | 3498 | Replaced by existing Firebase `signInWithEmailAndPassword` flow; API fallback is not enabled in V2 |
+| POST | `/api/auth/email/reset-password` | 3553 | Replaced by Firebase `sendPasswordResetEmail`; legacy token reset is disabled in V2 |
+| POST | `/api/auth/email/signout` | 3699 | Replaced by Firebase client `signOut`; legacy server sessions are unsupported |
+| GET | `/api/auth/email/migration-status` | 3712 | Intentionally disabled — no parallel password database or migration |
+| POST | `/api/auth/email/migrate` | 3728 | Intentionally disabled — existing Firebase Auth identities remain authoritative |
+| GET | `/api/auth/email/reset-audit` | 3745 | Intentionally disabled — V2 does not issue legacy reset tokens |
 | GET | `/api/payments/gateway-status` | 3804 | Implemented — reports disabled gateways without inspecting or exposing credentials |
 | GET | `/api/payments/payoneer-readiness` | 3838 | Implemented — manual settlement only; API processing is disabled in V2 |
 | GET | `/api/admin/verify-session` | 3894 | Implemented in isolated V2 emulator staging |
 | POST | `/api/admin/verify-session` | 3895 | Implemented in isolated V2 emulator staging |
-| POST | `/api/admin/bootstrap-super-admin` | 3900 | Pending — V1 remains authoritative |
+| POST | `/api/admin/bootstrap-super-admin` | 3900 | Intentionally disabled — Admin claims are provisioned through trusted Firebase administration, never public bootstrap |
 | GET | `/api/users/profile` | 4477 | Implemented in isolated V2 emulator staging |
 | POST | `/api/users/profile` | 4478 | Implemented in isolated V2 emulator staging |
 | POST | `/api/users/role` | 4479 | Implemented in isolated V2 emulator staging |
@@ -86,8 +86,8 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 | POST | `/api/webhooks/:provider` | 7973 | Implemented as disabled — always returns truthful 503; no gateway webhook is active |
 | POST | `/api/downloads/token` | 7977 | Implemented — Buyer-owned paid order only |
 | POST | `/api/delivery/verify-download` | 7991 | Implemented — signed scoped expiring one-use access to private Storage bytes |
-| POST | `/api/test-suite/run` | 8274 | Pending — V1 remains authoritative |
-| POST | `/api/gemini/chat` | 8532 | Pending — V1 remains authoritative |
+| POST | `/api/test-suite/run` | 8274 | Intentionally disabled — use isolated automated tests; runtime route would expose internal diagnostics |
+| POST | `/api/gemini/chat` | 8532 | Implemented — guest-compatible bounded local fallback; external Gemini use requires explicit staging flag and server key |
 
 ## Frontend API consumers inspected
 
@@ -108,8 +108,11 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 - Store moderation and Pro changes require the configured verified Super Admin. Suspension retains V1's `Pending` store status and adds `adminControlStatus: suspended`; Seller edits cannot reactivate it. Pro grants/revokes update the Store plan and deterministic `subscriptions/sub-{storeId}` row transactionally. Seller self-service only joins the Pro waitlist.
 - Ledger endpoints return at most 200 scoped entries per page. Order notification lookup never sends email and returns no addresses or tokens. Payoneer readiness always reports manual settlement in V2.
 - `/api/commission/admin-overview` currently returns financial records only. Store roster and visit/conversion metrics are omitted rather than fabricated.
-- Unsupported: auth email migration/reset routes, OAuth diagnostics, Admin bootstrap, synthetic test-suite/Gemini routes, commission overdue simulation and other unlisted V1 APIs. They return 501 on isolated V2 and remain on V1 in production. Automated payment webhooks are intentionally disabled and return 503.
-- Blocked pending provider/identity contracts: email/password migration and reset delivery, Google OAuth diagnostics, live gateway callbacks, order email sending, AI chat and legacy returning-Buyer migration. No provider delivery or identity migration is fabricated in V2.
+- Unsupported: legacy email/password API fallback and migration/reset token routes, Admin bootstrap, runtime test-suite, commission overdue simulation and other unlisted V1 APIs return 501 on isolated V2. They remain on V1 in production. Automated payment webhooks return 503.
+- Firebase email signup/signin/password reset use the existing Firebase Web SDK; V2 will not create a parallel password database. OAuth diagnostics expose only an unavailable/unverified result in isolated V2. Confirm Firebase authorized domains and Google OAuth redirect registrations in the dedicated staging project.
+- Legacy Buyer restoration is implemented as a read-only profile projection only when a verified Firebase identity has an exact UID match in `ledger.buyerId`; email matching alone never restores ownership. Existing role documents remain authoritative. Seller restoration still requires an owned Store.
+- Gemini chat has a bounded local fallback. External API generation is disabled unless `DREAMSTORE_V2_GEMINI_ENABLED=true` and a server-side `GEMINI_API_KEY` are both configured; per-IP request and process concurrency limits are applied. No credential is returned. This process-local limiter is not a production edge control.
+- Blocked pending provider contracts: live Firebase/Google OAuth verification in V2, legacy password migration/reset delivery, live gateway callbacks, order email sending, and real Gemini billing/quota controls. No provider delivery or identity migration is fabricated in V2.
 
 ## Compatibility note
 

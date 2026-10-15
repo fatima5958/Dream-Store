@@ -37,7 +37,7 @@ These are source-observed collection calls; nested collections, REST paths, and 
 - API profile response includes `createdAtIso`, `updatedAtIso`, `needsOnboarding`, and role `permissions`.
 - Seller store identifiers use the existing `store-` + first 20 characters of Firebase UID convention; verify actual `ownerId` on the stored document.
 - A verified Admin role requires both matching `SUPER_ADMIN_UID` and signed Firebase custom claims. A Firestore field alone never grants privileged access.
-- V2 currently restores a legacy seller who has a matching **owned** `stores/{canonicalStoreId}` document. Returning buyers found only through historic ledger records still require an isolated migration/compatibility test; V1 stays authoritative until that is complete.
+- V2 restores a legacy Seller only from a Store whose persisted `ownerId` exactly matches the signed Firebase UID. A returning Buyer without a profile is restored as a read-only Buyer projection only when Firebase confirms the email and `ledger.buyerId` exactly matches the UID. Email, customer name, or order number alone is not ownership proof. Existing `users/{uid}` documents are authoritative: unknown or privileged role values do not fall through to legacy role discovery. This path does not write or overwrite a profile document.
 
 ## Creator launch atomicity
 
@@ -65,6 +65,12 @@ These are source-observed collection calls; nested collections, REST paths, and 
 - Paid downloads use a shared server signing secret, order-scoped buyer/product/order/expiry/nonce claims, and authoritative order status. Consumption is transactional, limited to five downloads, rotates the nonce and returns original file bytes only to the authenticated Buyer. Rejection/refund invalidates prior tokens. Public product projections never expose private file references.
 - Production V1 remains authoritative. Paid checkout is hard-blocked in production and disabled by default outside isolated staging. Automated payment gateways and production cutover remain disabled.
 - Never stage against real customer data in a write-enabled mode; use emulator fixtures and compare anonymized read-only examples.
+
+## Phase 7 assistant and auth compatibility
+
+- Firebase Email/Password signup, signin, verification, reset, and signout remain on the existing Firebase Web SDK. V2 does not accept passwords, issue password tokens, store passwords, or migrate legacy `/tmp` sessions. Legacy `/api/auth/email/*` calls are unsupported in V2; no parallel credential database is introduced.
+- `/api/auth/oauth-diagnostics` preserves the frontend JSON shape but reports live Identity Toolkit and Google redirect status as unavailable. Isolated V2 does not query the production Firebase project or infer actual Google OAuth registration from code constants. Check registration in the staging Firebase and Google Cloud consoles.
+- `/api/gemini/chat` is guest-compatible and validates role, history, message length, aggregate input and context. The default is a local bounded response and no network call. External Gemini requests require both `DREAMSTORE_V2_GEMINI_ENABLED=true` and a server-only `GEMINI_API_KEY`, cap output tokens, request count and concurrent calls, and report `freeTier:false` when using the configured provider. Provider errors do not expose key/error details. Process-local limits are only staging protection, not production quota controls.
 
 ## Migration constraints
 

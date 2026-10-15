@@ -17,6 +17,7 @@ import { createProcessRateLimiter } from './modules/rate-limit.ts';
 import { registerAdminManagementRoutes } from './modules/admin-routes.ts';
 import { registerSubscriptionRoutes } from './modules/subscriptions.ts';
 import { registerFinancialReadRoutes } from './modules/financial-read-contracts.ts';
+import { registerAssistantRoutes, registerOAuthDiagnosticsRoute } from './modules/assistant.ts';
 
 const jsonRoute = (callback: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: (error?: unknown) => void) => {
@@ -69,6 +70,9 @@ export function createV2App(deps: V2Dependencies) {
     const ready = await deps.readiness.check();
     res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready' });
   }));
+
+  registerOAuthDiagnosticsRoute(app);
+  registerAssistantRoutes(app, deps.assistant, { enabled: deps.assistantEnabled === true });
 
   // Runtime readiness reports capability only. V2 intentionally does not
   // inspect or expose live payment credentials and never enables live gateways.

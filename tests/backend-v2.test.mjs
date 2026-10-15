@@ -44,6 +44,8 @@ function fixture(options = {}) {
     finance: options.finance,
     management: options.management,
     subscriptions: options.subscriptions,
+    assistant: options.assistant,
+    assistantEnabled: options.assistantEnabled === true,
     allowWrites: options.allowWrites === true,
   };
   const app = createV2App(deps);
@@ -80,6 +82,85 @@ test('V2 staging health and readiness never claim Firebase success without it', 
     const [readyStatus, ready] = await get('/api/ready');
     assert.equal(readyStatus, 503);
     assert.deepEqual(ready, { status: 'not_ready' });
+  });
+});
+
+test('OAuth diagnostic preserves the UI contract without claiming live Firebase/Google registration', async () => {
+  const { app } = fixture();
+  await withServer(app, async request => {
+    const [status, result] = await request('/api/auth/oauth-diagnostics?hostname=localhost', undefined, undefined, 'GET');
+    assert.equal(status, 200);
+    assert.equal(result.ok, true);
+    assert.equal(result.requestedHostname, 'localhost');
+    assert.equal(result.identityToolkitReachable, false);
+    assert.equal(result.isHostnameAuthorized, null);
+    assert.equal(result.registeredRedirectUrisSource, 'not-queried-in-isolated-v2');
+    assert.equal(Object.hasOwn(result, 'apiKey'), false);
+    assert.equal(Object.hasOwn(result, 'clientSecret'), false);
+  });
+});
+
+test('guest Gemini assistant validates bounded history and keeps a truthful local fallback', async () => {
+  const { app } = fixture();
+  await withServer(app, async request => {
+    const [ok, response] = await request('/api/gemini/chat', undefined, {
+      messages: [{ role: 'user', text: 'How does payment verification work?' }],
+      roleId: 'buyer_concierge', storeContext: { storeName: 'Moon Books', currency: 'PKR', productCount: 3 },
+    });
+    assert.equal(ok, 200);
+    assert.equal(response.roleId, 'buyer_concierge');
+    assert.equal(response.freeTier, true);
+    assert.match(response.reply, /reference alone is not proof/i);
+    assert.equal((await request('/api/gemini/chat', undefined, { messages: [{ role: 'system', text: 'bad role' }] }))[0], 400);
+    assert.equal((await request('/api/gemini/chat', undefined, { messages: [{ role: 'user', text: 'x'.repeat(4001) }] }))[0], 413);
+    assert.equal((await request('/api/gemini/chat', undefined, { messages: [{ role: 'user', text: 'ok' }], storeContext: { productCount: '999999999' } }))[0], 200);
+  });
+});
+
+test('Gemini provider receives only validated context and never exposes provider errors or credentials', async () => {
+  let seen;
+  const { app } = fixture({ assistant: { async generate(input) { seen = input; return 'A concise generated answer.'; } }, assistantEnabled: true });
+  await withServer(app, async request => {
+    const [status, response] = await request('/api/gemini/chat', undefined, {
+      messages: [{ role: 'model', text: 'Welcome' }, { role: 'user', text: 'Help me write copy' }],
+      roleId: 'copywriter', modelTier: 'general', storeContext: { storeName: '  Studio  ', currency: 'PKR', productCount: 2, paymentSecret: 'do-not-forward' },
+    });
+    assert.equal(status, 200);
+    assert.equal(response.reply, 'A concise generated answer.');
+    assert.equal(response.freeTier, false);
+    assert.equal(seen.model, 'gemini-3-flash-preview');
+    assert.equal(seen.contents.length, 1);
+    assert.match(seen.systemInstruction, /name=Studio/);
+    assert.doesNotMatch(seen.systemInstruction, /do-not-forward/);
+  });
+});
+
+test('Gemini provider has a process-wide concurrent-call cap', async () => {
+  let starts = 0;
+  const releases = [];
+  const { app } = fixture({ assistantEnabled: true, assistant: { generate() {
+    starts++;
+    return new Promise(resolve => releases.push(resolve));
+  } } });
+  await withServer(app, async request => {
+    const body = { messages: [{ role: 'user', text: 'hello' }] };
+    const pending = Array.from({ length: 4 }, () => request('/api/gemini/chat', undefined, body));
+    for (let attempt = 0; attempt < 30 && starts < 3; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(starts, 3);
+    for (const release of releases) release('bounded answer');
+    const results = await Promise.all(pending);
+    assert.equal(results.filter(([status]) => status === 200).length, 3);
+    assert.equal(results.filter(([status]) => status === 429).length, 1);
+  });
+});
+
+test('Gemini provider failures return generic unavailable response without provider details', async () => {
+  const { app } = fixture({ assistantEnabled: true, assistant: { async generate() { throw new Error('private-provider-key-and-response'); } } });
+  await withServer(app, async request => {
+    const [status, response] = await request('/api/gemini/chat', undefined, { messages: [{ role: 'user', text: 'hello' }] });
+    assert.equal(status, 503);
+    assert.equal(response.error, 'This service is temporarily unavailable.');
+    assert.doesNotMatch(JSON.stringify(response), /private-provider-key/);
   });
 });
 

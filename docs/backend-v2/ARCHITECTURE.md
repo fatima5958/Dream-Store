@@ -1,6 +1,6 @@
 # DreamStore Backend V2 — Staging Architecture
 
-## State: PHASE 6 IMPLEMENTED; REAL STAGING PENDING (not a production replacement)
+## State: PHASE 7 IN PROGRESS; CLOUD STAGING BLOCKED (not a production replacement)
 
 V2 lives beside the existing `server.ts`. It has **not** replaced the production server and has not touched the approved React visual components.
 
@@ -22,6 +22,7 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
        ├── modules/admin-routes.ts [verified Super Admin store controls]
        ├── modules/subscriptions.ts [Seller-scoped reads and waitlist-only self service]
        ├── modules/financial-read-contracts.ts [scoped ledger, redacted email status, Payoneer readiness]
+       ├── modules/assistant.ts [bounded guest assistant, default local fallback, V2-safe OAuth diagnostic response]
        ├── modules/finance-repository.ts [durable named-Firestore transactions and private file reads]
        ├── modules/downloads.ts [scoped expiring signatures, one-use authorization]
        ├── modules/policy.ts  [shared owner/email/image validation]
@@ -46,6 +47,7 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
 1. Client signs in using the existing Firebase Authentication UI. The UI is unchanged in this phase.
 2. V2 validates a signed Firebase ID token including revocation with Firebase Admin.
 3. V2 resolves Buyer/Seller roles only from authoritative Firestore, with an ownership-verified fallback for an existing Seller store.
+   A legacy Buyer projection is permitted only for a verified Firebase user with an exact UID match in historical `ledger.buyerId`; it is read-only and never grants Seller/Admin.
 4. An authorized Buyer/Seller onboarding write is a Firestore transaction in isolated emulator tests only.
 5. Super Admin access additionally requires server-configured UID + Firebase custom claims + email verification.
 6. Invalid/revoked sessions return 401; Firebase Admin infrastructure failures return 503 without forcing client logout.
@@ -64,6 +66,8 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
 - Cloud IAM and real deployment verification remain pending. V2 paid checkout is opt-in for isolated non-production staging and hard-blocked in production; it has not been exercised against real payment rails. Manual payment references and Admin settlement decisions require external evidence review by a person; no provider API is integrated.
 - Independent real Cloud staging, Admin and Seller live account claim checks, V1/V2 data comparison, provider payment evidence, real customer email delivery and rollback rehearsal remain pending. Email route is status-only; no provider is configured. Upload cleanup requires the manual staging reconciliation script. No distributed rate limiter is configured; any process-local throttle is not a production control.
 - Full buyer/seller/Admin staging journey, emulator credential isolation, deployment rollback rehearsal and cutover review remain prerequisites for any traffic switch.
+- Cloud V2 mode is not enabled: no dedicated staging Firebase project and Cloud Run service identity have been provided and verified. The executable entrypoint continues to accept only `demo-*` plus loopback Auth/Firestore/Storage emulators. Do not bypass that guard to test a cloud deployment.
+- Guest assistant requests are bounded and use a local response unless both the explicit Gemini feature flag and server key are present. The per-process limiter is not suitable for public production traffic.
 ## Public Store Directory (implemented)
 
 - `GET /api/stores` queries active stores in the existing named Firestore database; no cached demo stores are used.

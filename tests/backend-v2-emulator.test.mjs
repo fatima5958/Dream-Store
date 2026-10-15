@@ -49,7 +49,7 @@ before(async () => {
   // Only the explicitly guarded demo project is reset. Never production data.
   const reset = await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/emulator/v1/projects/${projectId}/databases/${config.firestoreDatabaseId}/documents`, { method: 'DELETE' });
   assert.equal(reset.ok, true);
-  for (const name of ['seller','other','buyer','buyer2','admin','claim99','claim100','claim101']) {
+  for (const name of ['seller','other','buyer','buyer2','legacyBuyer','admin','claim99','claim100','claim101']) {
     const uid = 'v2-' + name;
     await auth.deleteUser(uid).catch(error => { if (error.code !== 'auth/user-not-found') throw error; });
     identities[name] = await auth.createUser({ uid, email: name+'@example.test', emailVerified: true, password:'Emulator-only-123!' });
@@ -247,6 +247,19 @@ test('real Firestore competing founder claims stop exactly at 100', async () => 
   assert.equal(attempts.filter(result=>result.status===201).length,2);
   assert.equal(attempts.filter(result=>result.body.code==='creator-spots-full').length,1);
   assert.equal((await db.collection('creator_launch_campaigns').doc('first-100-creators').get()).get('claimedCount'),100);
+});
+
+test('returning Buyer with exact historical UID order restores Buyer access without profile mutation', async () => {
+  const uid = identities.legacyBuyer.uid;
+  await db.collection('ledger').doc('DS-historic-buyer').set({ orderNumber:'DS-historic-buyer', buyerId:uid,
+    customerName:'Legacy Buyer', customerEmail:'legacy@example.test', sellerId:'historic-seller', paymentStatus:'Paid' });
+  const restored = await request('/api/users/profile','legacyBuyer');
+  assert.equal(restored.status,200);
+  assert.equal(restored.body.profile.role,'buyer');
+  assert.equal(restored.body.profile.onboardingCompleted,true);
+  assert.equal(restored.body.profile.email,'legacybuyer@example.test');
+  assert.equal((await db.collection('users').doc(uid).get()).exists,false,'restoration is a read-only compatibility projection');
+  assert.equal((await request('/api/orders/list','legacyBuyer')).body.orders.length,1);
 });
 test('real emulator Admin claims and invalid tokens remain server-authorized', async () => {
   assert.equal((await request('/api/admin/verify-session','admin')).status,200);
