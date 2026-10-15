@@ -170,3 +170,17 @@ test('suspended stores reject both upsert and editing despite cached records', a
     { storeId: 'store-seller-test', updates: { storeName: 'Trying' } }, token());
   assert.equal(change.status, 403, JSON.stringify(await change.json()));
 });
+
+test('commission proof must have a durable invoice and valid reference', async t => {
+  const origin = await boot(t);
+  const missing = await request(origin, '/api/commission/submit-payment',
+    { invoiceId: 'inv-unknown', paymentMethod: 'bank_transfer', paymentReference: 'TEST-123' }, token());
+  assert.equal(missing.status, 404);
+  assert.notEqual((await missing.json()).ok, true);
+  const invalid = await request(origin, '/api/commission/submit-payment',
+    { invoiceId: 'inv-unknown', paymentReference: '' }, token());
+  assert.equal(invalid.status, 400);
+  const spoof = await request(origin, '/api/commission/submit-payment',
+    { invoiceId: 'inv-unknown', sellerId: 'other-seller', paymentReference: 'ABC-123' }, token());
+  assert.equal(spoof.status, 403);
+});

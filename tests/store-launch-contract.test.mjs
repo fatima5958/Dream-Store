@@ -215,3 +215,14 @@ test('seller payment settings never create a privileged cross-store legacy alias
   assert.doesNotMatch(lookup, /fatimatech|cleanAlnum|store-fatima-tech/);
   assert.match(lookup, /s\.storeSlug\.toLowerCase\(\) === cleanLower/);
 });
+
+test('commission proof submits through a durable atomic Firestore transaction', () => {
+  const segment = server.slice(server.indexOf('// Seller-submitted commission proof'),
+    server.indexOf('// POST /api/commission/verify-payment'));
+  assert.match(segment, /await db\.runTransaction/);
+  assert.match(segment, /tx\.create\(reservationRef/);
+  assert.match(segment, /tx\.create\(paymentRef/);
+  assert.match(segment, /tx\.update\(invoiceRef/);
+  assert.ok(segment.indexOf('await db.runTransaction') < segment.indexOf('commissionPayments.set'));
+  assert.doesNotMatch(segment, /syncFirestoreDoc\(/);
+});

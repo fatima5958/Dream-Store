@@ -7328,148 +7328,119 @@ async function startServer() {
     }
   }));
 
-  // POST /api/commission/submit-payment — Seller submits commission payment details & proof
+  // Seller-submitted commission proof is never payment verification. A unique
+  // reference reservation prevents two server instances accepting the same
+  // claimed transfer. Only the Admin SDK may create invoice/payment records.
   app.post('/api/commission/submit-payment', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
-
-    const {
-      invoiceId,
-      sellerId: rawBodySellerId,
-      amountMinor,
-      paymentMethod = 'jazzcash',
-      paymentReference,
-      proofNote = '',
-    } = req.body || {};
-
-    if (!isSuper && rawBodySellerId && String(rawBodySellerId).trim() !== user.uid) {
-      res.status(403).json({
-        error: `Forbidden: Spoofed sellerId "${rawBodySellerId}" does not match verified token UID "${user.uid}".`,
-      });
+    const { invoiceId, sellerId: submittedSellerId, amountMinor, paymentMethod = 'bank_transfer',
+      paymentReference, proofNote = '' } = req.body || {};
+    const id = String(invoiceId || '').trim();
+    const ref = String(paymentReference || '').trim().toUpperCase();
+    const method = String(paymentMethod || '').trim();
+    if (!/^[a-zA-Z0-9_-]{3,128}$/.test(id) || ref.length < 3 || ref.length > 160 ||
+        method.length < 2 || method.length > 60 || String(proofNote).length > 500) {
+      res.status(400).json({ error: 'Valid invoice, transfer reference and payment method are required.' });
       return;
     }
-
-    if (!invoiceId) {
-      res.status(400).json({ error: 'invoiceId is required.' });
+    if (!isSuper && submittedSellerId && String(submittedSellerId) !== user.uid) {
+      res.status(403).json({ error: 'You cannot submit commission proof for another seller.' });
       return;
     }
-
-    const inv = commissionInvoices.get(String(invoiceId));
-    if (!inv) {
-      res.status(404).json({ error: `Commission invoice "${invoiceId}" not found.` });
+    if (!adminFirestoreDb || !(await refreshFinancialReadiness())) {
+      res.status(503).json({ error: 'Commission database is unavailable. No proof was accepted.' });
       return;
     }
-
-    if (!isSuper && user.uid !== inv.sellerId) {
-      res.status(403).json({
-        error: `Forbidden: Seller "${user.uid}" cannot submit payment for invoice belonging to "${inv.sellerId}".`,
-      });
-      return;
-    }
-
-    const cleanRef = String(paymentReference || '').trim().toUpperCase();
-    if (cleanRef.length < 3) {
-      res.status(400).json({
-        error: 'Please provide a valid payment transaction reference ID (at least 3 characters).',
-      });
-      return;
-    }
-
-    await withSellerLock(inv.sellerId, () => {
-      if (inv.status === 'paid' || inv.remainingBalanceMinor <= 0) {
-        res.status(409).json({
-          error: `Invoice "${inv.invoiceNumber}" has already been settled in full.`,
-        });
-        return;
-      }
-
-      // Block duplicate payment reference submissions
-      const duplicatePayment = Array.from(commissionPayments.values()).find(
-        (p) =>
-          p.status !== 'rejected' &&
-          p.paymentReference.trim().toUpperCase() === cleanRef
-      );
-      if (duplicatePayment) {
-        res.status(409).json({
-          duplicateReference: true,
-          error: `Duplicate commission payment reference "${cleanRef}" has already been submitted (${duplicatePayment.paymentId}).`,
-        });
-        return;
-      }
-
-      const requestedMinor =
-        amountMinor !== undefined && Number(amountMinor) > 0
-          ? Math.min(inv.remainingBalanceMinor, Math.round(Number(amountMinor)))
-          : inv.remainingBalanceMinor;
-
+    const db = adminFirestoreDb;
+    try {
       const nowIso = new Date().toISOString();
-      const paymentId = `cpay-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`;
-      const paymentRecord: CommissionPaymentSubmission = {
-        paymentId,
-        invoiceId: inv.invoiceId,
-        invoiceNumber: inv.invoiceNumber,
-        sellerId: inv.sellerId,
-        storeId: inv.storeId,
-        currency: inv.currency,
-        amountMinor: requestedMinor,
-        paymentMethod: String(paymentMethod),
-        paymentReference: cleanRef,
-        proofNote: String(proofNote || 'Commission transfer receipt submitted by seller.').slice(
-          0,
-          500
-        ),
-        status: 'submitted',
-        submittedByUid: user.uid,
-        createdAtIso: nowIso,
-        updatedAtIso: nowIso,
-      };
-
-      commissionPayments.set(paymentId, paymentRecord);
-      inv.status = 'payment_submitted';
-      inv.lastPaymentMethod = String(paymentMethod);
-      inv.lastPaymentReference = cleanRef;
-      inv.lastPaymentProofNote = paymentRecord.proofNote;
-      inv.submittedAtIso = nowIso;
-
-      syncFirestoreDoc(
-        'commission_payments',
-        paymentId,
-        paymentRecord as unknown as Record<string, unknown>,
-        user.rawToken
-      );
-      syncFirestoreDoc(
-        'commission_invoices',
-        inv.invoiceId,
-        inv as unknown as Record<string, unknown>,
-        user.rawToken
-      );
-
-      appendAuditEntry(
-        {
-          orderNumber: inv.orderNumbers[0] || inv.invoiceNumber,
-          orderId: inv.invoiceId,
-          sellerId: inv.sellerId,
-          actorUid: user.uid,
-          action: 'COMMISSION_PAYMENT_SUBMITTED',
-          previousStatus: 'open',
-          newStatus: 'payment_submitted',
-          verificationMode: 'Pending Admin Verification',
-          detail: `Seller (${user.uid}) submitted commission payment of ${(
-            requestedMinor / 100
-          ).toFixed(2)} ${inv.currency} for ${inv.invoiceNumber} via ${paymentMethod} (Ref: ${cleanRef}). Awaiting Super Admin verification.`,
-        },
-        user.rawToken
-      );
-
-      const summary = reconcileSellerCommissionState(inv.sellerId, Date.now(), user.rawToken);
-      res.json({
-        ok: true,
-        payment: paymentRecord,
-        invoice: inv,
-        commissionSummary: summary,
+      const paymentId = `cpay-${crypto.randomUUID()}`;
+      const invoiceRef = db.collection('commission_invoices').doc(id);
+      const paymentRef = db.collection('commission_payments').doc(paymentId);
+      const referenceKey = crypto.createHash('sha256').update(ref).digest('hex');
+      const reservationRef = db.collection('commission_payment_refs').doc(referenceKey);
+      const committed = await db.runTransaction(async tx => {
+        const [invoiceSnapshot, existingRef] = await Promise.all([
+          tx.get(invoiceRef), tx.get(reservationRef),
+        ]);
+        if (!invoiceSnapshot.exists) {
+          throw Object.assign(new Error('Commission invoice not found.'), { code: 'invoice-not-found' });
+        }
+        const invoice = invoiceSnapshot.data() as CommissionInvoiceRecord;
+        if (!isSuper && invoice.sellerId !== user.uid) {
+          throw Object.assign(new Error('Invoice belongs to another seller.'), { code: 'forbidden' });
+        }
+        if (existingRef.exists) {
+          throw Object.assign(new Error('Transfer reference already submitted.'), { code: 'duplicate-reference' });
+        }
+        if (invoice.status === 'paid' || Number(invoice.remainingBalanceMinor) <= 0) {
+          throw Object.assign(new Error('Invoice already settled.'), { code: 'already-settled' });
+        }
+        const remainder = Number(invoice.remainingBalanceMinor);
+        const requested = amountMinor === undefined
+          ? remainder : Number(amountMinor);
+        if (!Number.isSafeInteger(requested) || requested <= 0 || requested > remainder) {
+          throw Object.assign(new Error('Invalid transfer amount.'), { code: 'invalid-amount' });
+        }
+        const payment: CommissionPaymentSubmission = {
+          paymentId, invoiceId: id, invoiceNumber: invoice.invoiceNumber,
+          sellerId: invoice.sellerId, storeId: invoice.storeId,
+          currency: invoice.currency, amountMinor: requested,
+          paymentMethod: method, paymentReference: ref,
+          proofNote: String(proofNote).slice(0, 500),
+          status: 'submitted', submittedByUid: user.uid,
+          createdAtIso: nowIso, updatedAtIso: nowIso,
+        };
+        const updatedInvoice: CommissionInvoiceRecord = {
+          ...invoice, status: 'payment_submitted',
+          lastPaymentMethod: method, lastPaymentReference: ref,
+          lastPaymentProofNote: payment.proofNote,
+          submittedAtIso: nowIso,
+        };
+        tx.create(paymentRef, payment as unknown as Record<string, unknown>);
+        tx.create(reservationRef, { paymentId, invoiceId: id, sellerId: invoice.sellerId, createdAtIso: nowIso });
+        tx.update(invoiceRef, {
+          status: updatedInvoice.status, lastPaymentMethod: method,
+          lastPaymentReference: ref, lastPaymentProofNote: payment.proofNote,
+          submittedAtIso: nowIso,
+        });
+        return { payment, invoice: updatedInvoice };
       });
-    });
+      commissionPayments.set(committed.payment.paymentId, committed.payment);
+      commissionInvoices.set(committed.invoice.invoiceId, committed.invoice);
+      appendAuditEntry({
+        orderNumber: committed.invoice.orderNumbers[0] || committed.invoice.invoiceNumber,
+        orderId: id, sellerId: committed.invoice.sellerId, actorUid: user.uid,
+        action: 'COMMISSION_PAYMENT_SUBMITTED', previousStatus: 'open',
+        newStatus: 'payment_submitted', verificationMode: 'Pending Admin Verification',
+        detail: `Seller submitted an unverified commission transfer reference for ${committed.invoice.invoiceNumber}. Awaiting bank statement confirmation.`,
+      }, user.rawToken);
+      res.json({ ok: true, payment: committed.payment, invoice: committed.invoice,
+        commissionSummary: reconcileSellerCommissionState(committed.invoice.sellerId, Date.now(), user.rawToken) });
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'invoice-not-found') {
+        res.status(404).json({ error: 'Commission invoice not found.' });
+        return;
+      }
+      if (code === 'forbidden') {
+        res.status(403).json({ error: 'Invoice belongs to another seller.' });
+        return;
+      }
+      if (code === 'duplicate-reference' || code === 'already-settled') {
+        res.status(409).json({ error: code === 'duplicate-reference' ?
+          'Transfer reference already submitted.' : 'Commission invoice already settled.' });
+        return;
+      }
+      if (code === 'invalid-amount') {
+        res.status(400).json({ error: 'Transfer amount must be positive and at most the remaining balance.' });
+        return;
+      }
+      console.error('Durable commission proof submission failed:', err);
+      res.status(503).json({ error: 'Commission proof was not saved. Please retry; no payment was verified.' });
+    }
   }));
 
   // POST /api/commission/verify-payment (and /api/admin/commission/verify-payment)
