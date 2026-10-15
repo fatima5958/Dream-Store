@@ -6880,93 +6880,84 @@ async function startServer() {
     });
   }));
 
-  // 10B. Commission Settlement & Dispute Status Transition Endpoint
+  // A seller may dispute a fee, but must not mark it paid or reverse money.
+  // Only the verified payment-proof flow may mark an invoice as settled.
   app.post('/api/ledger/commission-status', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
-
     const { orderNumber, newCommissionStatus, note } = req.body || {};
-    const entry = await loadFinancialOrder(String(orderNumber));
-    if (!entry) {
-      res.status(404).json({ error: `Ledger record "${orderNumber}" not found.` });
+    const number = String(orderNumber || '').trim();
+    const newStatus = String(newCommissionStatus || '').trim();
+    const detail = String(note || '').trim();
+    if (!/^[a-zA-Z0-9_-]{2,128}$/.test(number)) {
+      res.status(400).json({ error: 'Valid order number is required.' });
       return;
     }
-
-    const isOrderSeller = user.uid === entry.sellerId;
-
-    if (!isSuper && !isOrderSeller) {
-      res.status(403).json({
-        error: 'Forbidden: Only the order seller or verified Super Admin can update commission status.',
+    if (newStatus === 'paid' || newStatus === 'reversed') {
+      res.status(409).json({ error: 'Payment settlement and refunds require the audited, dedicated financial endpoints.' });
+      return;
+    }
+    if (newStatus !== 'disputed' && !(isSuper && newStatus === 'outstanding')) {
+      res.status(403).json({ error: 'Only a documented dispute may be submitted by a seller.' });
+      return;
+    }
+    if (newStatus === 'disputed' && detail.length < 10) {
+      res.status(400).json({ error: 'Explain the commission dispute in at least 10 characters.' });
+      return;
+    }
+    if (!(await ensureFinancialDatabaseReady(res))) return;
+    const db = adminFirestoreDb!;
+    try {
+      const ledgerRef = db.collection('ledger').doc(number);
+      const updated = await db.runTransaction(async tx => {
+        const snapshot = await tx.get(ledgerRef);
+        if (!snapshot.exists) return null;
+        const existing = snapshot.data() as LedgerEntry;
+        if (!isSuper && existing.sellerId !== user.uid) {
+          throw Object.assign(new Error('Not this seller.'), { code: 'forbidden' });
+        }
+        if (existing.paymentStatus !== 'Paid' ||
+            !['outstanding', 'disputed'].includes(existing.commissionStatus)) {
+          throw Object.assign(new Error('This order cannot be disputed or reset.'), { code: 'conflict' });
+        }
+        if (existing.commissionStatus === newStatus) {
+          throw Object.assign(new Error('Status already applied.'), { code: 'conflict' });
+        }
+        const updatedAtIso = new Date().toISOString();
+        tx.update(ledgerRef, {
+          commissionStatus: newStatus, updatedAtIso,
+          ...(newStatus === 'disputed' ? { commissionDisputeNote: detail.slice(0, 500) } : {}),
+        });
+        return { ...existing, commissionStatus: newStatus as CommissionStatus, updatedAtIso };
       });
-      return;
-    }
-
-    if (newCommissionStatus === 'paid' && !isSuper) {
-      res.status(403).json({
-        error: 'Forbidden: Only the verified Super Admin can mark platform commission as settled/paid.',
-      });
-      return;
-    }
-
-    if (!['outstanding', 'paid', 'reversed', 'disputed'].includes(String(newCommissionStatus))) {
-      res.status(400).json({ error: 'Invalid commissionStatus value.' });
-      return;
-    }
-
-    await withSellerLock(entry.sellerId, () => {
-      const prevComm = entry.commissionStatus;
-      entry.commissionStatus = newCommissionStatus as CommissionStatus;
-      entry.updatedAtIso = new Date().toISOString();
-
-      syncFirestoreDoc(
-        'ledger',
-        entry.orderNumber,
-        entry as unknown as Record<string, unknown>,
-        user.rawToken
-      );
-
-      const auditEntry = appendAuditEntry(
-        {
-          orderNumber: entry.orderNumber,
-          orderId: entry.orderId,
-          sellerId: entry.sellerId,
-          actorUid: user.uid,
-          action:
-            newCommissionStatus === 'disputed' ? 'COMMISSION_DISPUTED' : 'COMMISSION_SETTLED',
-          previousStatus: prevComm,
-          newStatus: String(newCommissionStatus),
-          verificationMode: entry.verificationMode,
-          detail: `Commission status changed from "${prevComm}" to "${newCommissionStatus}". ${note ? String(note).slice(0, 200) : ''}`,
-        },
-        user.rawToken
-      );
-
-      if (newCommissionStatus === 'disputed' || newCommissionStatus === 'reversed') {
-        applyOrderCommissionReversalToInvoice(
-          entry.orderNumber,
-          entry.sellerId,
-          entry.platformCommissionMinor,
-          entry.currency,
-          'order_disputed',
-          user.rawToken
-        );
+      if (!updated) {
+        res.status(404).json({ error: 'Order not found.' });
+        return;
       }
-
-      const commissionSummary = reconcileSellerCommissionState(
-        entry.sellerId,
-        Date.now(),
-        user.rawToken
-      );
-
+      persistentLedger.set(number, updated);
+      appendAuditEntry({
+        orderNumber: number, orderId: updated.orderId, sellerId: updated.sellerId,
+        actorUid: user.uid, action: newStatus === 'disputed' ? 'COMMISSION_DISPUTED' : 'COMMISSION_SETTLED',
+        previousStatus: newStatus === 'disputed' ? 'outstanding' : 'disputed',
+        newStatus, verificationMode: updated.verificationMode,
+        detail: `Commission review requested/updated for order ${number}: ${detail.slice(0, 200)}`,
+      }, user.rawToken);
       res.json({
-        ok: true,
-        orderNumber: entry.orderNumber,
-        commissionStatus: entry.commissionStatus,
-        auditEntry,
-        commissionSummary,
+        ok: true, orderNumber: number, commissionStatus: updated.commissionStatus,
+        commissionSummary: reconcileSellerCommissionState(updated.sellerId, Date.now(), user.rawToken),
       });
-    });
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'forbidden') {
+        res.status(403).json({ error: 'This order belongs to another seller.' });
+      } else if (code === 'conflict') {
+        res.status(409).json({ error: 'Commission status changed or is ineligible for dispute.' });
+      } else {
+        console.error('Commission dispute transaction failed:', err);
+        res.status(503).json({ error: 'Commission dispute was not saved. Retry later.' });
+      }
+    }
   }));
 
   // 10C. SMART 5% COMMISSION MANAGEMENT SYSTEM ENDPOINTS

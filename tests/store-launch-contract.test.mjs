@@ -264,3 +264,12 @@ test('commission invoice issuance is durable, idempotent and uses one currency p
   assert.match(pay, /await issueDurableCommissionInvoicesForSeller\(entry\.sellerId\)/);
   assert.match(pay, /commissionBillingWarning/);
 });
+
+test('dispute status cannot self-approve platform fee or mutate invoices without durability', () => {
+  const section = server.slice(server.indexOf('// A seller may dispute a fee'),
+    server.indexOf('// 10C. SMART 5% COMMISSION MANAGEMENT SYSTEM ENDPOINTS'));
+  assert.match(section, /newStatus === 'paid' \|\| newStatus === 'reversed'/);
+  assert.match(section, /await db\.runTransaction/);
+  assert.doesNotMatch(section, /syncFirestoreDoc\(/);
+  assert.doesNotMatch(section, /applyOrderCommissionReversalToInvoice\(/);
+});

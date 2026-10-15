@@ -197,3 +197,15 @@ test('commission admin cannot auto-approve an invoice without a submitted proof 
   assert.equal(absent.status, 404);
   assert.notEqual((await absent.json()).ok, true);
 });
+
+test('seller cannot self-settle, reverse, or silently dispute commission', async t => {
+  const origin = await boot(t);
+  for (const status of ['paid', 'reversed']) {
+    const attempt = await request(origin, '/api/ledger/commission-status',
+      { orderNumber: 'DS-TEST-01', newCommissionStatus: status }, token());
+    assert.equal(attempt.status, 409);
+    assert.notEqual((await attempt.json()).ok, true);
+  }
+  assert.equal((await request(origin, '/api/ledger/commission-status',
+    { orderNumber: 'DS-TEST-01', newCommissionStatus: 'disputed', note: 'bad' }, token())).status, 400);
+});
