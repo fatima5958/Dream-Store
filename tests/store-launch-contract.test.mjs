@@ -226,3 +226,18 @@ test('commission proof submits through a durable atomic Firestore transaction', 
   assert.ok(segment.indexOf('await db.runTransaction') < segment.indexOf('commissionPayments.set'));
   assert.doesNotMatch(segment, /syncFirestoreDoc\(/);
 });
+
+test('admin commission approval requires actual payment proof and atomic persistence', () => {
+  const segment = server.slice(server.indexOf('const handleVerifyCommissionPaymentOnServer'),
+    server.indexOf("app.post('/api/commission/simulate-overdue'"));
+  assert.match(segment, /fundsConfirmed !== true/);
+  assert.match(segment, /payment\.status !== 'submitted'/);
+  assert.match(segment, /await db\.runTransaction/);
+  assert.match(segment, /tx\.update\(paymentRef/);
+  assert.match(segment, /tx\.update\(invoiceRef/);
+  assert.doesNotMatch(segment, /syncFirestoreDoc\(/);
+  const adminUI = read('src/components/screens/SuperAdminDashboard.tsx');
+  assert.match(adminUI, /paymentId: submitted\.paymentId/);
+  assert.match(adminUI, /Verify Cleared Funds/);
+  assert.match(adminUI, /window\.confirm\(/);
+});

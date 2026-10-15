@@ -171,6 +171,9 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const [toastQueue, setToastQueue] = useState<SuperAdminToastItem[]>([]);
   const [isLoadingAdmin, setIsLoadingAdmin] = useState(false);
   const [commissionInvoices, setCommissionInvoices] = useState<CommissionInvoice[]>([]);
+  const [commissionPayments, setCommissionPayments] = useState<Array<{
+    paymentId: string; invoiceId: string; status: 'submitted' | 'verified' | 'rejected';
+  }>>([]);
 
   const dismissToast = (id: string) => {
     setToastQueue((prev) => {
@@ -260,6 +263,9 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
         if (data.settings) setPlatformSettings(data.settings);
         if (Array.isArray(data.invoices)) {
           setCommissionInvoices(data.invoices);
+        }
+        if (Array.isArray(data.payments)) {
+          setCommissionPayments(data.payments);
         }
       }
     } catch {
@@ -475,30 +481,50 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
     invoiceId: string,
     decision: 'approve' | 'reject' | 'waive'
   ) => {
+    if (decision === 'waive') {
+      showToast('Waiving commission requires a separate audited adjustment process.', {
+        variant: 'error', title: 'Commission Waiver Unavailable',
+      });
+      return;
+    }
+    const submitted = commissionPayments.find((payment) =>
+      payment.invoiceId === invoiceId && payment.status === 'submitted'
+    );
+    if (!submitted) {
+      showToast('A seller must submit a payment reference before this invoice can be reviewed.', {
+        variant: 'error', title: 'No Payment Proof',
+      });
+      return;
+    }
+    const fundsConfirmed = decision !== 'approve' || window.confirm(
+      'Have you independently confirmed that these funds CLEARED in your real wallet or bank statement? Do not approve based only on a transaction reference.'
+    );
+    if (!fundsConfirmed) return;
     try {
       const authHeaders = await getAuthHeaders();
       const res = await fetch('/api/admin/commission/verify-payment', {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({
-          invoiceId,
-          action: decision === 'approve' ? 'verify' : decision === 'reject' ? 'reject' : 'waive',
-          note: `Super Admin ${decision} via Commission Ledger`,
+          invoiceId, paymentId: submitted.paymentId, decision,
+          fundsConfirmed: decision === 'approve' ? true : false,
         }),
       });
-      const data = await res.json();
-      if (res.ok && data.invoice) {
-        setCommissionInvoices((prev) =>
-          prev.map((inv) => (inv.invoiceId === invoiceId ? data.invoice : inv))
-        );
-        showToast(
-          `Invoice ${data.invoice.invoiceNumber} marked ${data.invoice.status.toUpperCase()}`
-        );
-      } else {
-        showToast(data.error || 'Failed to update invoice');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok !== true || !data.invoice) {
+        throw new Error(data.error || 'Commission verification was not saved.');
       }
-    } catch {
-      showToast('Network error updating commission invoice');
+      setCommissionInvoices((prev) =>
+        prev.map((inv) => inv.invoiceId === invoiceId ? data.invoice : inv)
+      );
+      setCommissionPayments(prev => prev.map(payment =>
+        payment.paymentId === submitted.paymentId ? { ...payment, status: data.payment.status } : payment
+      ));
+      showToast(`Payment proof ${decision === 'approve' ? 'verified' : 'rejected'} after a durable save.`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not review payment.', {
+        title: 'Verification Failed', variant: 'error',
+      });
     }
   };
 
@@ -1671,10 +1697,11 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                             <button
                               type="button"
                               data-testid={`approve-commission-btn-${inv.invoiceNumber}`}
+                              disabled={!commissionPayments.some(payment => payment.invoiceId === inv.invoiceId && payment.status === 'submitted')}
                               onClick={() => handleReviewCommissionInvoice(inv.invoiceId, 'approve')}
-                              className="candy-btn-mint px-3.5 py-2 rounded-xl text-[11px] font-extrabold cursor-pointer"
+                              className="disabled:opacity-40 disabled:cursor-not-allowed candy-btn-mint px-3.5 py-2 rounded-xl text-[11px] font-extrabold cursor-pointer"
                             >
-                              Approve Paid
+                              Verify Cleared Funds
                             </button>
                             <button
                               type="button"

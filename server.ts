@@ -7445,171 +7445,143 @@ async function startServer() {
 
   // POST /api/commission/verify-payment (and /api/admin/commission/verify-payment)
   // Strictly Restricted to Verified Single-UID DreamStore Super Admin (SUPER_ADMIN_UID)
+  // A commission invoice cannot be marked paid without an actual submitted
+  // transfer, a separate bank-statement check, and one acknowledged transaction.
   const handleVerifyCommissionPaymentOnServer = async (
     req: express.Request,
     res: express.Response
   ) => {
-    const adminUser = await requireSuperAdminUser(req, res);
-    if (!adminUser) return;
-
-    const {
-      paymentId,
-      invoiceId,
-      decision,
-      action,
-      note = '',
-    } = req.body || {};
-
-    const effectiveDecision =
-      action === 'reject' || decision === 'reject' ? 'reject' : 'approve';
-
-    const payment = paymentId
-      ? commissionPayments.get(String(paymentId))
-      : Array.from(commissionPayments.values()).find(
-          (p) => p.invoiceId === String(invoiceId) && p.status === 'submitted'
-        );
-
-    const inv = commissionInvoices.get(String(invoiceId || payment?.invoiceId || ''));
-    if (!inv) {
-      res.status(404).json({ error: 'Target commission invoice not found.' });
+    const admin = await requireSuperAdminUser(req, res);
+    if (!admin) return;
+    const { paymentId, invoiceId, decision, fundsConfirmed, note = '' } = req.body || {};
+    const cleanPaymentId = String(paymentId || '').trim();
+    const cleanInvoiceId = String(invoiceId || '').trim();
+    if (!/^[a-zA-Z0-9_-]{3,128}$/.test(cleanPaymentId) ||
+        (decision !== 'approve' && decision !== 'reject')) {
+      res.status(400).json({ error: 'A submitted payment ID and an explicit approve/reject decision are required.' });
       return;
     }
-
-    await withSellerLock(inv.sellerId, () => {
+    if (decision === 'approve' && fundsConfirmed !== true) {
+      res.status(400).json({ error: 'Confirm receipt of cleared funds on the actual bank/wallet statement before approving.' });
+      return;
+    }
+    if (!adminFirestoreDb || !(await refreshFinancialReadiness())) {
+      res.status(503).json({ error: 'Secure commission database unavailable. No settlement was changed.' });
+      return;
+    }
+    const db = adminFirestoreDb;
+    try {
+      const paymentRef = db.collection('commission_payments').doc(cleanPaymentId);
       const nowIso = new Date().toISOString();
-
-      if (effectiveDecision === 'approve') {
-        const creditMinor = payment ? payment.amountMinor : inv.remainingBalanceMinor;
-        if (payment) {
-          if (payment.status === 'verified') {
-            res.status(409).json({ error: 'Commission payment has already been verified.' });
-            return;
-          }
-          payment.status = 'verified';
-          payment.verifiedByAdminEmail = adminUser.email || SUPER_ADMIN_EMAIL;
-          payment.updatedAtIso = nowIso;
-          syncFirestoreDoc(
-            'commission_payments',
-            payment.paymentId,
-            payment as unknown as Record<string, unknown>,
-            adminUser.rawToken
-          );
+      const changed = await db.runTransaction(async tx => {
+        const paymentSnap = await tx.get(paymentRef);
+        if (!paymentSnap.exists) {
+          throw Object.assign(new Error('Payment proof not found.'), { code: 'not-found' });
         }
-
-        inv.paidAmountMinor += creditMinor;
-        inv.remainingBalanceMinor = Math.max(
-          0,
-          inv.commissionAmountMinor - inv.adjustedAmountMinor - inv.paidAmountMinor
-        );
-        inv.verifiedByAdminEmail = adminUser.email || SUPER_ADMIN_EMAIL;
-        inv.verifiedAtIso = nowIso;
-
-        if (inv.remainingBalanceMinor === 0) {
-          inv.status = 'paid';
-          for (const ordNum of inv.orderNumbers) {
-            const led = persistentLedger.get(ordNum);
-            if (led && led.commissionStatus === 'outstanding') {
-              led.commissionStatus = 'paid';
-              led.updatedAtIso = nowIso;
-              syncFirestoreDoc(
-                'ledger',
-                ordNum,
-                led as unknown as Record<string, unknown>,
-                adminUser.rawToken
-              );
-            }
-          }
-        } else {
-          inv.status = Date.now() > inv.dueAtMs ? 'overdue' : 'open';
+        const payment = paymentSnap.data() as CommissionPaymentSubmission;
+        if (payment.status !== 'submitted' || payment.paymentId !== cleanPaymentId) {
+          throw Object.assign(new Error('Payment was already reviewed.'), { code: 'already-reviewed' });
         }
-
-        syncFirestoreDoc(
-          'commission_invoices',
-          inv.invoiceId,
-          inv as unknown as Record<string, unknown>,
-          adminUser.rawToken
-        );
-
-        appendAuditEntry(
-          {
-            orderNumber: inv.orderNumbers[0] || inv.invoiceNumber,
-            orderId: inv.invoiceId,
-            sellerId: inv.sellerId,
-            actorUid: adminUser.uid,
-            action: 'COMMISSION_PAYMENT_VERIFIED',
-            previousStatus: 'payment_submitted',
-            newStatus: inv.status,
-            verificationMode: 'Admin Verified',
-            detail: `Super Admin (${adminUser.uid}) verified commission payment of ${(
-              creditMinor / 100
-            ).toFixed(2)} ${inv.currency} for ${inv.invoiceNumber}. Remaining balance: ${(
-              inv.remainingBalanceMinor / 100
-            ).toFixed(2)} ${inv.currency}.${note ? ` Note: ${note}` : ''}`,
-          },
-          adminUser.rawToken
-        );
-
-        const summary = reconcileSellerCommissionState(
-          inv.sellerId,
-          Date.now(),
-          adminUser.rawToken
-        );
-        res.json({
-          ok: true,
-          message: `Commission payment verified for ${inv.invoiceNumber}. Seller features unlocked.`,
-          invoice: inv,
-          payment,
-          commissionSummary: summary,
+        if (cleanInvoiceId && cleanInvoiceId !== payment.invoiceId) {
+          throw Object.assign(new Error('Proof belongs to another invoice.'), { code: 'invoice-mismatch' });
+        }
+        const invoiceRef = db.collection('commission_invoices').doc(payment.invoiceId);
+        const invoiceSnap = await tx.get(invoiceRef);
+        if (!invoiceSnap.exists) {
+          throw Object.assign(new Error('Invoice missing.'), { code: 'not-found' });
+        }
+        const invoice = invoiceSnap.data() as CommissionInvoiceRecord;
+        if (invoice.sellerId !== payment.sellerId || invoice.invoiceId !== payment.invoiceId ||
+            invoice.currency !== payment.currency || invoice.storeId !== payment.storeId) {
+          throw Object.assign(new Error('Financial record ownership mismatch.'), { code: 'invoice-mismatch' });
+        }
+        const credit = Number(payment.amountMinor);
+        const available = Number(invoice.remainingBalanceMinor);
+        if (!Number.isSafeInteger(credit) || credit <= 0 ||
+            !Number.isSafeInteger(available) || available < credit || invoice.status === 'paid') {
+          throw Object.assign(new Error('Invalid or already settled amount.'), { code: 'already-reviewed' });
+        }
+        const remaining = decision === 'approve' ? available - credit : available;
+        const paid = decision === 'approve' ? invoice.paidAmountMinor + credit : invoice.paidAmountMinor;
+        const newStatus: CommissionInvoiceRecord['status'] =
+          decision === 'approve' && remaining === 0 ? 'paid' :
+          Date.now() > invoice.dueAtMs ? 'overdue' : 'open';
+        const updatedInvoice: CommissionInvoiceRecord = {
+          ...invoice, paidAmountMinor: paid, remainingBalanceMinor: remaining,
+          status: newStatus,
+          ...(decision === 'approve' ? {
+            verifiedByAdminEmail: admin.email || SUPER_ADMIN_EMAIL,
+            verifiedAtIso: nowIso,
+          } : {}),
+        };
+        const updatedPayment: CommissionPaymentSubmission = {
+          ...payment, status: decision === 'approve' ? 'verified' : 'rejected',
+          verifiedByAdminEmail: admin.email || SUPER_ADMIN_EMAIL,
+          updatedAtIso: nowIso,
+        };
+        const paidOrders = decision === 'approve' && remaining === 0
+          ? invoice.orderNumbers : [];
+        const orderRefs = paidOrders.map(orderNo => db.collection('ledger').doc(orderNo));
+        const ledgerSnapshots = await Promise.all(orderRefs.map(docRef => tx.get(docRef)));
+        // Transaction read phase ends here. All writes are now atomic and durable.
+        tx.update(paymentRef, {
+          status: updatedPayment.status, verifiedByAdminEmail: updatedPayment.verifiedByAdminEmail,
+          updatedAtIso: nowIso,
         });
-      } else {
-        if (payment) {
-          payment.status = 'rejected';
-          payment.verifiedByAdminEmail = adminUser.email || SUPER_ADMIN_EMAIL;
-          payment.updatedAtIso = nowIso;
-          syncFirestoreDoc(
-            'commission_payments',
-            payment.paymentId,
-            payment as unknown as Record<string, unknown>,
-            adminUser.rawToken
-          );
-        }
-        inv.status = Date.now() > inv.dueAtMs ? 'overdue' : 'open';
-        syncFirestoreDoc(
-          'commission_invoices',
-          inv.invoiceId,
-          inv as unknown as Record<string, unknown>,
-          adminUser.rawToken
-        );
-
-        appendAuditEntry(
-          {
-            orderNumber: inv.orderNumbers[0] || inv.invoiceNumber,
-            orderId: inv.invoiceId,
-            sellerId: inv.sellerId,
-            actorUid: adminUser.uid,
-            action: 'COMMISSION_PAYMENT_REJECTED',
-            previousStatus: 'payment_submitted',
-            newStatus: inv.status,
-            verificationMode: 'Admin Rejected',
-            detail: `Super Admin (${adminUser.uid}) rejected commission payment for ${inv.invoiceNumber}.${note ? ` Reason: ${note}` : ''}`,
-          },
-          adminUser.rawToken
-        );
-
-        const summary = reconcileSellerCommissionState(
-          inv.sellerId,
-          Date.now(),
-          adminUser.rawToken
-        );
-        res.json({
-          ok: true,
-          message: `Commission payment rejected for ${inv.invoiceNumber}.`,
-          invoice: inv,
-          payment,
-          commissionSummary: summary,
+        tx.update(invoiceRef, {
+          status: newStatus, paidAmountMinor: paid, remainingBalanceMinor: remaining,
+          ...(decision === 'approve' ? {
+            verifiedByAdminEmail: updatedInvoice.verifiedByAdminEmail, verifiedAtIso: nowIso,
+          } : {}),
         });
+        for (let i = 0; i < ledgerSnapshots.length; i++) {
+          const snap = ledgerSnapshots[i];
+          if (snap.exists && snap.get('sellerId') === invoice.sellerId &&
+              snap.get('invoiceId') === invoice.invoiceId &&
+              snap.get('commissionStatus') === 'outstanding') {
+            tx.update(orderRefs[i], { commissionStatus: 'paid', updatedAtIso: nowIso });
+          }
+        }
+        return { invoice: updatedInvoice, payment: updatedPayment, paidOrders };
+      });
+      commissionInvoices.set(changed.invoice.invoiceId, changed.invoice);
+      commissionPayments.set(changed.payment.paymentId, changed.payment);
+      if (changed.invoice.status === 'paid') {
+        for (const number of changed.paidOrders) {
+          const entry = persistentLedger.get(number);
+          if (entry && entry.invoiceId === changed.invoice.invoiceId && entry.sellerId === changed.invoice.sellerId) {
+            entry.commissionStatus = 'paid';
+            entry.updatedAtIso = nowIso;
+          }
+        }
       }
-    });
+      appendAuditEntry({
+        orderNumber: changed.invoice.orderNumbers[0] || changed.invoice.invoiceNumber,
+        orderId: changed.invoice.invoiceId, sellerId: changed.invoice.sellerId,
+        actorUid: admin.uid,
+        action: decision === 'approve' ? 'COMMISSION_PAYMENT_VERIFIED' : 'COMMISSION_PAYMENT_REJECTED',
+        previousStatus: 'payment_submitted', newStatus: changed.invoice.status,
+        verificationMode: decision === 'approve' ? 'Admin Verified' : 'Admin Rejected',
+        detail: `Admin reviewed commission payment ${cleanPaymentId} for invoice ${changed.invoice.invoiceNumber}. ${String(note).slice(0, 200)}`,
+      }, admin.rawToken);
+      res.json({
+        ok: true, invoice: changed.invoice, payment: changed.payment,
+        message: decision === 'approve' ? 'Cleared funds recorded successfully.' : 'Payment proof rejected.',
+        commissionSummary: reconcileSellerCommissionState(changed.invoice.sellerId, Date.now(), admin.rawToken),
+      });
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'not-found') {
+        res.status(404).json({ error: 'Submitted payment or invoice not found.' });
+        return;
+      }
+      if (code === 'already-reviewed' || code === 'invoice-mismatch') {
+        res.status(409).json({ error: 'Payment has already been reviewed or does not match the invoice.' });
+        return;
+      }
+      console.error('Commission settlement transaction failed:', err);
+      res.status(503).json({ error: 'Commission settlement could not be saved. No payment was credited.' });
+    }
   };
 
   app.post('/api/commission/verify-payment', asyncRoute(handleVerifyCommissionPaymentOnServer));

@@ -184,3 +184,16 @@ test('commission proof must have a durable invoice and valid reference', async t
     { invoiceId: 'inv-unknown', sellerId: 'other-seller', paymentReference: 'ABC-123' }, token());
   assert.equal(spoof.status, 403);
 });
+
+test('commission admin cannot auto-approve an invoice without a submitted proof and cleared funds', async t => {
+  const origin = await boot(t);
+  const admin = token('seller-test', { role: 'super_admin', superAdmin: true });
+  assert.equal((await request(origin, '/api/admin/commission/verify-payment',
+    { invoiceId: 'inv-example', decision: 'approve' }, admin)).status, 400);
+  assert.equal((await request(origin, '/api/admin/commission/verify-payment',
+    { paymentId: 'cpay-sample', invoiceId: 'inv-example', decision: 'approve' }, admin)).status, 400);
+  const absent = await request(origin, '/api/admin/commission/verify-payment',
+    { paymentId: 'cpay-sample', invoiceId: 'inv-example', decision: 'approve', fundsConfirmed: true }, admin);
+  assert.equal(absent.status, 404);
+  assert.notEqual((await absent.json()).ok, true);
+});
