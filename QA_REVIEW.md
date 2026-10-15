@@ -28,3 +28,9 @@ This is a source-code and automated-test review, not a production certification.
 ## Coverage and limits
 
 Run `npm run lint`, `npm run build`, `npm run test:contracts`, and `npm run test:server`. CI additionally runs actual Firestore/Storage emulator rules tests and Chromium visitor/mobile/auth-recovery smoke tests. Server doubles cover failure handling but do not validate live Firebase identity verification. Browser smoke tests do not replace real seller/buyer staging transactions. No production data, rules, credentials or account migrations were changed in this pass.
+
+## 15 October 2026 — release evidence update
+
+The current main branch includes durable Admin-SDK commission submission and review transactions, server-only store mutations, atomic URL reservations, seller-authenticated URL availability checking and suspended-store recovery. The older table above is historical and should not be interpreted as the current status of every code path.
+
+Automated unit/emulator/browser checks passing does **not** establish production readiness. Before activating real-money checkout, verify a staging deployment against the named Firebase database, actual production-like Firebase Auth identities, original file downloads, refunds, multi-instance/restart reconciliation, manual funds confirmation, legacy account migration, correct deployed rules, credentials, rollback and data backup. The staging preflight intentionally fails if paid checkout is enabled; it is not a paid-production certification tool.

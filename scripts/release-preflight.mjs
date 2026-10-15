@@ -17,6 +17,7 @@ if (!raw) {
       ['App health', '/api/health', 'GET', 200, 'ok'],
       ['Backend + Firebase readiness', '/api/ready', 'GET', 200, 'ready'],
       ['Public store catalog', '/api/stores', 'GET', 200],
+      ['Public payment feature flags', '/api/payments/gateway-status', 'GET', 200],
       ['Private order list denied to guests', '/api/orders/list', 'GET', 401],
       ['Admin session denied to guests', '/api/admin/verify-session', 'GET', 401],
       ['Private profile denied to guests', '/api/users/profile', 'GET', 401],
@@ -37,9 +38,16 @@ if (!raw) {
           signal: AbortSignal.timeout(12000),
         });
         const json = await response.json().catch(() => ({}));
+        const isGatewayStatus = route === '/api/payments/gateway-status';
+        // The staging preflight is a public-preview gate, not paid production certification.
+        // Fail if paid checkout was switched on before human finance approval.
+        const checkoutSafelyDisabled = !isGatewayStatus ||
+          json.paidCheckoutEnabled === false;
         const pass = response.status === expected &&
-          (!expectedStatus || json.status === expectedStatus);
-        console.log(`${pass ? 'PASS' : 'FAIL'} ${label}: HTTP ${response.status} (expected ${expected})`);
+          (!expectedStatus || json.status === expectedStatus) &&
+          checkoutSafelyDisabled;
+        console.log(`${pass ? 'PASS' : 'FAIL'} ${label}: HTTP ${response.status} (expected ${expected})` +
+          (isGatewayStatus ? ` | paid checkout disabled: ${checkoutSafelyDisabled}` : ''));
         if (!pass) failures++;
       } catch (error) {
         failures++;

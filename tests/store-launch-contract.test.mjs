@@ -348,3 +348,11 @@ test('financial documents are Admin SDK only; browser cannot forge orders or aud
   assert.doesNotMatch(server, /function applyOrderCommissionReversalToInvoice/);
   assert.match(server, /adminFirestoreDb\.collection\('ledger_audit'\)/);
 });
+
+test('staging preflight fails closed when paid checkout has not been separately approved', () => {
+  const preflight = read('scripts/release-preflight.mjs');
+  assert.match(preflight, /\/api\/payments\/gateway-status/);
+  assert.match(preflight, /json\.paidCheckoutEnabled === false/);
+  assert.match(preflight, /checkoutSafelyDisabled/);
+  assert.match(preflight, /if \(failures > 0\) process\.exitCode = 1/);
+});
