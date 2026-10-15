@@ -1,0 +1,166 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createV2App } from '../server/v2/app.ts';
+import { createFirebaseVerifier } from '../server/v2/modules/auth.ts';
+
+const principal = (uid, overrides = {}) => ({
+  uid, email: uid + '@example.test', emailVerified: true,
+  displayName: 'Test Account', ...overrides,
+});
+function fixture(options = {}) {
+  const profiles = new Map();
+  const calls = [];
+  const deps = {
+    auth: {
+      async verifyBearer(token) {
+        if (token === 'bad') throw Object.assign(new Error('expired'), { status: 401, code: 'auth/session-invalid' });
+        if (token === 'outage') throw Object.assign(new Error('unavailable'), { status: 503, code: 'auth/backend-unavailable' });
+        return options.users?.[token] || principal(token);
+      },
+    },
+    profiles: {
+      async find(p) { return profiles.get(p.uid) || null; },
+      async save(p, role, name) {
+        calls.push({ uid: p.uid, role });
+        const record = {
+          uid: p.uid, role, displayName: name, email: p.email,
+          onboardingCompleted: true,
+          ...(role === 'seller' ? { storeId: 'store-' + p.uid.slice(0, 20) } : {}),
+          createdAtIso: '2026-10-01T00:00:00.000Z',
+          updatedAtIso: '2026-10-01T00:00:00.000Z',
+        };
+        profiles.set(p.uid, record);
+        return record;
+      },
+    },
+    creators: {
+      async read() { return { limit: 100, claimed: 98, remaining: 2, soldOut: false, offer: 'free_storefront_setup' }; },
+    },
+    readiness: { async check() { return options.ready === true; } },
+    adminUid: 'admin_uid',
+    allowWrites: options.allowWrites === true,
+  };
+  const app = createV2App(deps);
+  return { app, profiles, calls };
+}
+async function withServer(app, run) {
+  const server = await new Promise(resolve => {
+    const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
+  });
+  try {
+    const base = 'http://127.0.0.1:' + server.address().port;
+    const request = async (path, token, body, method = body ? 'POST' : 'GET') => {
+      const res = await fetch(base + path, {
+        method,
+        headers: {
+          ...(token ? { authorization: 'Bearer ' + token } : {}),
+          ...(body ? { 'content-type': 'application/json' } : {}),
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      return [res.status, await res.json(), res.headers];
+    };
+    await run(request);
+  } finally { await new Promise(r => server.close(r)); }
+}
+
+test('V2 staging health and readiness never claim Firebase success without it', async () => {
+  const { app } = fixture();
+  await withServer(app, async get => {
+    const [status, health, headers] = await get('/api/health');
+    assert.equal(status, 200);
+    assert.equal(health.status, 'ok');
+    assert.equal(headers.get('cache-control'), 'no-store');
+    const [readyStatus, ready] = await get('/api/ready');
+    assert.equal(readyStatus, 503);
+    assert.deepEqual(ready, { status: 'not_ready' });
+  });
+});
+
+test('V2 never grants a cached or client-declared role without backend verification', async () => {
+  const { app, profiles } = fixture({ users: { buyer: principal('buyer') } });
+  profiles.set('buyer', { uid: 'buyer', role: 'buyer', email: 'buyer@example.test',
+    displayName: 'Buyer', onboardingCompleted: true, createdAtIso: '', updatedAtIso: '' });
+  await withServer(app, async request => {
+    assert.equal((await request('/api/users/profile'))[0], 401);
+    assert.equal((await request('/api/admin/verify-session', 'buyer'))[0], 403);
+    const [ok, data] = await request('/api/users/profile', 'buyer');
+    assert.equal(ok, 200);
+    assert.equal(data.profile.role, 'buyer');
+    assert.equal((await request('/api/navigation/access?screen=owner-dashboard', 'buyer'))[0], 403);
+    assert.equal((await request('/api/users/profile', 'buyer', { role: 'super_admin' }))[0], 403);
+    assert.equal((await request('/api/users/profile', 'buyer', { role: 'seller', ownerId: 'other' }))[0], 403);
+    assert.equal((await request('/api/checkout/validate-and-prepare', 'buyer', {}))[0], 501);
+  });
+});
+
+test('V2 blocks onboarding mutations when not in isolated Firebase emulator', async () => {
+  const { app, calls } = fixture();
+  await withServer(app, async request => {
+    const [status, data] = await request('/api/users/profile', 'buyer', { role: 'buyer', displayName: 'Buyer' });
+    assert.equal(status, 503);
+    assert.equal(data.code, 'backend/staging-readonly');
+    assert.equal(calls.length, 0);
+  });
+});
+
+test('V2 Buyer/Seller onboarding preserves distinct roles and returning profiles', async () => {
+  const { app, profiles, calls } = fixture({ allowWrites: true });
+  await withServer(app, async request => {
+    const [newStatus, newUser] = await request('/api/users/profile', 'seller');
+    assert.equal(newStatus, 200);
+    assert.equal(newUser.needsOnboarding, true);
+    const [saveStatus, saved] = await request('/api/users/profile', 'seller', { role: 'seller', displayName: 'Creator' });
+    assert.equal(saveStatus, 200);
+    assert.equal(saved.profile.storeId, 'store-seller');
+    assert.equal((await request('/api/users/profile', 'seller'))[1].profile.role, 'seller');
+    assert.equal((await request('/api/users/profile', 'buyer', { role: 'buyer', displayName: 'Buyer' }))[0], 200);
+    assert.equal((await request('/api/navigation/access?screen=owner-dashboard', 'seller'))[0], 200);
+    assert.equal((await request('/api/navigation/access?screen=owner-dashboard', 'buyer'))[0], 403);
+    assert.equal(calls.length, 2);
+    assert.equal(profiles.size, 2);
+  });
+});
+
+test('V2 admin requires both configured UID and signed verified Firebase custom claims', async () => {
+  const { app } = fixture({ users: {
+    admin: principal('admin_uid', { roleClaim: 'super_admin', superAdminClaim: true }),
+    forged: principal('not_admin', { roleClaim: 'super_admin', superAdminClaim: true }),
+    noClaim: principal('admin_uid'),
+  }});
+  await withServer(app, async request => {
+    assert.equal((await request('/api/admin/verify-session', 'forged'))[0], 403);
+    assert.equal((await request('/api/admin/verify-session', 'noClaim'))[0], 403);
+    const [status, body] = await request('/api/admin/verify-session', 'admin');
+    assert.equal(status, 200);
+    assert.equal(body.isSuperAdmin, true);
+    assert.equal((await request('/api/users/profile', 'admin'))[1].profile.role, 'super_admin');
+  });
+});
+
+test('V2 reads creator counter without a claim mutation or fabricated progress', async () => {
+  const { app } = fixture();
+  await withServer(app, async request => {
+    const [status, body] = await request('/api/launch/creator-spots');
+    assert.equal(status, 200);
+    assert.deepEqual([body.claimed, body.remaining, body.soldOut], [98, 2, false]);
+    assert.equal((await request('/api/stores/create', 'creator', { storeName: 'No write' }))[0], 501);
+  });
+});
+
+test('Firebase Admin validates signed and unrevoked tokens; outages are recoverable 503', async () => {
+  const calls = [];
+  const fakeAuth = {
+    async verifyIdToken(token, checkRevoked) {
+      calls.push([token, checkRevoked]);
+      if (token === 'revoked') throw Object.assign(new Error('revoked'), { code: 'auth/id-token-revoked' });
+      if (token === 'offline') throw Object.assign(new Error('offline'), { code: 'auth/insufficient-permission' });
+      return { uid: 'signed_user', email: 'user@example.test', email_verified: true };
+    },
+  };
+  const verify = createFirebaseVerifier(fakeAuth);
+  assert.equal((await verify.verifyBearer('valid')).uid, 'signed_user');
+  await assert.rejects(verify.verifyBearer('revoked'), e => e.status === 401);
+  await assert.rejects(verify.verifyBearer('offline'), e => e.status === 503);
+  assert.deepEqual(calls.map(x => x[1]), [true, true, true]);
+});

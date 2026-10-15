@@ -35,6 +35,8 @@ jobs:
         run: bun run lint
       - name: Server auth and failure-path regression tests
         run: npm run test:server
+      - name: Backend V2 staging authentication, profiles and release guards
+        run: npm run test:v2
       - name: Production Vite build
         run: bun run build
       - name: Static 5MB storage, launch onboarding and safety contracts
