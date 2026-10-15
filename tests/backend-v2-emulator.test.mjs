@@ -92,8 +92,8 @@ test('real Auth/Firestore/Storage: Seller create→update→upload→publish→p
   assert.equal((await request('/api/orders/list','buyer')).body.orders.length,1);
   assert.equal((await request('/api/delivery/verify-download','buyer',{orderNumber,productId:product.id,buyerId:identities.buyer.uid,downloadToken:'LOCKED-PENDING-VERIFICATION'})).status,403);
   assert.equal((await request('/api/orders/list','buyer2')).body.orders.length,0);
-  assert.equal((await request('/api/checkout/validate-and-prepare','buyer2',{...checkoutBody,buyerId:identities.buyer2.uid,idempotencyKey:'idem-v2-dupe-reference-01'})).status,409);
-  const secondOrder=await request('/api/checkout/validate-and-prepare','buyer2',{...checkoutBody,buyerId:identities.buyer2.uid,idempotencyKey:'idem-v2-second-buyer-0001',paymentReference:'TXN-98765'});
+  assert.equal((await request('/api/checkout/validate-and-prepare','buyer2',{...checkoutBody,buyerId:identities.buyer2.uid,customerEmail:'buyer2@example.test',idempotencyKey:'idem-v2-dupe-reference-01'})).status,409);
+  const secondOrder=await request('/api/checkout/validate-and-prepare','buyer2',{...checkoutBody,buyerId:identities.buyer2.uid,customerEmail:'buyer2@example.test',idempotencyKey:'idem-v2-second-buyer-0001',paymentReference:'TXN-98765'});
   assert.equal(secondOrder.status,201);
   assert.equal((await request('/api/orders/list','buyer')).body.orders.length,1);
   assert.equal((await request('/api/orders/list','buyer2')).body.orders.length,1);
