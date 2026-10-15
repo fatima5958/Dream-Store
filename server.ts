@@ -6872,13 +6872,6 @@ async function startServer() {
         res.status(409).json({ error: 'Only previously paid orders may be refunded.' });
         return;
       }
-      if (entry.paymentStatus === 'Refunded') {
-        res.status(409).json({
-          error: `Duplicate refund blocked: Order "${orderNumber}" has already been refunded.`,
-        });
-        return;
-      }
-
       const prevStatus = entry.paymentStatus;
       const oldCommission = entry.platformCommissionMinor;
       const previousRecord = { ...entry };
