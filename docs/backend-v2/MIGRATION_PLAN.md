@@ -24,13 +24,18 @@ DREAMSTORE_V2_STAGING=1 DREAMSTORE_V2_PROJECT_ID=demo-dreamstore-v2 \
 SUPER_ADMIN_UID=v2-admin firebase emulators:exec \
   --project demo-dreamstore-v2 --config firebase.v2.emulator.json \
   --only auth,firestore,storage \
-  "FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199 npm run test:v2:emulator"
+  "FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199 npm run test:v2:emulator"
 
 # Dependency-free deterministic repository/security checks
 npm run test:v2:unit
 npm run test:contracts
 
-# Local app: start V2 with the same emulator environment, then
+# In a second terminal, start V2 with all emulator hosts explicitly set:
+DREAMSTORE_V2_STAGING=1 DREAMSTORE_V2_PROJECT_ID=demo-dreamstore-v2 \
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 \
+FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199 npm run start:backend-v2
+
+# In a third terminal, start the frontend:
 VITE_DREAMSTORE_V2_STAGING=1 VITE_DREAMSTORE_V2_PROJECT_ID=demo-dreamstore-v2 npm run dev
 
 # Explicitly reconcile expired failed/replaced uploads (demo emulators only)

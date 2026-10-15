@@ -58,7 +58,7 @@ jobs:
         run: >-
           npx firebase-tools emulators:exec --project demo-dreamstore-v2
           --config firebase.v2.emulator.json --only auth,firestore,storage
-          "DREAMSTORE_V2_STAGING=1 DREAMSTORE_V2_PROJECT_ID=demo-dreamstore-v2 SUPER_ADMIN_UID=v2-admin FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199 npm run test:v2:emulator"
+          "DREAMSTORE_V2_STAGING=1 DREAMSTORE_V2_PROJECT_ID=demo-dreamstore-v2 SUPER_ADMIN_UID=v2-admin FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199 npm run test:v2:emulator"
 
   public-browser-smoke:
     runs-on: ubuntu-latest
