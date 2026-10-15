@@ -7,6 +7,7 @@ import { createFirestoreProductRepository, productProjection } from '../server/v
 import { createFirebaseUploadRepository, validateFileBytes, MAX_UPLOAD_BYTES, cleanupExpiredUploads } from '../server/v2/modules/uploads.ts';
 import { requireSeller } from '../server/v2/modules/policy.ts';
 import { assertIsolatedV2Environment } from '../server/v2/config/staging.ts';
+import { createFirestoreAdminManagementRepository, validateAdminStorePatch } from '../server/v2/modules/admin-management.ts';
 const p = uid => ({ uid, email: uid+'@example.test', emailVerified:true, displayName:uid });
 const owner = p('seller');
 const store = { ownerId:'seller', storeSlug:'books', storeName:'Books', status:'Active', plan:'Free', currency:'PKR', bankTransferInstructions:'secret' };
@@ -100,6 +101,43 @@ test('visits require active real store, persist and deduplicate without leaking 
  await createFirestoreStoreRepository(f.db).visit('books',true,'same-ip');
  assert.equal(f.db.data.get('stores/legacy-store').checkoutViewsCount,1);
  assert.equal(publicStoreProjection('id',f.db.data.get('stores/legacy-store')).visitsCount,undefined);
+});
+
+test('admin store moderation is transactional, audited, and seller writes cannot reactivate suspension',async()=>{
+ const f=fixture(), admin=createFirestoreAdminManagementRepository(f.db);
+ const suspended=await admin.updateStore('legacy-store',validateAdminStorePatch('suspend',{}),'configured-admin','STORE_STATUS_SUSPENDED');
+ assert.equal(suspended.status,'Pending');assert.equal(suspended.adminControlStatus,'suspended');
+ assert.equal(suspended.ownerId,'seller');
+ await assert.rejects(f.stores.update(owner,'legacy-store',{storeName:'Attempted restore'}),code('store/suspended'));
+ const audit=[...f.db.data.entries()].find(([path])=>path.startsWith('admin_audit/'))?.[1];
+ assert.equal(audit.actorUid,'configured-admin');assert.equal(audit.action,'STORE_STATUS_SUSPENDED');
+ await assert.rejects(Promise.resolve().then(()=>validateAdminStorePatch('update_store',{updates:{plan:'Pro'}})),e=>e.status===409);
+});
+
+test('failed Admin store transaction persists neither status nor audit record',async()=>{
+ const f=fixture(),admin=createFirestoreAdminManagementRepository(f.db);
+ f.db.failCommit=true;
+ await assert.rejects(admin.updateStore('legacy-store',validateAdminStorePatch('suspend',{}),'configured-admin','STORE_STATUS_SUSPENDED'));
+ assert.equal(f.db.data.get('stores/legacy-store').status,'Active');
+ assert.equal([...f.db.data.keys()].some(path=>path.startsWith('admin_audit/')),false);
+});
+
+test('Pro grant/revoke and waitlist persist one store subscription and restore from Firestore after restart',async()=>{
+ const f=fixture(), management=createFirestoreAdminManagementRepository(f.db);
+ f.db.seed('products/legacy-product',{storeId:'legacy-store',ownerId:'seller',title:'Keep this product'});
+ const waitlist=await management.requestWaitlist('seller');
+ assert.equal(waitlist.status,'Waitlist');
+ assert.equal((await management.requestWaitlist('seller')).subscriptionId,waitlist.subscriptionId);
+ await Promise.all([management.grantPro({sellerId:'seller',grantPro:true,actorUid:'admin'}),
+   management.grantPro({sellerId:'seller',grantPro:true,actorUid:'admin'})]);
+ assert.equal(f.db.data.get('stores/legacy-store').plan,'Pro');
+ assert.equal(f.db.data.get('subscriptions/sub-legacy-store').plan,'Pro');
+ assert.equal((await createFirestoreAdminManagementRepository(f.db).entitlement('seller')).hasProEntitlement,true);
+ assert.equal(f.db.data.get('products/legacy-product').title,'Keep this product');
+ assert.equal([...f.db.data.keys()].filter(path=>path==='subscriptions/sub-legacy-store').length,1);
+ await management.grantPro({sellerId:'seller',grantPro:false,actorUid:'admin'});
+ assert.equal((await createFirestoreAdminManagementRepository(f.db).entitlement('seller')).plan,'Free');
+ assert.equal(f.db.data.get('stores/legacy-store').status,'Active');
 });
 test('product create/edit/delete survives repository restart and preserves server metrics',async()=>{
  const f=fixture();await f.products.save(owner,draft);

@@ -13,6 +13,7 @@ import { createCreatorCampaignRepository } from '../server/v2/modules/creators.t
 import { createFirestoreProductRepository } from '../server/v2/modules/products.ts';
 import { createFirebaseUploadRepository } from '../server/v2/modules/uploads.ts';
 import { createFirestoreFinancialRepository } from '../server/v2/modules/finance-repository.ts';
+import { createFirestoreAdminManagementRepository } from '../server/v2/modules/admin-management.ts';
 import { assertIsolatedV2Environment } from '../server/v2/config/staging.ts';
 
 let app, db, auth, bucket, server, base, profiles, stores;
@@ -28,9 +29,11 @@ async function request(path, caller, body, method = body === undefined ? 'GET' :
   return { status: response.status, body: await response.json() };
 }
 async function start() {
+  const management = createFirestoreAdminManagementRepository(db);
   const deps = { auth: createFirebaseVerifier(auth), profiles, stores, creators: createCreatorCampaignRepository(db),
     products: createFirestoreProductRepository(db, bucket), uploads: createFirebaseUploadRepository(db, bucket),
     finance: createFirestoreFinancialRepository(db, bucket, 'emulator-only-invoice-signing-secret-0123456789abcdef'),
+    management, subscriptions: management,
     readiness: { check: async () => true }, adminUid: identities.admin.uid, allowWrites: true, allowUnsignedEmulatorTokens: true,
     paidCheckoutEnabled: true, downloadTokenSecret: 'emulator-only-signing-secret-0123456789abcdef' };
   const express = createV2App(deps);
@@ -73,6 +76,15 @@ test('real Auth/Firestore/Storage: Seller create→update→upload→publish→p
   }
   const created=await request('/api/stores/create','seller',{storeName:'Seller Books',storeSlug:'seller-books'});
   assert.equal(created.status,201); const storeId=created.body.store.storeId;
+  assert.equal((await request('/api/subscriptions','seller',{status:'Waitlist'})).status,200);
+  assert.equal((await request('/api/subscriptions?storeId='+storeId,'other')).status,403);
+  assert.equal((await request('/api/admin/subscriptions/grant-pro','seller',{storeId,grantPro:true})).status,403);
+  const proGrant=await request('/api/admin/subscriptions/grant-pro','admin',{storeId,grantPro:true});
+  assert.equal(proGrant.status,200);assert.equal((await db.collection('stores').doc(storeId).get()).get('plan'),'Pro');
+  assert.equal((await db.collection('subscriptions').doc('sub-'+storeId).get()).get('plan'),'Pro');
+  assert.equal((await request('/api/commission/admin/grant-pro','admin',{storeId,grantPro:false})).status,200);
+  assert.equal((await db.collection('stores').doc(storeId).get()).get('plan'),'Free');
+  assert.equal((await request('/api/entitlements/'+identities.seller.uid,'seller')).body.hasProEntitlement,false);
   assert.equal((await request('/api/stores/update','other',{storeId,updates:{storeName:'Stolen'}})).status,403);
   assert.equal((await request('/api/stores/update','buyer',{storeId,updates:{storeName:'Stolen'}})).status,403);
   assert.equal((await request('/api/stores/update','seller',{storeId,updates:{storeName:'Updated Books'}})).status,200);
@@ -182,12 +194,52 @@ test('real Auth/Firestore/Storage: Seller create→update→upload→publish→p
   // Rules must reject client-side writes even with a legitimate Seller token.
   const forged=await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/v1/projects/${projectId}/databases/${config.firestoreDatabaseId}/documents/products/forged`,{method:'PATCH',headers:{Authorization:'Bearer '+tokens.seller,'Content-Type':'application/json'},body:JSON.stringify({fields:{ownerId:{stringValue:identities.seller.uid},published:{booleanValue:true}}})});
   assert.equal(forged.status,403);
-  await db.collection('stores').doc(storeId).update({status:'Suspended'});
+  const suspended=await request('/api/admin/stores/status','admin',{storeId,status:'suspended'});
+  assert.equal(suspended.status,200);assert.equal(suspended.body.status,'Pending');
   assert.equal((await request('/api/products/delete','seller',{productId:product.id})).status,403);
   assert.equal((await request('/api/stores/seller-books')).status,404);
-  await db.collection('stores').doc(storeId).update({status:'Active'});
+  const storeAudit=await db.collection('admin_audit').where('targetId','==',storeId).get();
+  assert.ok(storeAudit.size>=1);
+  assert.equal((await request('/api/admin/stores/status','admin',{storeId,status:'active'})).status,200);
   assert.equal((await request('/api/products/delete','seller',{productId:product.id})).status,200);
 });
+
+test('real named Firestore dispute lifecycle is isolated, audited and serialized against invoice settlement', async () => {
+  const prefix='EMU-PHASE6-DISPUTE';
+  for(let i=1;i<=5;i++) {
+    const row={orderNumber:`${prefix}-${i}`,orderId:`${prefix}-order-${i}`,sellerId:identities.seller.uid,
+    storeId:'store-'+identities.seller.uid.slice(0,20),buyerId:identities.buyer.uid,currency:'PKR',
+    grossAmountMinor:10000,platformCommissionMinor:500,commissionRateBps:500,paymentMethod:'jazzcash',
+    paymentStatus:'Paid',verificationMode:'Manually Verified by Seller',commissionStatus:'outstanding',
+    createdAtIso:`2026-03-0${i}T00:00:00.000Z`};
+    await db.collection('ledger').doc(`${prefix}-${i}`).set(row);
+    await db.collection('commission_entries').doc(`${prefix}-${i}`).set({...row,entryId:row.orderNumber,status:'outstanding'});
+  }
+  const finance=createFirestoreFinancialRepository(db,bucket,'emulator-only-invoice-signing-secret-0123456789abcdef');
+  const [invoice]=await finance.issueCommissionInvoices(identities.seller.uid);
+  assert.equal(invoice.verifiedSalesCount,5);assert.equal(invoice.commissionAmountMinor,2500);
+  assert.equal((await request('/api/ledger/commission-status','buyer',{orderNumber:`${prefix}-1`,newCommissionStatus:'disputed',note:'Buyer is not permitted to file Seller commission disputes.'})).status,403);
+  assert.equal((await request('/api/ledger/commission-status','other',{orderNumber:`${prefix}-1`,newCommissionStatus:'disputed',note:'Unrelated Seller cannot dispute another Seller commission.'})).status,403);
+  const submitted=await request('/api/ledger/commission-status','seller',{orderNumber:`${prefix}-1`,newCommissionStatus:'disputed',note:'Source evidence shows the commission amount needs review.'});
+  assert.equal(submitted.status,200);assert.equal(submitted.body.commissionStatus,'disputed');
+  await new Promise(resolve=>server.close(resolve));await start();
+  assert.equal((await db.collection('commission_disputes').doc(submitted.body.disputeId).get()).get('status'),'pending');
+  assert.equal((await request('/api/commission/admin/disputes','seller')).status,403);
+  const listed=await request('/api/commission/admin/disputes?limit=10','admin');
+  assert.equal(listed.status,200);assert.ok(listed.body.disputes.some(item=>item.disputeId===submitted.body.disputeId));
+  assert.equal((await request('/api/commission/submit-payment','seller',{invoiceId:invoice.invoiceId,amountMinor:2500,
+    paymentMethod:'manual_bank',paymentReference:'DISPUTE-EMU-PAYMENT'})).status,409);
+  const decision={disputeId:submitted.body.disputeId,decision:'approve',explanation:'Evidence confirms the order was not eligible for this invoice.'};
+  const decisions=await Promise.all([request('/api/commission/admin/disputes/resolve','admin',decision),
+    request('/api/commission/admin/disputes/resolve','admin',decision)]);
+  assert.equal(decisions.filter(item=>item.status===200).length,1);
+  assert.equal(decisions.filter(item=>item.status===409).length,1);
+  const savedInvoice=await db.collection('commission_invoices').doc(invoice.invoiceId).get();
+  assert.equal(savedInvoice.get('remainingBalanceMinor'),2000);assert.equal(savedInvoice.get('adjustedAmountMinor'),500);
+  const order=await db.collection('ledger').doc(`${prefix}-1`).get();assert.equal(order.get('commissionStatus'),'reversed');
+  const audit=await db.collection('ledger_audit').where('disputeId','==',submitted.body.disputeId).get();assert.equal(audit.size,2);
+});
+
 test('real Firestore competing founder claims stop exactly at 100', async () => {
   await db.collection('creator_launch_campaigns').doc('first-100-creators').set({claimedCount:98,limit:100});
   for(const name of ['claim99','claim100','claim101']) assert.equal((await request('/api/users/profile',name,{role:'seller',displayName:name})).status,200);

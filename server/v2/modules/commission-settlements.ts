@@ -10,7 +10,8 @@ const paths = (app: Express, route: string[], handler: any) => route.forEach(pat
 export function registerCommissionSettlementRoutes(app: Express, deps: V2Dependencies) {
   const finance = () => {
     if (!deps.finance?.commissionRecords || !deps.finance.issueCommissionInvoices ||
-        !deps.finance.submitCommissionPayment || !deps.finance.reviewCommissionPayment || !deps.finance.disputeCommission) {
+        !deps.finance.submitCommissionPayment || !deps.finance.reviewCommissionPayment || !deps.finance.disputeCommission ||
+        !deps.finance.listCommissionDisputes || !deps.finance.resolveCommissionDispute) {
       throw new ApiError(501, 'commission/not-migrated', 'Commission settlement is not available in this V2 environment.');
     }
     return deps.finance;
@@ -127,8 +128,33 @@ export function registerCommissionSettlementRoutes(app: Express, deps: V2Depende
     if (status !== 'disputed' || note.length < 10 || note.length > 500) throw new ApiError(422, 'commission/invalid-dispute', 'A dispute requires at least 10 characters and cannot change settlement state.');
     await requireSeller(principal, deps);
     const changed = await finance().disputeCommission!(orderNumber, principal.uid, note);
-    res.json({ ok: true, orderNumber, commissionStatus: changed.commissionStatus,
+    res.json({ ok: true, orderNumber, disputeId: changed.disputeId, commissionStatus: changed.commissionStatus,
       commissionSummary: await statusSummary(principal.uid, finance()) });
+  })().catch(next));
+
+  app.get('/api/commission/admin/disputes', (req, res, next) => (async () => {
+    const principal = await authenticatedPrincipal(req, deps);
+    if (!isVerifiedSuperAdmin(principal, deps.adminUid)) throw new ApiError(403, 'auth/admin-forbidden', 'Only the verified Super Admin may review commission disputes.');
+    const rawLimit = req.query.limit === undefined ? 100 : Number(req.query.limit);
+    if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 200) throw new ApiError(400, 'commission/invalid-limit', 'Limit must be an integer from 1 to 200.');
+    const sellerId = String(req.query.sellerId || '').trim();
+    if (sellerId && !/^[A-Za-z0-9_-]{1,128}$/.test(sellerId)) throw new ApiError(400, 'commission/invalid-seller', 'Seller identity is invalid.');
+    const disputes = await finance().listCommissionDisputes!(rawLimit);
+    res.json({ disputes: disputes.filter(item => !sellerId || item.sellerId === sellerId)
+      .sort((a, b) => String(b.submittedAtIso || '').localeCompare(String(a.submittedAtIso || ''))) });
+  })().catch(next));
+
+  app.post('/api/commission/admin/disputes/resolve', (req, res, next) => (async () => {
+    const principal = await authenticatedPrincipal(req, deps);
+    if (!isVerifiedSuperAdmin(principal, deps.adminUid)) throw new ApiError(403, 'auth/admin-forbidden', 'Only the verified Super Admin may resolve commission disputes.');
+    const disputeId = String(req.body?.disputeId || '').trim();
+    const decision = req.body?.decision;
+    const explanation = String(req.body?.explanation || '').trim();
+    if (!/^cd-[a-f0-9]{32}$/.test(disputeId) || !['approve', 'reject'].includes(decision) || explanation.length < 10 || explanation.length > 1000) {
+      throw new ApiError(400, 'commission/invalid-dispute-decision', 'Provide a dispute ID, approve/reject decision and explanation of 10 to 1000 characters.');
+    }
+    const dispute = await finance().resolveCommissionDispute!({ disputeId, decision, actorUid: principal.uid, explanation });
+    res.json({ ok: true, dispute, reconciliationRequired: Number(dispute.reconciliationRequiredMinor || 0) > 0 });
   })().catch(next));
 
   const updateCommissionConfig = (req: any, res: any, next: any) => (async () => {

@@ -1,6 +1,6 @@
 # Backend V2 — Existing API Route Inventory
 
-Status checked against `server/v2/app.ts` after the financial administration slice. V2 runs only in isolated staging; production remains on V1.
+Status checked against `server/v2/app.ts` after Phase 6. V2 runs only in isolated staging; production remains on V1.
 
 Derived from the **actual `server.ts` route declarations** on `main` at the start of the V2 implementation. These are 79 statically declared `/api` route registrations (including one `USE` middleware). Handlers registered dynamically require separate verification.
 
@@ -18,7 +18,7 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 | POST | `/api/auth/email/migrate` | 3728 | Pending — V1 remains authoritative |
 | GET | `/api/auth/email/reset-audit` | 3745 | Pending — V1 remains authoritative |
 | GET | `/api/payments/gateway-status` | 3804 | Implemented — reports disabled gateways without inspecting or exposing credentials |
-| GET | `/api/payments/payoneer-readiness` | 3838 | Pending — V1 remains authoritative |
+| GET | `/api/payments/payoneer-readiness` | 3838 | Implemented — manual settlement only; API processing is disabled in V2 |
 | GET | `/api/admin/verify-session` | 3894 | Implemented in isolated V2 emulator staging |
 | POST | `/api/admin/verify-session` | 3895 | Implemented in isolated V2 emulator staging |
 | POST | `/api/admin/bootstrap-super-admin` | 3900 | Pending — V1 remains authoritative |
@@ -54,33 +54,35 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 | POST | `/api/commission/calculate` | 5812 | Implemented — supported manual methods, integer-minor 5% calculation |
 | POST | `/api/admin/commission-config` | 5851 | Implemented — verified Super Admin only; fixed 500 bps, rejects rate changes |
 | POST | `/api/admin/commission-rate` | 5852 | Implemented — compatible alias; same fixed 500 bps policy |
-| GET | `/api/ledger` | 5955 | Pending — V1 remains authoritative |
-| GET | `/api/ledger/transactions` | 5956 | Pending — V1 remains authoritative |
+| GET | `/api/ledger` | 5955 | Implemented — Seller's own ledger or scoped Super Admin query; bounded cursor pages |
+| GET | `/api/ledger/transactions` | 5956 | Implemented — compatible alias for the same scoped ledger contract |
 | POST | `/api/checkout/validate-and-prepare` | 5959 | Implemented — authoritative Firestore pricing and durable idempotency; paid flow isolated and opt-in |
 | POST | `/api/orders/verify-payment` | 6436 | Implemented — owning Seller only; amount/currency/commission snapshot checks |
 | GET | `/api/orders/sync` | 6871 | Implemented — Buyer/Seller identity-filtered |
 | GET | `/api/orders/list` | 6872 | Implemented — Buyer/Seller identity-filtered |
-| GET | `/api/orders/:orderNumber/email-notification` | 6876 | Pending — V1 remains authoritative |
+| GET | `/api/orders/:orderNumber/email-notification` | 6876 | Implemented — authorized status only; private email/token redacted; no send is triggered |
 | POST | `/api/orders/refund` | 6918 | Implemented — Seller-only evidence-confirmed refund, commission reversal, download revocation |
-| POST | `/api/ledger/commission-status` | 7014 | Implemented — Seller may file one reasoned dispute; cannot mark paid/reversed |
+| POST | `/api/ledger/commission-status` | 7014 | Implemented — Seller submits one reasoned dispute; cannot change settlement state |
 | GET | `/api/commission/status` | 7154 | Implemented — Seller own summary; Admin may request a specific seller |
 | GET | `/api/commissions/invoices` | 7155 | Implemented — compatible Seller summary alias |
 | POST | `/api/commission/invoices/issue` | V2 only | Implemented — idempotent 5-verified-sale invoice issuance for the authenticated Seller |
 | GET | `/api/commission/admin-overview` | 7244 | Implemented — Admin-only invoice/payment/adjustment data; traffic/store metrics omitted until migrated |
 | GET | `/api/commission/admin/overview` | 7245 | Implemented — compatible Admin financial overview alias |
-| POST | `/api/commission/admin/grant-pro` | 7351 | Pending — V1 remains authoritative |
-| POST | `/api/admin/subscriptions/grant-pro` | 7352 | Pending — V1 remains authoritative |
-| POST | `/api/admin/stores/status` | 7354 | Pending — V1 remains authoritative |
-| POST | `/api/admin/stores/control` | 7379 | Pending — V1 remains authoritative |
+| GET | `/api/commission/admin/disputes` | V2 only | Implemented — verified Super Admin only; bounded, optional Seller-scoped list |
+| POST | `/api/commission/admin/disputes/resolve` | V2 only | Implemented — approve/reject with required explanation; transactional and audited |
+| POST | `/api/commission/admin/grant-pro` | 7351 | Implemented — verified Super Admin; Free/Pro only and transactionally persisted |
+| POST | `/api/admin/subscriptions/grant-pro` | 7352 | Implemented — compatible Super Admin alias |
+| POST | `/api/admin/stores/status` | 7354 | Implemented — verified Super Admin; activate/pending/suspend with audit |
+| POST | `/api/admin/stores/control` | 7379 | Implemented — safe controls/metadata/Free-Pro; bulk actions rejected |
 | POST | `/api/commission/submit-payment` | 7478 | Implemented — owning Seller only; unique reference, integer amount, auditable Seller-submitted evidence |
 | POST | `/api/commission/verify-payment` | 7731 | Implemented — verified Super Admin only; independent cleared-funds attestation and idempotent transition |
 | POST | `/api/admin/commission/verify-payment` | 7732 | Implemented — compatible alias |
 | POST | `/api/commissions/verify-payment` | 7733 | Implemented — compatible alias |
-| POST | `/api/commission/simulate-overdue` | 7736 | Pending — V1 remains authoritative |
-| GET | `/api/entitlements/:sellerId` | 7792 | Pending — V1 remains authoritative |
-| GET | `/api/subscriptions` | 7915 | Pending — V1 remains authoritative |
-| GET | `/api/subscription/status` | 7916 | Pending — V1 remains authoritative |
-| POST | `/api/subscriptions` | 7920 | Pending — V1 remains authoritative |
+| POST | `/api/commission/simulate-overdue` | 7736 | Intentionally disabled — financial date simulation would mutate V1-style balances; returns truthful 501 |
+| GET | `/api/entitlements/:sellerId` | 7792 | Implemented — Seller self-only or verified Super Admin; Firestore-derived plan |
+| GET | `/api/subscriptions` | 7915 | Implemented — own records or scoped Super Admin query |
+| GET | `/api/subscription/status` | 7916 | Implemented — compatible alias |
+| POST | `/api/subscriptions` | 7920 | Implemented — verified Seller Pro waitlist only; cannot activate or charge |
 | POST | `/api/webhooks/:provider` | 7973 | Implemented as disabled — always returns truthful 503; no gateway webhook is active |
 | POST | `/api/downloads/token` | 7977 | Implemented — Buyer-owned paid order only |
 | POST | `/api/delivery/verify-download` | 7991 | Implemented — signed scoped expiring one-use access to private Storage bytes |
@@ -102,8 +104,12 @@ Derived from the **actual `server.ts` route declarations** on `main` at the star
 - Invoice records use the V1 `commission_invoices`, `commission_payments`, `commission_payment_refs`, `commission_adjustments` and `ledger_audit` collections and field names. Five verified, unbilled paid sales in one currency issue a deterministic seven-day invoice. Reads do not issue invoices; Seller payment verification invokes issuance, with a Seller-only retry endpoint.
 - Commission payment evidence is a seller-declared manual reference and note. The Admin must explicitly attest that cleared funds were checked externally. V2 does not independently verify a bank, wallet or gateway statement.
 - Refunds create compatible adjustment records and reduce unpaid invoice balances. Reversal of already settled commission is recorded as a positive invoice adjustment; no real transfer or automatic credit occurs.
+- Disputes use durable `pending → approved|rejected` records. Pending disputes block settlement submission/review and refunds for the affected invoice/order. Approval adjusts only a wholly unpaid invoice. For any settled portion, invoice totals remain untouched and the audit adjustment requires human reconciliation; no credit or refund is issued.
+- Store moderation and Pro changes require the configured verified Super Admin. Suspension retains V1's `Pending` store status and adds `adminControlStatus: suspended`; Seller edits cannot reactivate it. Pro grants/revokes update the Store plan and deterministic `subscriptions/sub-{storeId}` row transactionally. Seller self-service only joins the Pro waitlist.
+- Ledger endpoints return at most 200 scoped entries per page. Order notification lookup never sends email and returns no addresses or tokens. Payoneer readiness always reports manual settlement in V2.
 - `/api/commission/admin-overview` currently returns financial records only. Store roster and visit/conversion metrics are omitted rather than fabricated.
-- Super Admin store controls/grants, subscription entitlements and requests, order email notifications, Payoneer readiness, authentication email routes and AI routes remain unsupported. Unsupported routes return 501; webhooks return 503 disabled.
+- Unsupported: auth email migration/reset routes, OAuth diagnostics, Admin bootstrap, synthetic test-suite/Gemini routes, commission overdue simulation and other unlisted V1 APIs. They return 501 on isolated V2 and remain on V1 in production. Automated payment webhooks are intentionally disabled and return 503.
+- Blocked pending provider/identity contracts: email/password migration and reset delivery, Google OAuth diagnostics, live gateway callbacks, order email sending, AI chat and legacy returning-Buyer migration. No provider delivery or identity migration is fabricated in V2.
 
 ## Compatibility note
 
@@ -118,4 +124,4 @@ Uploads accept PDF, EPUB, ZIP, TXT, DOC, DOCX plus PNG/JPEG/WebP/GIF covers. The
 
 `GET /api/products?storeId=...` returns drafts to the verified store owner and only published `Available` products to guests. Storefront response stays `{ store, products }`; directory response stays `{ stores }`. Visits do not reveal aggregate metrics.
 
-V2 now implements owner payment settings, sanitized manual checkout instructions, isolated server-priced checkout/order persistence, Seller verification/refunds, 5% commission entries/reversal adjustments and protected downloads. Commission invoice/settlement and Admin financial operations, gateway status/webhooks, email notifications, AI and email/password endpoints remain pending and return 501. Paid checkout is rejected in production and no production traffic or payment activity has been switched.
+V2 implements owner payment settings, sanitized manual checkout instructions, isolated server-priced checkout/order persistence, Seller verification/refunds, 5% commission entries, invoices/settlements, dispute resolution, Admin store management, Pro entitlements, scoped ledger reads, protected downloads and status-only email/Payoneer contracts. Paid checkout remains restricted to explicit isolated-staging opt-in and hard-blocked in production. No production traffic or payment activity has been switched.

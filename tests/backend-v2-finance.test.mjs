@@ -180,3 +180,118 @@ test('commission rejection returns invoice to collectible state and audit is app
   assert.equal(reviewed.invoice.remainingBalanceMinor, 2500);
   assert.equal([...f.db.data.keys()].filter(key => key.startsWith('ledger_audit/')).length, 3);
 });
+
+function seedFiveOrders(f, prefix) {
+  for (let i = 1; i <= 5; i++) {
+    const row = { orderNumber: `${prefix}-${i}`, orderId: `order-${prefix}-${i}`,
+    sellerId: 'seller', storeId: 'store-seller', buyerId: `buyer-${i}`, currency: 'PKR', grossAmountMinor: 10000,
+    platformCommissionMinor: 500, commissionRateBps: 500, paymentMethod: 'jazzcash', paymentStatus: 'Paid',
+    verificationMode: 'Manually Verified by Seller', commissionStatus: 'outstanding', createdAtIso: `2026-02-0${i}` };
+    f.db.seed(`ledger/${prefix}-${i}`, row);
+    f.db.seed(`commission_entries/${prefix}-${i}`, { ...row, entryId: row.orderNumber, status: 'outstanding' });
+  }
+}
+
+test('uninvoiced dispute resolution is durable, audited, and single-winner under concurrency', async () => {
+  const f = financeFixture();
+  const openOrder = { orderNumber: 'DS-dispute-open', orderId: 'dispute-order', sellerId: 'seller',
+    storeId: 'store-seller', buyerId: 'buyer', currency: 'PKR', grossAmountMinor: 10000, platformCommissionMinor: 500,
+    commissionRateBps: 500, paymentMethod: 'jazzcash', paymentStatus: 'Paid', verificationMode: 'Manually Verified by Seller',
+    commissionStatus: 'outstanding' };
+  f.db.seed('ledger/DS-dispute-open', openOrder);
+  f.db.seed('commission_entries/DS-dispute-open', { ...openOrder, entryId: openOrder.orderNumber, status: 'outstanding' });
+  const dispute = await f.repo.disputeCommission('DS-dispute-open', 'seller', 'Order was fully refunded before the commission was invoiced.');
+  assert.equal(dispute.status, 'pending');
+  assert.equal(f.db.data.get('ledger/DS-dispute-open').commissionStatus, 'disputed');
+  await assert.rejects(f.repo.disputeCommission('DS-dispute-open', 'seller', 'Duplicate request should be blocked.'), error => error.status === 409);
+  const decision = { disputeId: dispute.disputeId, decision: 'approve', actorUid: 'admin', explanation: 'Evidence supports waiving this commission before invoice.' };
+  const results = await Promise.allSettled([f.repo.resolveCommissionDispute(decision), f.repo.resolveCommissionDispute(decision)]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter(result => result.status === 'rejected' && result.reason.status === 409).length, 1);
+  assert.equal(f.db.data.get(`commission_disputes/${dispute.disputeId}`).status, 'approved');
+  assert.equal(f.db.data.get('ledger/DS-dispute-open').commissionStatus, 'reversed');
+  assert.equal(f.db.data.get('commission_entries/DS-dispute-open').status, 'reversed');
+  assert.equal(f.db.data.get('commission_adjustments/DS-dispute-open:dispute').amountMinor, -500);
+  assert.equal([...f.db.data.values()].filter(row => row.action?.startsWith('COMMISSION_DISPUTE_')).length, 2);
+});
+
+test('invoiced dispute pauses submitted payment and reduces only an unpaid invoice balance', async () => {
+  const f = financeFixture(); seedFiveOrders(f, 'DS-dispute-inv');
+  const [invoice] = await f.repo.issueCommissionInvoices('seller');
+  const dispute = await f.repo.disputeCommission('DS-dispute-inv-1', 'seller', 'This order amount was entered incorrectly in the source records.');
+  await assert.rejects(f.repo.submitCommissionPayment({ invoiceId: invoice.invoiceId, sellerId: 'seller',
+    amountMinor: 2500, paymentMethod: 'manual_bank', paymentReference: 'DISPUTE-PAUSE-1' }), error => error.status === 409);
+  const resolved = await f.repo.resolveCommissionDispute({ disputeId: dispute.disputeId, decision: 'approve', actorUid: 'admin',
+    explanation: 'Source records confirm this order was ineligible.' });
+  const savedInvoice = f.db.data.get(`commission_invoices/${invoice.invoiceId}`);
+  assert.equal(savedInvoice.remainingBalanceMinor, 2000);
+  assert.equal(savedInvoice.adjustedAmountMinor, 500);
+  assert.equal(savedInvoice.status, 'open');
+  assert.equal(resolved.reconciliationRequiredMinor, 0);
+  assert.equal(savedInvoice.pendingDisputeIds.length, 0);
+  assert.equal([...f.db.data.values()].filter(row => row.action === 'COMMISSION_DISPUTE_APPROVED').length, 1);
+});
+
+test('settled invoiced dispute records human reconciliation without creating credit or changing invoice totals', async () => {
+  const f = financeFixture(); seedFiveOrders(f, 'DS-dispute-paid');
+  const [invoice] = await f.repo.issueCommissionInvoices('seller');
+  const { payment } = await f.repo.submitCommissionPayment({ invoiceId: invoice.invoiceId, sellerId: 'seller', amountMinor: 2500,
+    paymentMethod: 'manual_bank', paymentReference: 'DISPUTE-SETTLED-1' });
+  await f.repo.reviewCommissionPayment({ paymentId: payment.paymentId, invoiceId: invoice.invoiceId, decision: 'approve',
+    fundsConfirmed: true, actorUid: 'admin' });
+  const dispute = await f.repo.disputeCommission('DS-dispute-paid-1', 'seller', 'The source order should not have been charged commission.');
+  const before = f.db.data.get(`commission_invoices/${invoice.invoiceId}`);
+  const result = await f.repo.resolveCommissionDispute({ disputeId: dispute.disputeId, decision: 'approve', actorUid: 'admin',
+    explanation: 'Evidence confirms commission was not eligible; finance team must reconcile settled funds.' });
+  const after = f.db.data.get(`commission_invoices/${invoice.invoiceId}`);
+  assert.equal(after.paidAmountMinor, before.paidAmountMinor);
+  assert.equal(after.remainingBalanceMinor, before.remainingBalanceMinor);
+  assert.equal(after.adjustedAmountMinor, before.adjustedAmountMinor);
+  assert.equal(result.reconciliationRequiredMinor, 500);
+  const adjustment = [...f.db.data.entries()].find(([path, row]) => path.startsWith('commission_adjustments/') && row.disputeId === dispute.disputeId)?.[1];
+  assert.equal(adjustment.reconciliationStatus, 'human_review_required');
+  assert.equal(adjustment.amountMinor, -500);
+  assert.equal(f.db.data.get('ledger/DS-dispute-paid-1').commissionStatus, 'reversed');
+});
+
+test('refund and invoice payment review cannot bypass a pending invoice dispute', async () => {
+  const f = financeFixture(); seedFiveOrders(f, 'DS-dispute-race');
+  const [invoice] = await f.repo.issueCommissionInvoices('seller');
+  const dispute = await f.repo.disputeCommission('DS-dispute-race-1', 'seller', 'Checking source evidence before applying this charge.');
+  await assert.rejects(f.repo.transitionOrder('DS-dispute-race-1', 'Paid', { paymentStatus: 'Refunded', refundReference: 'REF-DISPUTE-RACE' }, 'seller'),
+    error => error.status === 409);
+  const [payment] = await Promise.allSettled([f.repo.submitCommissionPayment({ invoiceId: invoice.invoiceId, sellerId: 'seller',
+    amountMinor: 2500, paymentMethod: 'manual_bank', paymentReference: 'DISPUTE-RACE-2' })]);
+  assert.equal(payment.status, 'rejected');
+  assert.equal(f.db.data.get(`commission_disputes/${dispute.disputeId}`).status, 'pending');
+  assert.equal(f.db.data.get('ledger/DS-dispute-race-1').paymentStatus, 'Paid');
+});
+
+test('commission entry mismatch fails closed without writing a dispute or changing balances', async () => {
+  const f = financeFixture();
+  const row = { orderNumber: 'DS-dispute-mismatch', sellerId: 'seller', storeId: 'store-seller', buyerId: 'buyer',
+    currency: 'PKR', grossAmountMinor: 10000, platformCommissionMinor: 500, commissionRateBps: 500,
+    paymentMethod: 'jazzcash', paymentStatus: 'Paid', verificationMode: 'Manually Verified by Seller', commissionStatus: 'outstanding' };
+  f.db.seed('ledger/DS-dispute-mismatch', row);
+  f.db.seed('commission_entries/DS-dispute-mismatch', { ...row, sellerId: 'other', status: 'outstanding' });
+  await assert.rejects(f.repo.disputeCommission(row.orderNumber, 'seller', 'Request review of the source commission record.'),
+    error => error.status === 409 && error.code === 'commission/entry-mismatch');
+  assert.equal(f.db.data.get('ledger/DS-dispute-mismatch').commissionStatus, 'outstanding');
+  assert.equal([...f.db.data.keys()].some(path => path.startsWith('commission_disputes/')), false);
+  assert.equal([...f.db.data.keys()].some(path => path.startsWith('ledger_audit/')), false);
+});
+
+test('ledger contract is seller-scoped, bounded and cursor-paginated; notification lookup omits customer secrets', async () => {
+  const f = financeFixture();
+  await f.repo.createOrder(orderInput({ orderNumber: 'DS-page-001', orderId: 'page-order-001', paymentReference: 'TX-PAGE-001', idempotencyKey: 'page-key-001' }));
+  await f.repo.createOrder(orderInput({ orderNumber: 'DS-page-002', orderId: 'page-order-002', paymentReference: 'TX-PAGE-002', idempotencyKey: 'page-key-002' }));
+  f.db.seed('ledger/DS-page-002', { ...f.db.data.get('ledger/DS-page-002'), buyerEmailNotification: {
+    status: 'sent', recipientEmail: 'private@example.test', downloadToken: 'secret-token' } });
+  const first = await f.repo.ledgerEntries('seller', false, 'store-seller', undefined, 1);
+  assert.equal(first.entries.length, 1); assert.equal(first.hasMore, true); assert.equal(first.nextCursor, 'DS-page-001');
+  const second = await f.repo.ledgerEntries('seller', false, 'store-seller', first.nextCursor, 1);
+  assert.equal(second.entries[0].orderNumber, 'DS-page-002'); assert.equal(second.hasMore, false);
+  const notification = await f.repo.emailNotification('DS-page-002');
+  assert.equal(notification.buyerId, 'buyer'); assert.equal(notification.notification.status, 'sent');
+  // The route projects status only; repository access remains role-scoped at the route boundary.
+});

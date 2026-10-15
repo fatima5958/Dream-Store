@@ -13,6 +13,7 @@ import { createFirestoreStoreRepository } from '../modules/stores.ts';
 import { createFirestoreProductRepository } from '../modules/products.ts';
 import { createFirebaseUploadRepository, validateFileBytes } from '../modules/uploads.ts';
 import { createFirestoreFinancialRepository } from '../modules/finance-repository.ts';
+import { createFirestoreAdminManagementRepository } from '../modules/admin-management.ts';
 import type { ReadinessService, V2Dependencies } from '../contracts.ts';
 
 interface PublicFirebaseConfig {
@@ -89,6 +90,7 @@ export function createProductionV2Dependencies(): V2Dependencies {
       },
     };
   })();
+  const management = createFirestoreAdminManagementRepository(db);
 
   return {
     auth: createFirebaseVerifier(auth),
@@ -97,6 +99,8 @@ export function createProductionV2Dependencies(): V2Dependencies {
     stores: createFirestoreStoreRepository(db),
     products: createFirestoreProductRepository(db, storage.bucket(config.storageBucket)),
     finance: createFirestoreFinancialRepository(db, storage.bucket(config.storageBucket)),
+    management,
+    subscriptions: management,
     uploads: createFirebaseUploadRepository(db, storage.bucket(config.storageBucket)),
     covers: {
       async read(ownerId, fileName) {

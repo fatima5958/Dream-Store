@@ -55,6 +55,16 @@ export interface ReadinessService {
   check(): Promise<boolean>;
 }
 
+export interface AdminManagementRepository {
+  updateStore(storeId: string, patch: Record<string, unknown>, actorUid: string, action: string): Promise<Record<string, any> | null>;
+  grantPro(input: { sellerId?: string; storeId?: string; grantPro: boolean; actorUid: string }): Promise<{ sellerId: string; storeIds: string[]; plan: 'Pro' | 'Free' }>;
+}
+export interface SubscriptionRepository {
+  entitlement(sellerId: string): Promise<Record<string, any> | null>;
+  list(sellerId?: string, storeId?: string): Promise<Array<Record<string, any>>>;
+  requestWaitlist(sellerId: string): Promise<Record<string, any>>;
+}
+
 export interface V2Dependencies {
   auth: AuthVerifier;
   profiles: ProfileRepository;
@@ -62,6 +72,8 @@ export interface V2Dependencies {
   stores?: StoreRepository;
   products?: ProductRepository;
   finance?: FinancialRepository;
+  management?: AdminManagementRepository;
+  subscriptions?: SubscriptionRepository;
   uploads?: UploadRepository;
   covers?: { read(ownerId: string, fileName: string): Promise<{ data: Buffer; contentType: string }> };
   readiness: ReadinessService;
@@ -91,11 +103,15 @@ export interface FinancialRepository {
   createOrder(input: Record<string, any>): Promise<{ duplicate: boolean; order: Record<string, any> }>;
   order(orderNumber: string): Promise<Record<string, any> | null>;
   listOrders(uid: string, admin: boolean): Promise<Array<Record<string, any>>>;
+  ledgerEntries?(sellerId: string | undefined, admin: boolean, storeId: string | undefined, cursor: string | undefined, limit: number): Promise<{ entries: Array<Record<string, any>>; auditTrail: Array<Record<string, any>>; nextCursor: string | null; hasMore: boolean }>;
+  emailNotification?(orderNumber: string): Promise<Record<string, any> | null>;
   issueCommissionInvoices?(sellerId: string): Promise<Array<Record<string, any>>>;
   commissionRecords?(sellerId?: string): Promise<{ invoices: Array<Record<string, any>>; payments: Array<Record<string, any>>; adjustments: Array<Record<string, any>> }>;
   submitCommissionPayment?(input: Record<string, any>): Promise<{ payment: Record<string, any>; invoice: Record<string, any> }>;
   reviewCommissionPayment?(input: Record<string, any>): Promise<{ payment: Record<string, any>; invoice: Record<string, any> }>;
   disputeCommission?(orderNumber: string, sellerId: string, note: string): Promise<Record<string, any>>;
+  listCommissionDisputes?(limit: number): Promise<Array<Record<string, any>>>;
+  resolveCommissionDispute?(input: { disputeId: string; decision: 'approve' | 'reject'; actorUid: string; explanation: string }): Promise<Record<string, any>>;
   transitionOrder(orderNumber: string, expectedStatus: string, patch: Record<string, unknown>, actorUid: string): Promise<Record<string, any>>;
   consumeDownload(orderNumber: string, buyerUid: string, productId: string, tokenId: string): Promise<{ order: Record<string, any>; deliverable: Record<string, any>; fileDataUrl: string }>;
 }

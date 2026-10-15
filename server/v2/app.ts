@@ -14,6 +14,9 @@ import { registerPaymentVerificationRoutes } from './modules/payment-verificatio
 import { registerCommissionRoutes } from './modules/commissions.ts';
 import { registerCommissionSettlementRoutes } from './modules/commission-settlements.ts';
 import { createProcessRateLimiter } from './modules/rate-limit.ts';
+import { registerAdminManagementRoutes } from './modules/admin-routes.ts';
+import { registerSubscriptionRoutes } from './modules/subscriptions.ts';
+import { registerFinancialReadRoutes } from './modules/financial-read-contracts.ts';
 
 const jsonRoute = (callback: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: (error?: unknown) => void) => {
@@ -76,6 +79,9 @@ export function createV2App(deps: V2Dependencies) {
     payoneerManualVerificationPreserved: true, payoneerMode: 'manual_settlement',
     emailConfigured: false, platformCommissionBps: 500,
   }));
+  if (deps.management) registerAdminManagementRoutes(app, deps);
+  if (deps.subscriptions || deps.management) registerSubscriptionRoutes(app, deps);
+  if (deps.finance) registerFinancialReadRoutes(app, deps);
   app.post('/api/webhooks/:provider', (_req, res) => res.status(503).json({
     error: 'Automated payment webhooks are disabled in Backend V2.', code: 'payments/webhooks-disabled',
   }));

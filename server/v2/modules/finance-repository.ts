@@ -128,6 +128,38 @@ export function createFirestoreFinancialRepository(
       const snap = await ledger.doc(orderNumber).get();
       return snap.exists ? snap.data() || null : null;
     },
+    async emailNotification(orderNumber) {
+      const snap = await ledger.doc(orderNumber).get();
+      if (!snap.exists) return null;
+      const row = snap.data() || {};
+      return { orderNumber, buyerId: row.buyerId, sellerId: row.sellerId,
+        paymentStatus: row.paymentStatus,
+        notification: row.buyerEmailNotification && typeof row.buyerEmailNotification === 'object'
+          ? row.buyerEmailNotification : null };
+    },
+    async ledgerEntries(sellerId, admin, storeId, cursor, limit) {
+      let query: any = ledger.limit(1000);
+      if (!admin) query = ledger.where('sellerId', '==', sellerId).limit(1000);
+      else if (sellerId) query = ledger.where('sellerId', '==', sellerId).limit(1000);
+      const snap = await query.get();
+      const all: Array<Record<string, any>> = snap.docs.map((doc: any) => ({ ...(doc.data() || {}), orderNumber: doc.id }))
+        .filter((row: Record<string, any>) => !storeId || row.storeId === storeId)
+        .filter((row: Record<string, any>) => !cursor || String(row.orderNumber) > cursor)
+        .sort((a: Record<string, any>, b: Record<string, any>) => String(a.orderNumber).localeCompare(String(b.orderNumber)));
+      const page = all.slice(0, limit + 1);
+      const hasMore = page.length > limit;
+      const entries = hasMore ? page.slice(0, limit) : page;
+      let auditTrail: Array<Record<string, any>> = [];
+      if (admin) {
+        let auditQuery: any = db.collection('ledger_audit').limit(500);
+        if (sellerId) auditQuery = db.collection('ledger_audit').where('sellerId', '==', sellerId).limit(200);
+        const audits = await auditQuery.get();
+        auditTrail = audits.docs.map((doc: any) => ({ ...(doc.data() || {}), auditId: doc.id }))
+          .filter((row: Record<string, any>) => !storeId || row.storeId === storeId)
+          .sort((a: Record<string, any>, b: Record<string, any>) => String(b.createdAtIso || b.atIso || '').localeCompare(String(a.createdAtIso || a.atIso || '')));
+      }
+      return { entries, auditTrail, hasMore, nextCursor: hasMore && entries.length ? String(entries[entries.length - 1].orderNumber) : null };
+    },
     async issueCommissionInvoices(sellerId) {
       if (invoiceSigningSecret.length < 32) throw new ApiError(503, 'commission/signing-unavailable', 'Commission invoice signing is unavailable.');
       const rows = await ledger.where('sellerId', '==', sellerId).get();
@@ -211,11 +243,15 @@ export function createFirestoreFinancialRepository(
       const refRef = db.collection('commission_payment_refs').doc(referenceHash);
       const now = new Date().toISOString();
       return db.runTransaction(async tx => {
-        const [invoiceSnap, referenceSnap] = await Promise.all([tx.get(invoiceRef), tx.get(refRef)]);
+        const [invoiceSnap, referenceSnap, disputesSnap] = await Promise.all([
+          tx.get(invoiceRef), tx.get(refRef),
+          tx.get(db.collection('commission_disputes').where('invoiceId', '==', invoiceId).where('status', '==', 'pending')),
+        ]);
         if (!invoiceSnap.exists) throw new ApiError(404, 'commission/invoice-not-found', 'Commission invoice not found.');
         if (referenceSnap.exists) throw new ApiError(409, 'commission/duplicate-reference', 'This transfer reference has already been submitted.');
         const invoice = invoiceSnap.data() || {};
         if (invoice.sellerId !== input.sellerId) throw new ApiError(403, 'commission/invoice-forbidden', 'Invoice belongs to another Seller.');
+        if (disputesSnap.docs.length > 0 || (Array.isArray(invoice.pendingDisputeIds) && invoice.pendingDisputeIds.length > 0)) throw new ApiError(409, 'commission/dispute-pending', 'Invoice settlement is paused while an Admin reviews an open commission dispute.');
         const balance = Number(invoice.remainingBalanceMinor); const amount = input.amountMinor === undefined ? balance : Number(input.amountMinor);
         if (invoice.status === 'payment_submitted') throw new ApiError(409, 'commission/proof-pending', 'This invoice already has payment evidence awaiting review.');
         if (!Number.isSafeInteger(balance) || balance <= 0 || !Number.isSafeInteger(amount) || amount <= 0 || amount > balance || invoice.status === 'paid') {
@@ -249,8 +285,12 @@ export function createFirestoreFinancialRepository(
         if (payment.invoiceId !== input.invoiceId || payment.status !== 'submitted') throw new ApiError(409, 'commission/payment-reviewed', 'Payment was already reviewed or does not match the invoice.');
         if (payment.sellerId === input.actorUid) throw new ApiError(403, 'commission/self-approval', 'A Seller cannot approve their own commission settlement.');
         const invoiceRef = db.collection('commission_invoices').doc(String(payment.invoiceId));
-        const invoiceSnap = await tx.get(invoiceRef);
+        const [invoiceSnap, disputesSnap] = await Promise.all([
+          tx.get(invoiceRef),
+          tx.get(db.collection('commission_disputes').where('invoiceId', '==', payment.invoiceId).where('status', '==', 'pending')),
+        ]);
         if (!invoiceSnap.exists) throw new ApiError(409, 'commission/invoice-missing', 'Payment invoice is unavailable.');
+        if (disputesSnap.docs.length > 0 || (Array.isArray(invoiceSnap.get('pendingDisputeIds')) && invoiceSnap.get('pendingDisputeIds').length > 0)) throw new ApiError(409, 'commission/dispute-pending', 'Settlement review is paused while an Admin reviews an open commission dispute.');
         const invoice = invoiceSnap.data() || {};
         const amount = Number(payment.amountMinor); const remaining = Number(invoice.remainingBalanceMinor);
         if (invoice.sellerId !== payment.sellerId || invoice.storeId !== payment.storeId || invoice.currency !== payment.currency ||
@@ -275,13 +315,29 @@ export function createFirestoreFinancialRepository(
         const orderNumbers = Array.isArray(invoice.orderNumbers) ? invoice.orderNumbers as string[] : [];
         const ledgerRefs: DocumentReference[] = input.decision === 'approve' && remainingBalanceMinor === 0
           ? orderNumbers.map(n => ledger.doc(n)) : [];
-        const ledgerSnaps = await Promise.all(ledgerRefs.map(ref => tx.get(ref)));
+        const entryRefs: DocumentReference[] = ledgerRefs.map(ref => db.collection('commission_entries').doc(ref.id));
+        const [ledgerSnaps, entrySnaps] = await Promise.all([
+          Promise.all(ledgerRefs.map(ref => tx.get(ref))), Promise.all(entryRefs.map(ref => tx.get(ref))),
+        ]);
+        for (let i = 0; i < ledgerSnaps.length; i++) {
+          const source = ledgerSnaps[i].data() || {};
+          if (!ledgerSnaps[i].exists || source.invoiceId !== invoice.invoiceId || source.sellerId !== invoice.sellerId || source.currency !== invoice.currency) {
+            throw new ApiError(409, 'commission/invoice-source-mismatch', 'Invoice source orders require administrative review.');
+          }
+          if (entrySnaps[i].exists && (entrySnaps[i].get('sellerId') !== source.sellerId ||
+              entrySnaps[i].get('platformCommissionMinor') !== source.platformCommissionMinor ||
+              entrySnaps[i].get('currency') !== source.currency)) {
+            throw new ApiError(409, 'commission/entry-mismatch', 'Commission entry and invoice source do not match.');
+          }
+        }
         tx.update(paymentRef, { status: newPayment.status, reviewMode: newPayment.reviewMode, reviewedByUid: input.actorUid,
           reviewedAtIso: now, reviewNote: newPayment.reviewNote, updatedAtIso: now });
         tx.update(invoiceRef, { status: invoiceStatus, paidAmountMinor, remainingBalanceMinor,
           ...(input.decision === 'approve' ? { verifiedByAdminUid: input.actorUid, verifiedAtIso: now } : {}) });
-        for (let i = 0; i < ledgerSnaps.length; i++) if (ledgerSnaps[i].exists && ledgerSnaps[i].get('invoiceId') === invoice.invoiceId && ledgerSnaps[i].get('sellerId') === invoice.sellerId) {
+        for (let i = 0; i < ledgerSnaps.length; i++) {
           tx.update(ledgerRefs[i], { commissionStatus: 'paid', updatedAtIso: now });
+          if (entrySnaps[i].exists) tx.update(entryRefs[i], { status: 'paid', updatedAtIso: now });
+          else tx.create(entryRefs[i], { ...commissionEntry(ledgerSnaps[i].data() || {}), status: 'paid', updatedAtIso: now });
         }
         const auditId = randomUUID();
         tx.create(db.collection('ledger_audit').doc(auditId), { auditId, invoiceId: invoice.invoiceId,
@@ -293,20 +349,180 @@ export function createFirestoreFinancialRepository(
     },
     async disputeCommission(orderNumber, sellerId, note) {
       const ref = ledger.doc(orderNumber); const now = new Date().toISOString();
+      const disputeId = 'cd-' + createHash('sha256').update(orderNumber).digest('hex').slice(0, 32);
+      const disputeRef = db.collection('commission_disputes').doc(disputeId);
+      const commissionRef = db.collection('commission_entries').doc(orderNumber);
       return db.runTransaction(async tx => {
-        const snap = await tx.get(ref);
+        const [snap, commissionSnap, existing] = await Promise.all([tx.get(ref), tx.get(commissionRef), tx.get(disputeRef)]);
         if (!snap.exists) throw new ApiError(404, 'commission/order-not-found', 'Order not found.');
         const old = snap.data() || {};
         if (old.sellerId !== sellerId) throw new ApiError(403, 'commission/order-forbidden', 'Order belongs to another Seller.');
-        if (old.paymentStatus !== 'Paid' || !['outstanding', 'disputed'].includes(String(old.commissionStatus)) || old.invoiceId) {
-          throw new ApiError(409, 'commission/dispute-conflict', 'This commission record is invoiced or cannot be disputed.');
+        if (existing.exists) throw new ApiError(409, 'commission/dispute-duplicate', 'A dispute already exists for this order.');
+        if (old.paymentStatus !== 'Paid' || !['outstanding', 'disputed', 'paid'].includes(String(old.commissionStatus)) ||
+            !Number.isSafeInteger(old.grossAmountMinor) || old.grossAmountMinor <= 0 ||
+            !Number.isSafeInteger(old.platformCommissionMinor) || old.platformCommissionMinor < 0 || old.commissionRateBps !== 500) {
+          throw new ApiError(409, 'commission/dispute-conflict', 'This commission record is not eligible for a dispute.');
         }
-        if (old.commissionStatus === 'disputed') throw new ApiError(409, 'commission/dispute-duplicate', 'A dispute is already open for this order.');
+        if (!commissionSnap.exists || commissionSnap.get('sellerId') !== sellerId || commissionSnap.get('currency') !== old.currency ||
+            commissionSnap.get('grossAmountMinor') !== old.grossAmountMinor ||
+            commissionSnap.get('platformCommissionMinor') !== old.platformCommissionMinor || commissionSnap.get('commissionRateBps') !== 500) {
+          throw new ApiError(409, 'commission/entry-mismatch', 'The commission entry and source order require administrative review.');
+        }
+        let invoice: Record<string, any> | null = null;
+        if (old.invoiceId) {
+          const invoiceSnap = await tx.get(db.collection('commission_invoices').doc(String(old.invoiceId)));
+          if (!invoiceSnap.exists) throw new ApiError(409, 'commission/invoice-missing', 'The linked invoice requires administrative review.');
+          invoice = invoiceSnap.data() || {};
+          if (invoice.sellerId !== sellerId || invoice.currency !== old.currency ||
+              !Array.isArray(invoice.orderNumbers) || !invoice.orderNumbers.includes(orderNumber) ||
+              !Number.isSafeInteger(invoice.remainingBalanceMinor) || !Number.isSafeInteger(invoice.paidAmountMinor)) {
+            throw new ApiError(409, 'commission/invoice-mismatch', 'The linked invoice totals require administrative review.');
+          }
+          const pendingPayments = await tx.get(db.collection('commission_payments')
+            .where('invoiceId', '==', old.invoiceId).where('status', '==', 'submitted'));
+          if (pendingPayments.docs.length || invoice.status === 'payment_submitted') throw new ApiError(409, 'commission/payment-pending', 'Review submitted invoice payment evidence before disputing this commission.');
+          tx.update(db.collection('commission_invoices').doc(String(old.invoiceId)), {
+            pendingDisputeIds: [...new Set([...(Array.isArray(invoice.pendingDisputeIds) ? invoice.pendingDisputeIds : []), disputeId])],
+          });
+        }
         const auditId = randomUUID();
-        tx.update(ref, { commissionStatus: 'disputed', commissionDisputeNote: note.slice(0, 500), updatedAtIso: now });
-        tx.create(db.collection('ledger_audit').doc(auditId), { auditId, orderNumber, orderId: old.orderId, sellerId,
-          actorUid: sellerId, action: 'COMMISSION_DISPUTED', previousStatus: old.commissionStatus, newStatus: 'disputed', atIso: now, createdAtIso: now });
-        return { ...old, commissionStatus: 'disputed', commissionDisputeNote: note.slice(0, 500), updatedAtIso: now };
+        const dispute = { disputeId, orderNumber, orderId: old.orderId || '', sellerId, storeId: old.storeId || '',
+          invoiceId: String(old.invoiceId || ''), currency: String(old.currency || ''),
+          disputedCommissionMinor: Number(old.platformCommissionMinor), previousCommissionStatus: String(old.commissionStatus),
+          reason: note.slice(0, 500), status: 'pending',
+          submittedByUid: sellerId, submittedAtIso: now, createdAtIso: now, updatedAtIso: now };
+        tx.create(disputeRef, dispute);
+        tx.update(ref, { commissionStatus: 'disputed', commissionDisputeNote: dispute.reason,
+          commissionDisputeId: disputeId, updatedAtIso: now });
+        tx.update(commissionRef, { status: 'disputed', disputeId, updatedAtIso: now });
+        tx.create(db.collection('ledger_audit').doc(auditId), { auditId, disputeId, invoiceId: dispute.invoiceId || null,
+          orderNumber, orderId: old.orderId, sellerId, actorUid: sellerId, action: 'COMMISSION_DISPUTE_SUBMITTED',
+          previousStatus: old.commissionStatus, newStatus: 'disputed', amountMinor: dispute.disputedCommissionMinor,
+          explanation: dispute.reason, atIso: now, createdAtIso: now });
+        return { ...dispute, commissionStatus: 'disputed' };
+      });
+    },
+    async listCommissionDisputes(limit) {
+      const bounded = Math.max(1, Math.min(200, Math.floor(limit || 100)));
+      const snap = await db.collection('commission_disputes').limit(bounded).get();
+      return snap.docs.map(doc => ({ ...doc.data(), disputeId: doc.id }));
+    },
+    async resolveCommissionDispute(input) {
+      const disputeRef = db.collection('commission_disputes').doc(input.disputeId);
+      const now = new Date().toISOString();
+      return db.runTransaction(async tx => {
+        const disputeSnap = await tx.get(disputeRef);
+        if (!disputeSnap.exists) throw new ApiError(404, 'commission/dispute-not-found', 'Commission dispute not found.');
+        const dispute = disputeSnap.data() || {};
+        if (dispute.status !== 'pending') throw new ApiError(409, 'commission/dispute-resolved', 'This dispute has already been resolved.');
+        const orderRef = ledger.doc(String(dispute.orderNumber));
+        const commissionRef = db.collection('commission_entries').doc(String(dispute.orderNumber));
+        const [orderSnap, commissionSnap] = await Promise.all([tx.get(orderRef), tx.get(commissionRef)]);
+        if (!orderSnap.exists) throw new ApiError(409, 'commission/dispute-order-missing', 'The source order requires administrative review.');
+        if (!commissionSnap.exists) throw new ApiError(409, 'commission/entry-missing', 'The commission entry requires administrative review.');
+        const order = orderSnap.data() || {};
+        if (order.sellerId !== dispute.sellerId || order.commissionDisputeId !== dispute.disputeId ||
+            order.commissionStatus !== 'disputed' || order.paymentStatus !== 'Paid' ||
+            order.platformCommissionMinor !== dispute.disputedCommissionMinor || order.currency !== dispute.currency) {
+          throw new ApiError(409, 'commission/dispute-record-mismatch', 'Dispute and commission source records do not match.');
+        }
+        if (commissionSnap.get('sellerId') !== dispute.sellerId || commissionSnap.get('currency') !== dispute.currency ||
+            commissionSnap.get('platformCommissionMinor') !== dispute.disputedCommissionMinor || commissionSnap.get('status') !== 'disputed') {
+          throw new ApiError(409, 'commission/entry-mismatch', 'The commission entry and dispute record require administrative review.');
+        }
+        let invoice: Record<string, any> | null = null;
+        let invoiceRef: DocumentReference | null = null;
+        if (dispute.invoiceId) {
+          invoiceRef = db.collection('commission_invoices').doc(String(dispute.invoiceId));
+          const invoiceSnap = await tx.get(invoiceRef);
+          if (!invoiceSnap.exists) throw new ApiError(409, 'commission/invoice-missing', 'The linked invoice requires administrative review.');
+          invoice = invoiceSnap.data() || {};
+          if (invoice.sellerId !== dispute.sellerId || invoice.currency !== dispute.currency ||
+              !Array.isArray(invoice.orderNumbers) || !invoice.orderNumbers.includes(dispute.orderNumber) ||
+              !Number.isSafeInteger(invoice.commissionAmountMinor) || !Number.isSafeInteger(invoice.remainingBalanceMinor) ||
+              !Number.isSafeInteger(invoice.paidAmountMinor) || !Number.isSafeInteger(invoice.adjustedAmountMinor)) {
+            throw new ApiError(409, 'commission/invoice-mismatch', 'Invoice totals or ownership require administrative review.');
+          }
+          const pendingPayments = await tx.get(db.collection('commission_payments')
+            .where('invoiceId', '==', dispute.invoiceId).where('status', '==', 'submitted'));
+          if (pendingPayments.docs.length) throw new ApiError(409, 'commission/payment-pending', 'Review the submitted invoice payment before resolving this dispute.');
+          if (invoice.status === 'payment_submitted') throw new ApiError(409, 'commission/invoice-payment-mismatch', 'Invoice indicates a submitted payment that has no pending payment record.');
+        }
+        const commissionMinor = Number(dispute.disputedCommissionMinor);
+        if (!Number.isSafeInteger(commissionMinor) || commissionMinor < 0) throw new ApiError(409, 'commission/dispute-amount-invalid', 'Dispute amount requires administrative review.');
+        let reconciliationRequiredMinor = 0;
+        let invoiceAdjustment: Record<string, any> | null = null;
+        if (input.decision === 'approve' && invoice) {
+          const unpaid = Number(invoice.remainingBalanceMinor);
+          const paid = Number(invoice.paidAmountMinor);
+          if (unpaid < 0 || paid < 0 || paid + unpaid > Number(invoice.commissionAmountMinor) + Number(invoice.adjustedAmountMinor)) {
+            throw new ApiError(409, 'commission/invoice-balance-invalid', 'Invoice balance requires administrative review.');
+          }
+          const adjustmentId = 'adj-' + createHash('sha256').update(`${dispute.invoiceId}:${dispute.orderNumber}:dispute`).digest('hex').slice(0, 32);
+          const adjustmentRef = db.collection('commission_adjustments').doc(adjustmentId);
+          const adjustmentSnap = await tx.get(adjustmentRef);
+          if (adjustmentSnap.exists) throw new ApiError(409, 'commission/dispute-adjustment-exists', 'A dispute adjustment already exists; financial records require review.');
+          // Only the amount still represented in an unpaid invoice balance can
+          // be reduced automatically. Already settled or previously adjusted
+          // portions require a human reconciliation; never create a credit.
+          if (paid === 0 && invoice.status !== 'payment_submitted') {
+            const reduction = Math.min(unpaid, commissionMinor);
+            reconciliationRequiredMinor = commissionMinor - reduction;
+            const nextRemaining = unpaid - reduction;
+            const nextAdjusted = Number(invoice.adjustedAmountMinor) + reduction;
+            if (!Number.isSafeInteger(nextAdjusted)) throw new ApiError(409, 'commission/adjustment-overflow', 'Adjustment exceeds safe accounting limits.');
+            tx.update(invoiceRef!, { remainingBalanceMinor: nextRemaining, adjustedAmountMinor: nextAdjusted,
+              status: nextRemaining === 0 ? 'voided' : invoice.status,
+              pendingDisputeIds: (Array.isArray(invoice.pendingDisputeIds) ? invoice.pendingDisputeIds : []).filter((id: string) => id !== dispute.disputeId) });
+            invoiceAdjustment = { adjustmentId, amountMinor: -reduction, adjustmentAmountMinor: reduction };
+          } else {
+            reconciliationRequiredMinor = commissionMinor;
+            tx.update(invoiceRef!, { pendingDisputeIds: (Array.isArray(invoice.pendingDisputeIds) ? invoice.pendingDisputeIds : []).filter((id: string) => id !== dispute.disputeId) });
+            invoiceAdjustment = { adjustmentId, amountMinor: -commissionMinor, adjustmentAmountMinor: commissionMinor };
+          }
+          tx.create(adjustmentRef, { adjustmentId, invoiceId: dispute.invoiceId,
+            invoiceNumber: String(invoice.invoiceNumber || ''), orderNumber: dispute.orderNumber,
+            sellerId: dispute.sellerId, currency: dispute.currency,
+            adjustmentAmountMinor: invoiceAdjustment.adjustmentAmountMinor, amountMinor: invoiceAdjustment.amountMinor,
+            reason: 'commission_dispute_approved', detail: reconciliationRequiredMinor
+              ? 'Approved commission dispute; the unpaid invoice does not contain the full disputed amount, so human reconciliation is required.'
+              : 'Approved commission dispute; unpaid invoice balance reduced.',
+            disputeId: dispute.disputeId, reconciliationRequiredMinor,
+            reconciliationStatus: reconciliationRequiredMinor ? 'human_review_required' : 'applied_to_unpaid_balance',
+            actorUid: input.actorUid, createdAtIso: now });
+        } else if (input.decision === 'approve' && !invoice) {
+          const adjustmentId = `${dispute.orderNumber}:dispute`;
+          const adjustmentRef = db.collection('commission_adjustments').doc(adjustmentId);
+          const adjustmentSnap = await tx.get(adjustmentRef);
+          if (adjustmentSnap.exists) throw new ApiError(409, 'commission/dispute-adjustment-exists', 'A dispute adjustment already exists; financial records require review.');
+          tx.create(adjustmentRef, { adjustmentId, invoiceId: '', invoiceNumber: '', orderNumber: dispute.orderNumber,
+            sellerId: dispute.sellerId, currency: dispute.currency, adjustmentAmountMinor: commissionMinor,
+            amountMinor: -commissionMinor, reason: 'commission_dispute_approved',
+            detail: 'Approved uninvoiced commission dispute; commission waived.', disputeId: dispute.disputeId,
+            reconciliationRequiredMinor: 0, reconciliationStatus: 'waived_before_invoice', actorUid: input.actorUid, createdAtIso: now });
+        }
+        if (input.decision === 'reject' && invoice && invoiceRef) {
+          tx.update(invoiceRef, { pendingDisputeIds: (Array.isArray(invoice.pendingDisputeIds) ? invoice.pendingDisputeIds : []).filter((id: string) => id !== dispute.disputeId) });
+        }
+        const priorStatus = String(order.commissionStatus);
+        const nextStatus = input.decision === 'approve' ? 'reversed' : String(dispute.previousCommissionStatus || 'outstanding');
+        const nextDispute = { ...dispute, status: input.decision === 'approve' ? 'approved' : 'rejected',
+          decision: input.decision, resolutionExplanation: input.explanation.slice(0, 1000), resolvedByUid: input.actorUid,
+          resolvedAtIso: now, updatedAtIso: now, reconciliationRequiredMinor };
+        tx.update(disputeRef, { status: nextDispute.status, decision: nextDispute.decision,
+          resolutionExplanation: nextDispute.resolutionExplanation, resolvedByUid: input.actorUid,
+          resolvedAtIso: now, updatedAtIso: now, reconciliationRequiredMinor });
+        tx.update(orderRef, { commissionStatus: nextStatus, commissionDisputeResolvedAtIso: now,
+          commissionDisputeDecision: input.decision, commissionDisputeResolvedByUid: input.actorUid, updatedAtIso: now });
+        tx.update(commissionRef, { status: nextStatus, disputeResolvedAtIso: now,
+          disputeDecision: input.decision, updatedAtIso: now });
+        const auditId = randomUUID();
+        tx.create(db.collection('ledger_audit').doc(auditId), { auditId, disputeId: dispute.disputeId,
+          invoiceId: dispute.invoiceId || null, orderNumber: dispute.orderNumber, sellerId: dispute.sellerId,
+          actorUid: input.actorUid, action: input.decision === 'approve' ? 'COMMISSION_DISPUTE_APPROVED' : 'COMMISSION_DISPUTE_REJECTED',
+          previousStatus: priorStatus, newStatus: nextStatus, amountMinor: commissionMinor,
+          reconciliationRequiredMinor, explanation: nextDispute.resolutionExplanation, atIso: now, createdAtIso: now });
+        return nextDispute;
       });
     },
     async listOrders(uid, admin) {
@@ -325,6 +541,11 @@ export function createFirestoreFinancialRepository(
         const old = snap.data() || {};
         if (old.sellerId !== actorUid) throw new ApiError(403, 'orders/seller-forbidden', 'Order belongs to another Seller.');
         if (old.paymentStatus !== expectedStatus) throw new ApiError(409, 'orders/transition-conflict', 'Order was already reviewed or is no longer pending.');
+        const disputeRef = db.collection('commission_disputes').doc('cd-' + createHash('sha256').update(orderNumber).digest('hex').slice(0, 32));
+        const disputeSnap = patch.paymentStatus === 'Refunded' ? await tx.get(disputeRef) : null;
+        if (disputeSnap?.exists && disputeSnap.get('status') === 'pending') {
+          throw new ApiError(409, 'orders/dispute-pending', 'Resolve the commission dispute before processing a refund.');
+        }
         const next = { ...old, ...patch };
         const orderRef = orders.doc(String(old.orderId));
         const commissionRef = db.collection('commission_entries').doc(orderNumber);

@@ -41,6 +41,9 @@ function fixture(options = {}) {
     stores: options.stores,
     products: options.products,
     uploads: options.uploads,
+    finance: options.finance,
+    management: options.management,
+    subscriptions: options.subscriptions,
     allowWrites: options.allowWrites === true,
   };
   const app = createV2App(deps);
@@ -152,6 +155,61 @@ test('V2 admin requires both configured UID and signed verified Firebase custom 
     assert.equal(status, 200);
     assert.equal(body.isSuperAdmin, true);
     assert.equal((await request('/api/users/profile', 'admin'))[1].profile.role, 'super_admin');
+  });
+});
+
+test('Admin controls and Pro grants require verified configured Admin claims', async () => {
+  const calls = [];
+  const management = {
+    async updateStore(storeId, patch, actorUid, action) { calls.push({ storeId, patch, actorUid, action }); return { storeId, ownerId: 'seller', ...patch }; },
+    async grantPro(input) { calls.push(input); return { sellerId: input.sellerId || 'seller', storeIds: ['store-seller'], plan: input.grantPro ? 'Pro' : 'Free' }; },
+  };
+  const { app } = fixture({ management, users: {
+    admin: principal('admin_uid', { roleClaim: 'super_admin', superAdminClaim: true }),
+    seller: principal('seller'),
+    forged: principal('forged', { roleClaim: 'super_admin', superAdminClaim: true }),
+  }});
+  await withServer(app, async request => {
+    assert.equal((await request('/api/admin/stores/status', 'seller', { storeId: 'store-seller', status: 'suspended' }))[0], 403);
+    assert.equal((await request('/api/admin/subscriptions/grant-pro', 'seller', { sellerId: 'seller', grantPro: true }))[0], 403);
+    assert.equal((await request('/api/admin/stores/status', 'forged', { storeId: 'store-seller', status: 'active' }))[0], 403);
+    const [status, result] = await request('/api/admin/stores/status', 'admin', { storeId: 'store-seller', status: 'suspended' });
+    assert.equal(status, 200); assert.equal(result.status, 'Pending');
+    const [grantStatus, grant] = await request('/api/commission/admin/grant-pro', 'admin', { sellerId: 'seller', grantPro: true });
+    assert.equal(grantStatus, 200); assert.equal(grant.plan, 'Pro');
+    assert.equal(calls.length, 2); assert.equal(calls[0].patch.adminControlStatus, 'suspended');
+  });
+});
+
+test('ledger, email notification and Payoneer readiness preserve ownership and redact private delivery data', async () => {
+  const finance = {
+    async ledgerEntries(sellerId, admin, storeId, cursor, limit) {
+      return { entries: [{ orderNumber: 'DS-own', sellerId, grossAmountMinor: 10000, platformCommissionMinor: 500,
+        sellerNetEarningsMinor: 9500, paymentStatus: 'Paid', commissionStatus: 'outstanding' }],
+        auditTrail: [{ auditId: 'audit-private', sellerId }], hasMore: false, nextCursor: null };
+    },
+    async emailNotification(orderNumber) { return { orderNumber, buyerId: 'buyer', sellerId: 'seller', paymentStatus: 'Paid',
+      notification: { status: 'sent', recipientEmail: 'private@example.test', downloadToken: 'private-token', sentAtIso: '2026-10-01T00:00:00.000Z' } }; },
+  };
+  const { app, profiles } = fixture({ finance, allowWrites: true, users: {
+    buyer: principal('buyer'), seller: principal('seller'), other: principal('other'),
+  }});
+  profiles.set('seller', { uid: 'seller', role: 'seller', email: 'seller@example.test', displayName: 'Seller', onboardingCompleted: true });
+  await withServer(app, async request => {
+    assert.equal((await request('/api/ledger', 'buyer'))[0], 403);
+    assert.equal((await request('/api/ledger?sellerId=other', 'seller'))[0], 403);
+    const [ledgerStatus, ledger] = await request('/api/ledger', 'seller');
+    assert.equal(ledgerStatus, 200); assert.equal(ledger.entries[0].sellerId, 'seller');
+    assert.equal(ledger.summary.outstandingCommissionTotalMinor, 500); assert.deepEqual(ledger.auditTrail, []);
+    const [emailStatus, email] = await request('/api/orders/DS-own/email-notification', 'buyer');
+    assert.equal(emailStatus, 200); assert.equal(email.emailSent, true);
+    assert.equal(Object.hasOwn(email, 'customerEmail'), false);
+    assert.equal(Object.hasOwn(email.emailNotification, 'recipientEmail'), false);
+    assert.equal(Object.hasOwn(email.emailNotification, 'downloadToken'), false);
+    assert.equal((await request('/api/orders/DS-own/email-notification', 'other'))[0], 403);
+    const [payoneerStatus, readiness] = await request('/api/payments/payoneer-readiness');
+    assert.equal(payoneerStatus, 200); assert.equal(readiness.payoneerApiEnabled, false);
+    assert.equal(readiness.mode, 'manual_settlement');
   });
 });
 
