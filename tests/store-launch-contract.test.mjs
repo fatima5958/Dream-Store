@@ -108,3 +108,46 @@ test('public endpoints do not expose financial metrics or count visits for unkno
   assert.match(visits, /!matched \|\| matched\.status !== 'Active'/);
   assert.match(visits, /const targetStoreId = matched\.storeId/);
 });
+
+test('role onboarding refreshes Firebase ID token and securely recovers from a rejected session', () => {
+  const start = app.indexOf('  const handleCompleteRoleOnboarding = async');
+  const end = app.indexOf('  const handleNavigate =', start);
+  assert.ok(start >= 0, 'onboarding handler exists');
+  const roleHandler = app.slice(start, end < 0 ? start + 6500 : end);
+  assert.match(roleHandler, /getAuthHeaders\(\{\}, \{ forceRefresh: true, requireAuth: true \}\)/);
+  assert.match(roleHandler, /if \(res\.status === 401\)/);
+  assert.match(roleHandler, /await requireNewSignIn\(\)/);
+  assert.match(roleHandler, /setAuthModalMode\('signin'\)/);
+  assert.match(roleHandler, /invalidateRejectedLegacyEmailSession\(\)/);
+  assert.match(firebase, /auth\.currentUser\.getIdToken\(options\.forceRefresh === true\)/);
+  assert.match(firebase, /if \(options\.requireAuth && !headers\.Authorization\)/);
+  assert.match(firebase, /setServerEmailSession\(null\)/);
+  assert.match(server, /code: 'auth\/session-invalid'/);
+  assert.match(server, /const user = await extractVerifiedCaller\(req\)/);
+});
+
+test('auth restoration never promotes a locally cached role when backend identity is unverified', () => {
+  const start = app.indexOf('// 2. Listen to Firebase & Email Authentication state');
+  const end = app.indexOf('// 3.', start);
+  assert.ok(start >= 0);
+  const restoration = app.slice(start, end > start ? end : start + 21000);
+  assert.doesNotMatch(restoration, /const cachedRaw = localStorage\.getItem/);
+  assert.match(restoration, /getAuthHeaders\(\{\}, \{ forceRefresh: true, requireAuth: true \}\)/);
+  assert.match(restoration, /if \(profRes\.status === 401\)/);
+  assert.match(restoration, /setAuthModalMode\('signin'\)/);
+  assert.match(restoration, /Account verification is temporarily unavailable/);
+  assert.match(restoration, /Could not verify your account/);
+});
+
+test('returning Firebase users never inherit seller or buyer privileges from public Firestore cache', () => {
+  const start = app.indexOf('// 2. Listen to Firebase & Email Authentication state');
+  const end = app.indexOf('// 3.', start);
+  assert.ok(start >= 0, 'authentication restoration exists');
+  const restoration = app.slice(start, end > start ? end : start + 21000);
+  assert.doesNotMatch(restoration, /existingRole = 'seller'\s*;(?=[\s\S]*?storeSnap)/);
+  assert.doesNotMatch(restoration, /const userSnap = await getDoc\(doc\(db, 'users', user\.uid\)\)/);
+  assert.match(restoration, /if \(!existingRole\) \{\s*\/\/ Role and onboarding state must come from the verified backend/);
+  assert.match(restoration, /if \(!existingRole\) \{\s*setUserProfile\(null\)/);
+  assert.match(restoration, /const profRes = await fetch\('\/api\/users\/profile'/);
+  assert.match(restoration, /profRes\.status === 401/);
+});

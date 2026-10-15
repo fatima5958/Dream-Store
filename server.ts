@@ -1,4 +1,5 @@
 import express from 'express';
+import { asyncRoute, apiErrorHandler, installAuthHelperProxy } from './server/http.ts';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
@@ -21,7 +22,10 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
+if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) throw new Error('PORT must be a valid TCP port.');
+const LEGACY_EMAIL_AUTH_ENABLED = process.env.NODE_ENV === 'development' &&
+  process.env.DREAMSTORE_LEGACY_EMAIL_AUTH_ENABLED === 'true';
 // Admin identity must come from a verified Firebase token, never a source-code email.
 const SUPER_ADMIN_EMAIL = '';
 // Strictly read SUPER_ADMIN_UID from environment configuration — NEVER fall back to any hardcoded UID
@@ -57,7 +61,7 @@ try {
         projectId: FIREBASE_PROJECT_ID,
       });
   adminFirestoreDb = getAdminFirestore(adminApp, FIRESTORE_DATABASE_ID);
-  adminFirestoreDb.settings({ preferRest: true });
+  adminFirestoreDb.settings({ preferRest: true, ignoreUndefinedProperties: true });
 } catch {
   try {
     if (!getApps().length) {
@@ -1218,24 +1222,38 @@ async function hydrateFinancialLedgerFromFirestore(): Promise<boolean> {
     ledgerHydrationSucceeded = true;
     console.log(`Loaded ${persistentLedger.size} authoritative financial orders from Firestore.`);
     return true;
-  } catch (err: any) {
-    if (
-      err?.code === 7 ||
-      err?.status === 403 ||
-      String(err?.message || '').includes('Missing or insufficient permissions') ||
-      String(err?.message || '').includes('PERMISSION_DENIED')
-    ) {
-      console.warn('Firestore ADC unauthorized in local dev container; running with local persistent ledger.');
-      ledgerHydrationSucceeded = true;
-      return true;
-    }
+  } catch (err) {
     console.error('Financial ledger hydration failed; checkout and financial endpoints will fail closed.', err);
     return false;
   } finally {
     ledgerHydrationFinished = true;
   }
 }
-const financialLedgerHydration = hydrateFinancialLedgerFromFirestore();
+let financialLedgerHydration = hydrateFinancialLedgerFromFirestore();
+let lastLedgerRetryAt = Date.now();
+async function refreshFinancialReadiness(): Promise<boolean> {
+  if (ledgerHydrationFinished && !ledgerHydrationSucceeded && Date.now() - lastLedgerRetryAt > 30000) {
+    lastLedgerRetryAt = Date.now();
+    ledgerHydrationFinished = false;
+    financialLedgerHydration = hydrateFinancialLedgerFromFirestore();
+  }
+  return financialLedgerHydration;
+}
+
+// Order authority is refreshed per request so a second instance sees purchases,
+// refunds and download limits written elsewhere. Memory is never the authority.
+async function loadFinancialOrder(orderNumber: string): Promise<LedgerEntry | undefined> {
+  if (!/^[A-Za-z0-9_-]{2,128}$/.test(orderNumber)) return undefined;
+  if (!adminFirestoreDb) throw new Error('Secure order database unavailable.');
+  const snap = await adminFirestoreDb.collection('ledger').doc(orderNumber).get();
+  if (!snap.exists) { persistentLedger.delete(orderNumber); return undefined; }
+  const record = snap.data() as LedgerEntry;
+  if (record.orderNumber !== orderNumber || !record.buyerId || !record.sellerId || !record.orderId) {
+    throw new Error('Invalid financial order record.');
+  }
+  persistentLedger.set(orderNumber, record);
+  return record;
+}
 
 async function ensureFinancialDatabaseReady(res: express.Response): Promise<boolean> {
   if (process.env.NODE_ENV === 'production' && !HAS_DURABLE_PRODUCTION_SIGNING_SECRET) {
@@ -1244,7 +1262,7 @@ async function ensureFinancialDatabaseReady(res: express.Response): Promise<bool
     });
     return false;
   }
-  if (!adminFirestoreDb || !(await financialLedgerHydration) || !ledgerHydrationFinished || !ledgerHydrationSucceeded) {
+  if (!adminFirestoreDb || !(await refreshFinancialReadiness()) || !ledgerHydrationFinished || !ledgerHydrationSucceeded) {
     res.status(503).json({ error: 'Secure order database is unavailable. No checkout or payment change was accepted.' });
     return false;
   }
@@ -1255,37 +1273,25 @@ async function commitFinancialOrderTransition(
   entry: LedgerEntry,
   expectedStatus: LedgerEntry['paymentStatus']
 ): Promise<void> {
-  if (!adminFirestoreDb || !(await financialLedgerHydration)) {
+  if (!adminFirestoreDb || !(await refreshFinancialReadiness())) {
     throw new Error('Secure financial database unavailable.');
   }
   const ledgerRef = adminFirestoreDb.collection('ledger').doc(entry.orderNumber);
   const orderRef = adminFirestoreDb.collection('orders').doc(entry.orderId);
-  try {
-    await adminFirestoreDb.runTransaction(async (tx) => {
-      const current = await tx.get(ledgerRef);
-      if (!current.exists || current.get('paymentStatus') !== expectedStatus) {
-        throw new Error('Payment status changed in another session. Please refresh the order.');
-      }
-      tx.set(ledgerRef, entry as unknown as Record<string, unknown>);
-      tx.set(orderRef, {
-        paymentStatus: entry.paymentStatus,
-        downloadToken: entry.downloadToken,
-        downloadCount: entry.downloadCount,
-        updatedAt: new Date(),
-      }, { merge: true });
-    });
-  } catch (txErr: any) {
-    if (
-      txErr?.code === 7 ||
-      txErr?.status === 403 ||
-      String(txErr?.message || '').includes('Missing or insufficient permissions') ||
-      String(txErr?.message || '').includes('PERMISSION_DENIED')
-    ) {
-      console.warn('Firestore ADC unauthorized in local container, committed financial status transition locally.');
-    } else {
-      throw txErr;
+  await adminFirestoreDb.runTransaction(async (tx) => {
+    const current = await tx.get(ledgerRef);
+    if (!current.exists || current.get('paymentStatus') !== expectedStatus) {
+      throw new Error('Payment status changed in another session. Please refresh the order.');
     }
-  }
+    entry.downloadCount = Number(current.get('downloadCount') || 0);
+    tx.set(ledgerRef, entry as unknown as Record<string, unknown>);
+    tx.set(orderRef, {
+      paymentStatus: entry.paymentStatus,
+      downloadToken: entry.downloadToken,
+      downloadCount: entry.downloadCount,
+      updatedAt: new Date(),
+    }, { merge: true });
+  });
 }
 
 
@@ -1933,6 +1939,9 @@ function verifySignedDownloadToken(
 }
 
 export interface VerifiedAuthUser {
+  role?: string;
+  superAdmin?: boolean;
+  authTime?: number;
   uid: string;
   email: string;
   displayName?: string;
@@ -2499,7 +2508,7 @@ function loadAndMigrateEmailAccountsFromDisk(): void {
   }
 }
 
-loadAndMigrateEmailAccountsFromDisk();
+if (LEGACY_EMAIL_AUTH_ENABLED) loadAndMigrateEmailAccountsFromDisk();
 
 function mintPasswordResetToken(
   account: StoredEmailAccount,
@@ -2789,15 +2798,6 @@ function verifyServerEmailSessionToken(token: string): VerifiedAuthUser | null {
   };
 }
 
-interface RelayedOAuthEvent {
-  key: string;
-  value: string;
-  parsedEvent: Record<string, unknown> | null;
-  createdAtMs: number;
-}
-
-const pendingOAuthRelayEvents = new Map<string, RelayedOAuthEvent>();
-
 /**
  * Cryptographically verifies a genuine Firebase Authentication ID token exclusively using the Firebase Admin SDK,
  * or a server-minted HMAC-verified DS_EMAIL_SESSION token.
@@ -2812,7 +2812,7 @@ export async function verifyFirebaseIdTokenOnServer(
   if (!trimmed) return null;
 
   if (trimmed.startsWith('DS_EMAIL_SESSION.')) {
-    return verifyServerEmailSessionToken(trimmed);
+    return LEGACY_EMAIL_AUTH_ENABLED ? verifyServerEmailSessionToken(trimmed) : null;
   }
 
   // Reject raw UID strings or non-JWT strings immediately — a valid JWT has 3 non-empty segments
@@ -2855,7 +2855,7 @@ export async function verifyFirebaseIdTokenOnServer(
   }
 
   try {
-    const decoded = await getAdminAuth().verifyIdToken(trimmed);
+    const decoded = await getAdminAuth().verifyIdToken(trimmed, true);
     if (!decoded || typeof decoded.uid !== 'string' || !decoded.uid.trim()) {
       return null;
     }
@@ -2863,6 +2863,10 @@ export async function verifyFirebaseIdTokenOnServer(
       uid: decoded.uid.trim(),
       email: decoded.email || '',
       emailVerified: Boolean(decoded.email_verified),
+      displayName: decoded.name || '',
+      role: decoded.role,
+      superAdmin: decoded.superAdmin === true,
+      authTime: decoded.auth_time,
       rawToken: trimmed,
     };
   } catch {
@@ -2896,12 +2900,10 @@ export function isVerifiedSuperAdmin(
 ): boolean {
   if (!SUPER_ADMIN_UID) return false;
   if (!userOrUid) return false;
-  if (typeof userOrUid === 'string') {
-    const cleanUid = userOrUid.trim();
-    return Boolean(cleanUid) && cleanUid === SUPER_ADMIN_UID;
-  }
-  if (!userOrUid.uid || userOrUid.emailVerified !== true) return false;
-  return userOrUid.uid === SUPER_ADMIN_UID;
+  if (typeof userOrUid === 'string') return false;
+  return userOrUid.uid === SUPER_ADMIN_UID && userOrUid.emailVerified === true &&
+    userOrUid.role === 'super_admin' && userOrUid.superAdmin === true;
+
 }
 
 export function isStrictSuperAdminUser(user: VerifiedAuthUser | null): boolean {
@@ -2942,9 +2944,11 @@ async function requireAuthenticatedUser(
 ): Promise<VerifiedAuthUser | null> {
   const user = await extractVerifiedCaller(req);
   if (!user) {
+    // Keep the strict verification requirement, but return a recoverable
+    // account-session error rather than surfacing internal token jargon.
     res.status(401).json({
-      error:
-        'Unauthorized: A cryptographically verified Firebase Authentication Bearer ID token is required. Raw UIDs, forged tokens, and unauthenticated requests are rejected.',
+      code: 'auth/session-invalid',
+      error: 'Your sign-in session has expired or could not be verified. Please sign in again.',
     });
     return null;
   }
@@ -3022,7 +3026,11 @@ async function requireSuperAdminUser(
 async function startServer() {
   const app = express();
   app.disable('x-powered-by');
+  // Trust only an explicitly configured reverse-proxy hop, never arbitrary forwarded headers.
+  app.set('trust proxy', process.env.TRUST_PROXY_HOPS === '1' ? 1 : false);
+  installAuthHelperProxy(app, { authDomain: FIREBASE_AUTH_DOMAIN, apiKey: FIREBASE_API_KEY, projectId: FIREBASE_PROJECT_ID });
   app.use(express.json({ limit: '2mb' }));
+  app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
   // Security Headers Middleware
   app.use((req, res, next) => {
@@ -3067,611 +3075,23 @@ async function startServer() {
     'dreamstore.ai.studio',
   ]);
 
-  let latestOAuthHelperState: {
-    apiKey?: string;
-    appName?: string;
-    type?: string;
-    eventId?: string;
-    redirectUrl?: string;
-    sessionId?: string;
-    updatedAtMs: number;
-  } | null = null;
-
-  // Serve /__/firebase/init.json so Firebase Auth's /__/auth/handler validates custom & Cloud Run authDomains immediately
-  app.get('/__/firebase/init.json', (req, res) => {
-    const rawHost = String(
-      req.headers['x-forwarded-host'] || req.headers.host || FIREBASE_AUTH_DOMAIN
-    )
-      .split(',')[0]
-      .trim();
-    res.setHeader('Cache-Control', 'no-store');
-    res.json({
-      apiKey: FIREBASE_API_KEY,
-      authDomain: rawHost || FIREBASE_AUTH_DOMAIN,
-      projectId: FIREBASE_PROJECT_ID,
-    });
-  });
-
-  function cleanOAuthSessionId(raw: unknown): string | undefined {
-    if (typeof raw !== 'string') return undefined;
-    let s = raw.trim();
-    if (!s) return undefined;
-    try {
-      const parsed = JSON.parse(s);
-      if (typeof parsed === 'string') {
-        s = parsed.trim();
-      }
-    } catch {
-      // Not JSON-wrapped
-    }
-    s = s.replace(/^"+|"+$/g, '').trim();
-    return s || undefined;
-  }
-
-  // Track OAuth helper state (eventId, authType, sessionId) before redirecting to accounts.google.com
-  app.post('/__/auth/relay/state', (req, res) => {
-    const body = (req.body || {}) as {
-      oauthHelperState?: string | Record<string, unknown>;
-      sessionId?: string;
-    };
-    try {
-      const parsedState =
-        typeof body.oauthHelperState === 'string'
-          ? (JSON.parse(body.oauthHelperState) as Record<string, unknown>)
-          : body.oauthHelperState || {};
-      const incomingSessionId = cleanOAuthSessionId(body.sessionId);
-      latestOAuthHelperState = {
-        apiKey: String(
-          parsedState.apiKey || latestOAuthHelperState?.apiKey || FIREBASE_API_KEY
-        ),
-        appName: String(
-          parsedState.appName || latestOAuthHelperState?.appName || '[DEFAULT]'
-        ),
-        type: String(
-          parsedState.type || latestOAuthHelperState?.type || 'signInViaPopup'
-        ),
-        eventId: parsedState.eventId
-          ? String(parsedState.eventId)
-          : latestOAuthHelperState?.eventId,
-        redirectUrl: parsedState.redirectUrl
-          ? String(parsedState.redirectUrl)
-          : latestOAuthHelperState?.redirectUrl,
-        sessionId: incomingSessionId || latestOAuthHelperState?.sessionId,
-        updatedAtMs: Date.now(),
-      };
-    } catch {
-      // Ignore state parse issues
-    }
-    res.json({ ok: true });
-  });
-
-  // Partition-proof OAuth event relay between top-level /__/auth/handler popup/redirect and embedded preview iframe
-  app.post('/__/auth/relay', (req, res) => {
-    const { key, value } = (req.body || {}) as { key?: string; value?: string };
-    if (!key || typeof key !== 'string' || typeof value !== 'string') {
-      res.status(400).json({ error: 'Invalid relay payload' });
-      return;
-    }
-    let parsedEvent: Record<string, unknown> | null = null;
-    let normalizedValue = value;
-    try {
-      parsedEvent = JSON.parse(value) as Record<string, unknown>;
-      if (parsedEvent && typeof parsedEvent === 'object' && parsedEvent.sessionId) {
-        const cleanedSid = cleanOAuthSessionId(parsedEvent.sessionId);
-        if (cleanedSid) {
-          parsedEvent.sessionId = cleanedSid;
-          normalizedValue = JSON.stringify(parsedEvent);
-        }
-      }
-    } catch {
-      parsedEvent = null;
-    }
-    // Prune stale relay entries older than 3 minutes
-    const cutoff = Date.now() - 180_000;
-    for (const [k, v] of pendingOAuthRelayEvents.entries()) {
-      if (v.createdAtMs < cutoff) pendingOAuthRelayEvents.delete(k);
-    }
-    pendingOAuthRelayEvents.set(key, {
-      key,
-      value: normalizedValue,
-      parsedEvent,
-      createdAtMs: Date.now(),
-    });
-    res.json({ ok: true });
-  });
-
-  app.get('/__/auth/relay', (_req, res) => {
-    const cutoff = Date.now() - 180_000;
-    const events: RelayedOAuthEvent[] = [];
-    for (const [k, v] of pendingOAuthRelayEvents.entries()) {
-      if (v.createdAtMs < cutoff) {
-        pendingOAuthRelayEvents.delete(k);
-      } else {
-        events.push(v);
-      }
-    }
-    res.setHeader('Cache-Control', 'no-store');
-    res.json({ events });
-  });
-
-  app.delete('/__/auth/relay', (req, res) => {
-    const key = String(req.query.key || '').trim();
-    if (key) {
-      pendingOAuthRelayEvents.delete(key);
-    } else {
-      pendingOAuthRelayEvents.clear();
-    }
-    res.json({ ok: true });
-  });
-
-  // Same-origin Firebase Auth helper proxy (/__/auth/*) to prevent blank Google OAuth popups & storage partitioning issues
-  app.use('/__/auth', async (req, res) => {
-    if (!FIREBASE_AUTH_DOMAIN) {
-      res.status(503).send('Firebase Auth domain not configured.');
-      return;
-    }
-    try {
-      // Normalize query strings double-encoded by applet-auth-bridge (e.g., ?authType%3DsignInViaPopup%26apiKey%3D...)
-      let normalizedReqUrl = req.url;
-      const qIdx = normalizedReqUrl.indexOf('?');
-      if (qIdx !== -1) {
-        const rawSearch = normalizedReqUrl.slice(qIdx + 1);
-        if (
-          rawSearch.indexOf('=') === -1 &&
-          (rawSearch.indexOf('%3D') !== -1 || rawSearch.indexOf('%3d') !== -1)
-        ) {
-          try {
-            normalizedReqUrl =
-              normalizedReqUrl.slice(0, qIdx + 1) + decodeURIComponent(rawSearch);
-          } catch {
-            // Keep original req.url if decode fails
-          }
-        }
-      }
-
-      const parsedParams =
-        qIdx !== -1
-          ? new URLSearchParams(normalizedReqUrl.slice(normalizedReqUrl.indexOf('?') + 1))
-          : new URLSearchParams();
-
-      const targetUrl = `https://${FIREBASE_AUTH_DOMAIN}/__/auth${normalizedReqUrl}`;
-      const upstreamRes = await fetch(targetUrl, {
-        method: req.method,
-        headers: {
-          Accept: req.headers.accept || '*/*',
-          'User-Agent': req.headers['user-agent'] || 'DreamStore-Auth-Proxy',
-        },
-      });
-      const contentType = upstreamRes.headers.get('content-type') || '';
-      if (contentType) {
-        res.setHeader('Content-Type', contentType);
-      }
-      res.setHeader('Cache-Control', 'no-store');
-
-      const rawText = await upstreamRes.text();
-      const isHandlerHtml =
-        req.path === '/handler' ||
-        normalizedReqUrl.startsWith('/handler?') ||
-        normalizedReqUrl === '/handler';
-      const isIframeHtml =
-        req.path === '/iframe' ||
-        normalizedReqUrl.startsWith('/iframe?') ||
-        normalizedReqUrl === '/iframe';
-
-      const qApiKey = parsedParams.get('apiKey') || (req.query.apiKey as string | undefined);
-      const qAuthType = parsedParams.get('authType') || (req.query.authType as string | undefined);
-      const qAppName = parsedParams.get('appName') || (req.query.appName as string | undefined);
-      const qEventId = parsedParams.get('eventId') || (req.query.eventId as string | undefined);
-      const qRedirectUrl =
-        parsedParams.get('redirectUrl') || (req.query.redirectUrl as string | undefined);
-      const qCode = parsedParams.get('code') || (req.query.code as string | undefined);
-      const qState = parsedParams.get('state') || (req.query.state as string | undefined);
-      const qError = parsedParams.get('error') || (req.query.error as string | undefined);
-
-      // If this request is the OAuth starter (?apiKey=...&authType=...), record initial helper metadata on server
-      if (isHandlerHtml && qApiKey && qAuthType) {
-        latestOAuthHelperState = {
-          apiKey: String(qApiKey),
-          appName: String(qAppName || '[DEFAULT]'),
-          type: String(qAuthType),
-          eventId: qEventId ? String(qEventId) : latestOAuthHelperState?.eventId,
-          redirectUrl: qRedirectUrl
-            ? String(qRedirectUrl)
-            : latestOAuthHelperState?.redirectUrl,
-          sessionId: latestOAuthHelperState?.sessionId,
-          updatedAtMs: Date.now(),
-        };
-      }
-
-      // If this request is the Google OAuth callback (?state=...&code=...) and we have sessionId, pre-populate relay immediately
-      const cleanedStateSessionId = cleanOAuthSessionId(latestOAuthHelperState?.sessionId);
-      if (
-        isHandlerHtml &&
-        (qCode || qState || qError) &&
-        latestOAuthHelperState &&
-        cleanedStateSessionId &&
-        Date.now() - latestOAuthHelperState.updatedAtMs < 180_000
-      ) {
-        const forwardedProto = String(req.headers['x-forwarded-proto'] || 'https')
-          .split(',')[0]
-          .trim();
-        const forwardedHost = String(
-          req.headers['x-forwarded-host'] || req.headers.host || FIREBASE_AUTH_DOMAIN
-        )
-          .split(',')[0]
-          .trim();
-        const fullUrlResponse = `${forwardedProto}://${forwardedHost}/__/auth${normalizedReqUrl}`;
-        const apiKey = latestOAuthHelperState.apiKey || FIREBASE_API_KEY;
-        const appName = latestOAuthHelperState.appName || '[DEFAULT]';
-        const storageKey = `firebase:authEvent:${apiKey}:${appName}`;
-        const synthesizedEvent: Record<string, unknown> = {
-          type: latestOAuthHelperState.type || 'signInViaPopup',
-          eventId: latestOAuthHelperState.eventId || null,
-          urlResponse: fullUrlResponse,
-          sessionId: cleanedStateSessionId,
-          postBody: null,
-          tenantId: null,
-          error: null,
-        };
-        const serialized = JSON.stringify(synthesizedEvent);
-        pendingOAuthRelayEvents.set(storageKey, {
-          key: storageKey,
-          value: serialized,
-          parsedEvent: synthesizedEvent,
-          createdAtMs: Date.now(),
-        });
-      }
-
-      if (isHandlerHtml && contentType.includes('text/html')) {
-        const requiredDomainsJson = JSON.stringify(REQUIRED_AUTHORIZED_DOMAINS);
-        const registeredHostsJson = JSON.stringify(Array.from(GOOGLE_OAUTH_REGISTERED_HOSTS));
-        const fallbackOAuthRedirectUri = `https://ais-dev-lpudubz2xpbak4vt26y6me-149594180953.asia-southeast1.run.app/__/auth/handler`;
-        const serverOAuthStateJson = JSON.stringify(latestOAuthHelperState);
-        const injectedHandlerScript = `
-<style>
-  body {
-    margin: 0;
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: linear-gradient(145deg, #FFF7EC 0%, #FFE4EF 52%, #EFE6FF 100%);
-    font-family: -apple-system, BlinkMacSystemFont, "Plus Jakarta Sans", "Segoe UI", Roboto, sans-serif;
-    color: #50352F;
-  }
-  #dreamstore-oauth-card {
-    max-width: 390px;
-    width: calc(100% - 32px);
-    background: #FFFDF8;
-    border: 3px solid #F58CB7;
-    border-radius: 28px;
-    padding: 28px 24px;
-    text-align: center;
-    box-shadow: 0 18px 40px -10px rgba(80, 53, 47, 0.22), 0 6px 0 #D66795;
-  }
-  .ds-spinner {
-    width: 38px;
-    height: 38px;
-    margin: 0 auto 14px;
-    border: 4px solid #FFE4EF;
-    border-top-color: #D66795;
-    border-radius: 50%;
-    animation: ds-spin 0.8s linear infinite;
-  }
-  @keyframes ds-spin {
-    to { transform: rotate(360deg); }
-  }
-  .ds-title {
-    font-size: 19px;
-    font-weight: 800;
-    margin: 0 0 6px;
-    color: #50352F;
-  }
-  .ds-sub {
-    font-size: 13px;
-    line-height: 1.5;
-    color: #6E4F47;
-    margin: 0;
-  }
-</style>
-<script>
-(function() {
-  try {
-    var EXTRA_DOMAINS = ${requiredDomainsJson};
-    var REGISTERED_HOSTS = ${registeredHostsJson};
-    var FALLBACK_REDIRECT_URI = ${JSON.stringify(fallbackOAuthRedirectUri)};
-    var SERVER_OAUTH_STATE = ${serverOAuthStateJson};
-
-    function cleanSid(val) {
-      if (!val || typeof val !== 'string') return '';
-      var s = val.trim();
-      try {
-        var p = JSON.parse(s);
-        if (typeof p === 'string') s = p.trim();
-      } catch (e) {}
-      return s.replace(/^"+|"+$/g, '').trim();
-    }
-
-    // 1. Decode query string if double-encoded by applet-auth-bridge (?authType%3DsignInViaPopup%26apiKey%3D...)
-    if (
-      window.location.search.indexOf('=') === -1 &&
-      (window.location.search.indexOf('%3D') !== -1 || window.location.search.indexOf('%3d') !== -1)
-    ) {
-      try {
-        var decodedSearch = '?' + decodeURIComponent(window.location.search.slice(1));
-        window.history.replaceState(null, '', window.location.pathname + decodedSearch + window.location.hash);
-      } catch (e) {}
-    }
-
-    var u = new URL(window.location.href);
-
-    // 2. Ensure redirectUrl is populated before handler.js runs so eq(a) never hangs 20s waiting on cross-origin gapi.iframes getParentOrigin
-    if (u.searchParams.get('authType') === 'signInViaPopup' && !u.searchParams.get('redirectUrl')) {
-      u.searchParams.set('redirectUrl', window.location.origin);
-      window.history.replaceState(null, '', u.toString());
-    }
-
-    // 3. If this is the OAuth finisher callback (?code=... or ?state=...) and sessionStorage was cleared across redirects,
-    // restore firebase:oauthHelperState and firebase:sessionId from SERVER_OAUTH_STATE before handler.js executes
-    if ((u.searchParams.get('code') || u.searchParams.get('state')) && SERVER_OAUTH_STATE) {
-      if (!window.sessionStorage.getItem('firebase:oauthHelperState') && SERVER_OAUTH_STATE.apiKey) {
-        var restoredState = {
-          apiKey: SERVER_OAUTH_STATE.apiKey,
-          appName: SERVER_OAUTH_STATE.appName || '[DEFAULT]',
-          type: SERVER_OAUTH_STATE.type || 'signInViaPopup',
-          eventId: SERVER_OAUTH_STATE.eventId || null,
-          redirectUrl: SERVER_OAUTH_STATE.redirectUrl || window.location.origin,
-          providerId: 'google.com'
-        };
-        window.sessionStorage.setItem('firebase:oauthHelperState', JSON.stringify(restoredState));
-      }
-      if (SERVER_OAUTH_STATE.sessionId && SERVER_OAUTH_STATE.apiKey) {
-        var sKey = 'firebase:sessionId:' + SERVER_OAUTH_STATE.apiKey + ':' + (SERVER_OAUTH_STATE.appName || '[DEFAULT]');
-        if (!window.sessionStorage.getItem(sKey)) {
-          // handler.js expects sessionStorage firebase:sessionId to be a JSON-encoded string literal
-          window.sessionStorage.setItem(sKey, JSON.stringify(cleanSid(SERVER_OAUTH_STATE.sessionId)));
-        }
-      }
-    }
-
-    function reportStateToServer(stateObjOrStr, sidStr) {
-      var payload = JSON.stringify({
-        oauthHelperState: stateObjOrStr,
-        sessionId: cleanSid(sidStr)
-      });
-      try {
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon('/__/auth/relay/state', new Blob([payload], { type: 'application/json' }));
-        }
-      } catch (e) {}
-      fetch('/__/auth/relay/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-        keepalive: true
-      }).catch(function() {});
-    }
-
-    // Intercept XMLHttpRequest inside handler.js so getProjectConfig always includes dreamstore.app & preview domains,
-    // and createAuthUri captures sessionId and uses an authorized Google OAuth redirect URI
-    var OrigXHR = window.XMLHttpRequest;
-    if (OrigXHR) {
-      var origOpen = OrigXHR.prototype.open;
-      var origSend = OrigXHR.prototype.send;
-      OrigXHR.prototype.open = function(method, url) {
-        this._dsUrl = String(url || '');
-        return origOpen.apply(this, arguments);
-      };
-      OrigXHR.prototype.send = function(body) {
-        var self = this;
-        if (self._dsUrl && self._dsUrl.indexOf('createAuthUri') !== -1 && typeof body === 'string') {
-          try {
-            var parsedBody = JSON.parse(body);
-            if (parsedBody.sessionId) {
-              var stRaw = window.sessionStorage.getItem('firebase:oauthHelperState');
-              reportStateToServer(stRaw, parsedBody.sessionId);
-            }
-            var currentHost = window.location.hostname.toLowerCase();
-            if (REGISTERED_HOSTS.indexOf(currentHost) === -1 && parsedBody.continueUri) {
-              parsedBody.continueUri = FALLBACK_REDIRECT_URI;
-              body = JSON.stringify(parsedBody);
-            }
-          } catch (e) {}
-        }
-        if (self._dsUrl && (self._dsUrl.indexOf('getProjectConfig') !== -1 || self._dsUrl.indexOf('/projects') !== -1)) {
-          self.addEventListener('readystatechange', function() {
-            if (self.readyState === 4 && self.status === 200) {
-              try {
-                var data = JSON.parse(self.responseText);
-                var list = Array.isArray(data.authorizedDomains) ? data.authorizedDomains.slice() : [];
-                for (var i = 0; i < EXTRA_DOMAINS.length; i++) {
-                  if (list.indexOf(EXTRA_DOMAINS[i]) === -1) list.push(EXTRA_DOMAINS[i]);
-                }
-                if (list.indexOf(window.location.hostname) === -1) {
-                  list.push(window.location.hostname);
-                }
-                data.authorizedDomains = list;
-                var modifiedText = JSON.stringify(data);
-                Object.defineProperty(self, 'responseText', { configurable: true, get: function() { return modifiedText; } });
-                Object.defineProperty(self, 'response', { configurable: true, get: function() { return modifiedText; } });
-              } catch (e) {}
-            }
-          });
-        }
-        return origSend.call(this, body);
-      };
-    }
-
-    // Hold window.close() until our OAuth relay POST has completed so handler.js never aborts the relay in flight
-    var realWindowClose = window.close ? window.close.bind(window) : function() {};
-    var relayInFlight = false;
-    var closeRequested = false;
-    window.close = function() {
-      closeRequested = true;
-      if (!relayInFlight) {
-        setTimeout(function() {
-          try { realWindowClose(); } catch (e) {}
-        }, 350);
-      }
-    };
-
-    function sendEventToRelay(key, value) {
-      relayInFlight = true;
-      var normalizedVal = String(value);
-      try {
-        var parsedEv = JSON.parse(normalizedVal);
-        if (parsedEv && parsedEv.sessionId) {
-          parsedEv.sessionId = cleanSid(parsedEv.sessionId);
-          normalizedVal = JSON.stringify(parsedEv);
-        }
-      } catch (e) {}
-      var payload = JSON.stringify({ key: key, value: normalizedVal });
-      try {
-        if (navigator.sendBeacon) {
-          var blob = new Blob([payload], { type: 'application/json' });
-          navigator.sendBeacon('/__/auth/relay', blob);
-        }
-      } catch (e) {}
-      try {
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({ type: 'DREAMSTORE_OAUTH_EVENT', key: key, value: normalizedVal }, '*');
-        }
-      } catch (e) {}
-      fetch('/__/auth/relay', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-        keepalive: true
-      }).finally(function() {
-        relayInFlight = false;
-        if (closeRequested) {
-          setTimeout(function() {
-            try { realWindowClose(); } catch (e) {}
-          }, 300);
-        }
-      });
-    }
-
-    var origSetItem = Storage.prototype.setItem;
-    Storage.prototype.setItem = function(key, value) {
-      origSetItem.apply(this, arguments);
-      try {
-        if (typeof key === 'string') {
-          if (key.indexOf('oauthHelperState') !== -1) {
-            reportStateToServer(String(value), '');
-          } else if (key.indexOf('sessionId') !== -1) {
-            var stateRaw = window.sessionStorage.getItem('firebase:oauthHelperState');
-            reportStateToServer(stateRaw, String(value));
-          } else if (key.indexOf('authEvent') !== -1 || key.indexOf('redirectEvent') !== -1) {
-            sendEventToRelay(key, String(value));
-          }
-        }
-      } catch (err) {}
-    };
-
-    // If this is the OAuth finisher callback (?code=... or ?state=...), also synthesize and relay immediately from sessionStorage
-    if (u.searchParams.get('code') || u.searchParams.get('state')) {
-      var rawState = window.sessionStorage.getItem('firebase:oauthHelperState');
-      if (rawState) {
-        var parsedState = JSON.parse(rawState);
-        var apiKey = parsedState.apiKey || ${JSON.stringify(FIREBASE_API_KEY)};
-        var appName = parsedState.appName || '[DEFAULT]';
-        var sessKey = 'firebase:sessionId:' + apiKey + ':' + appName;
-        var rawSessId = window.sessionStorage.getItem(sessKey) || window.sessionStorage.getItem('firebase:sessionId');
-        var sessId = cleanSid(rawSessId);
-        if (sessId) {
-          var evKey = 'firebase:authEvent:' + apiKey + ':' + appName;
-          var evObj = {
-            type: parsedState.type || 'signInViaPopup',
-            eventId: parsedState.eventId || null,
-            urlResponse: window.location.href,
-            sessionId: sessId,
-            postBody: null,
-            tenantId: parsedState.tenantId || null,
-            error: null
-          };
-          sendEventToRelay(evKey, JSON.stringify(evObj));
-        }
-      }
-    }
-  } catch (e) {}
-})();
-</script>`;
-        const injectedBodyCard = `
-<div id="dreamstore-oauth-card">
-  <div class="ds-spinner"></div>
-  <p class="ds-title" id="ds-oauth-heading">Connecting to Google Sign-In...</p>
-  <p class="ds-sub" id="ds-oauth-status">Establishing secure OAuth 2.0 session for DreamStore.</p>
-</div>
-<script>
-  try {
-    if (window.location.search.indexOf('code=') !== -1 || window.location.search.indexOf('state=') !== -1) {
-      var h = document.getElementById('ds-oauth-heading');
-      var s = document.getElementById('ds-oauth-status');
-      if (h) h.textContent = 'Completing DreamStore Sign-In...';
-      if (s) s.textContent = 'Account verified! Returning to your DreamStore session...';
-    }
-  } catch (e) {}
-</script>`;
-        const modifiedHtml = rawText
-          .replace('<head>', `<head>${injectedHandlerScript}`)
-          .replace('<body>', `<body>${injectedBodyCard}`);
-        res.status(upstreamRes.status).send(modifiedHtml);
-        return;
-      }
-
-      if (isIframeHtml && contentType.includes('text/html')) {
-        const injectedIframeRelay = `
-<script>
-(function() {
-  setInterval(function() {
-    fetch('/__/auth/relay')
-      .then(function(r) { return r.ok ? r.json() : null; })
-      .then(function(data) {
-        if (!data || !Array.isArray(data.events)) return;
-        for (var i = 0; i < data.events.length; i++) {
-          var ev = data.events[i];
-          if (ev && ev.key && ev.value) {
-            if (window.localStorage.getItem(ev.key) !== ev.value) {
-              window.localStorage.setItem(ev.key, ev.value);
-              try {
-                window.dispatchEvent(new StorageEvent('storage', {
-                  key: ev.key,
-                  newValue: ev.value,
-                  storageArea: window.localStorage
-                }));
-              } catch (e) {}
-            }
-          }
-        }
-      })
-      .catch(function() {});
-  }, 300);
-})();
-</script>`;
-        const modifiedIframeHtml = rawText.replace('</body>', `${injectedIframeRelay}</body>`);
-        res.status(upstreamRes.status).send(modifiedIframeHtml);
-        return;
-      }
-
-      res.status(upstreamRes.status).send(rawText);
-    } catch (err: any) {
-      res.status(502).json({
-        error: 'Failed to reach upstream Firebase Auth handler.',
-        detail: err?.message || String(err),
-      });
-    }
-  });
-
   // Sliding-Window API Rate Limiter (Protects /api/* against brute force & unauthorized write floods)
   const rateLimitWindows = new Map<string, { count: number; resetAtMs: number }>();
   app.use('/api', (req, res, next) => {
-    const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'local');
-    const isMutation = req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE';
+    const clientIp = req.ip || req.socket.remoteAddress || 'local';
+    if (req.path === '/health' || req.path === '/ready') { next(); return; }
+    const isMutation = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
     const bucketKey = `${clientIp}:${isMutation ? 'write' : 'read'}`;
     const maxRequests = isMutation ? 80 : 240;
     const windowMs = 60_000;
     const now = Date.now();
+    for (const [key, bucket] of rateLimitWindows) {
+      if (bucket.resetAtMs < now) rateLimitWindows.delete(key);
+    }
+    if (rateLimitWindows.size >= 10000 && !rateLimitWindows.has(bucketKey)) {
+      res.status(429).set('Retry-After', '60').json({ error: 'Server is busy. Please retry shortly.' });
+      return;
+    }
 
     // Enforce strict per-endpoint mutation rate limit (20 writes/min per endpoint) to prevent brute-force & unauthorized write floods
     if (isMutation) {
@@ -3724,30 +3144,39 @@ async function startServer() {
     next();
   });
 
-  function getHealthDiagnosticsPayload() {
-    const k1 = ['signing', 'Secret', 'EntropyBits'].join('');
-    const k2 = ['persistent', 'Ledger', 'Records'].join('');
-    const k3 = ['immutable', 'Audit', 'Logs'].join('');
-    return {
-      [k1]: SIGNING_SECRET.length * 4,
-      [k2]: persistentLedger.size,
-      [k3]: immutableAuditLog.length,
-    };
-  }
-
   // 0. Health & Security Readiness Check Endpoint
-  app.get('/api/health', (_req, res) => {
-    const diagnostics = getHealthDiagnosticsPayload();
+  app.get('/api/health', asyncRoute((_req, res) => {
     res.json({
       status: 'ok',
       service: 'DreamStore Multi-Vendor API',
-      ...diagnostics,
       timestamp: new Date().toISOString(),
     });
-  });
+  }));
+
+  app.get('/api/ready', asyncRoute(async (_req, res) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const ready = await Promise.race([
+        (async () => {
+          if (!adminFirestoreDb || !FIREBASE_STORAGE_BUCKET ||
+            (process.env.NODE_ENV === 'production' && !HAS_DURABLE_PRODUCTION_SIGNING_SECRET)) return false;
+          if (!(await refreshFinancialReadiness())) return false;
+          await Promise.all([
+            adminFirestoreDb.collection('ledger').limit(1).get(),
+            getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).getMetadata(),
+          ]);
+          return true;
+        })(),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), 5000); }),
+      ]);
+      res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready' });
+    } catch {
+      res.status(503).json({ status: 'not_ready' });
+    } finally { if (timer) clearTimeout(timer); }
+  }));
 
   // 0B. Firebase OAuth & Authorized Domains Live Diagnostics Endpoint
-  app.get('/api/auth/oauth-diagnostics', async (req, res) => {
+  app.get('/api/auth/oauth-diagnostics', asyncRoute(async (req, res) => {
     const requestedHostname = String(
       req.query.hostname || req.headers['x-forwarded-host'] || req.hostname || 'localhost'
     )
@@ -3858,10 +3287,21 @@ async function startServer() {
       recommendation:
         'Production URL (dreamstore.app) and preview environment URLs are verified in Authorized Domains, and Google Sign-In redirect URIs are active.',
     });
-  });
+  }));
+
+  app.use('/api/auth/email', asyncRoute(async (req, res, next) => {
+    if (['/migration-status', '/migrate', '/reset-audit'].includes(req.path)) {
+      if (!(await requireSuperAdminUser(req, res))) return;
+    }
+    if (!LEGACY_EMAIL_AUTH_ENABLED && req.path !== '/signout') {
+      res.status(410).json({ code: 'auth/legacy-disabled', error: 'Use Firebase Authentication to sign in or reset your password.' });
+      return;
+    }
+    next();
+  }));
 
   // 0C. Server-verified Email & Password Authentication (Seamless fallback when Firebase Console Email/Password provider is disabled)
-  app.post('/api/auth/email/signup', (req, res) => {
+  app.post('/api/auth/email/signup', asyncRoute((req, res) => {
     // This legacy fallback writes user credentials to ephemeral /tmp.
     // Never create permanent-looking customer accounts in production through it.
     // Enable native Firebase Email/Password Authentication and migrate legacy
@@ -3941,9 +3381,9 @@ async function startServer() {
       expiresAtMs: minted.expiresAtMs,
       user: minted.user,
     });
-  });
+  }));
 
-  app.post('/api/auth/email/signin', (req, res) => {
+  app.post('/api/auth/email/signin', asyncRoute((req, res) => {
     const { email, password } = (req.body || {}) as {
       email?: string;
       password?: string;
@@ -3996,9 +3436,9 @@ async function startServer() {
       expiresAtMs: minted.expiresAtMs,
       user: minted.user,
     });
-  });
+  }));
 
-  app.post('/api/auth/email/reset-password', async (req, res) => {
+  app.post('/api/auth/email/reset-password', asyncRoute(async (req, res) => {
     const body = (req.body || {}) as {
       email?: string;
       newPassword?: string;
@@ -4142,9 +3582,9 @@ async function startServer() {
       resetTokenSent: true,
       message: neutralMessage,
     });
-  });
+  }));
 
-  app.post('/api/auth/email/signout', (req, res) => {
+  app.post('/api/auth/email/signout', asyncRoute((req, res) => {
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer DS_EMAIL_SESSION.')) {
       const token = authHeader.slice(7).trim();
@@ -4155,9 +3595,9 @@ async function startServer() {
       }
     }
     res.json({ ok: true });
-  });
+  }));
 
-  app.get('/api/auth/email/migration-status', (req, res) => {
+  app.get('/api/auth/email/migration-status', asyncRoute((req, res) => {
     const legacyFileInRepo = fs.existsSync(LEGACY_EMAIL_ACCOUNTS_FILE);
     const secureStoreOnDisk = fs.existsSync(SECURE_EMAIL_ACCOUNTS_FILE);
     res.json({
@@ -4171,9 +3611,9 @@ async function startServer() {
         secureStorageActive: secureStoreOnDisk,
       },
     });
-  });
+  }));
 
-  app.post('/api/auth/email/migrate', (req, res) => {
+  app.post('/api/auth/email/migrate', asyncRoute((req, res) => {
     loadAndMigrateEmailAccountsFromDisk();
     const legacyFileInRepo = fs.existsSync(LEGACY_EMAIL_ACCOUNTS_FILE);
     const secureStoreOnDisk = fs.existsSync(SECURE_EMAIL_ACCOUNTS_FILE);
@@ -4188,9 +3628,9 @@ async function startServer() {
         secureStorageActive: secureStoreOnDisk,
       },
     });
-  });
+  }));
 
-  app.get('/api/auth/email/reset-audit', (req, res) => {
+  app.get('/api/auth/email/reset-audit', asyncRoute((req, res) => {
     res.json({
       ok: true,
       stableSigningSecretActive: true,
@@ -4204,7 +3644,7 @@ async function startServer() {
       deliveryStats: emailDeliveryStats,
       recentDeliveryLogs: emailDeliveryAuditLogs.slice(-10),
     });
-  });
+  }));
 
   // 1. Check live gateway, Payoneer readiness, email & commission configuration status
   // All PAYONEER_* environment variables are strictly optional.
@@ -4249,7 +3689,7 @@ async function startServer() {
     );
   };
 
-  app.get('/api/payments/gateway-status', (_req, res) => {
+  app.get('/api/payments/gateway-status', asyncRoute((_req, res) => {
     const jazzcashConfigured = Boolean(
       process.env.JAZZCASH_MERCHANT_ID &&
         process.env.JAZZCASH_PASSWORD &&
@@ -4281,9 +3721,9 @@ async function startServer() {
       platformCommissionBps,
       serverTime: new Date().toISOString(),
     });
-  });
+  }));
 
-  app.get('/api/payments/payoneer-readiness', (_req, res) => {
+  app.get('/api/payments/payoneer-readiness', asyncRoute((_req, res) => {
     const liveConfigured = isPayoneerLiveConfigured();
     res.json({
       payoneerLiveConfigured: liveConfigured,
@@ -4306,7 +3746,7 @@ async function startServer() {
         ? 'Payoneer Live API Connected'
         : 'Payoneer API Disabled (Optional) — Manual Payment Verification Active',
     });
-  });
+  }));
 
   // Verify Super Admin session via cryptographically verified Firebase ID token
   const handleVerifySuperAdminSession = async (
@@ -4339,15 +3779,19 @@ async function startServer() {
     });
   };
 
-  app.get('/api/admin/verify-session', handleVerifySuperAdminSession);
-  app.post('/api/admin/verify-session', handleVerifySuperAdminSession);
+  app.get('/api/admin/verify-session', asyncRoute(handleVerifySuperAdminSession));
+  app.post('/api/admin/verify-session', asyncRoute(handleVerifySuperAdminSession));
 
   // One-time protected Super Admin custom claim & UID bootstrap endpoint
   // Strictly requires BOTH a cryptographically verified token for SUPER_ADMIN_UID AND SUPER_ADMIN_BOOTSTRAP_SECRET.
   // Never allows overwriting SUPER_ADMIN_UID with an arbitrary targetUid.
-  app.post('/api/admin/bootstrap-super-admin', async (req, res) => {
-    const user = await requireSuperAdminUser(req, res);
-    if (!user) return;
+  app.post('/api/admin/bootstrap-super-admin', asyncRoute(async (req, res) => {
+    const user = await extractVerifiedCaller(req);
+    if (!user || user.uid !== SUPER_ADMIN_UID || !user.emailVerified ||
+      !user.authTime || Date.now() / 1000 - user.authTime > 900) {
+      res.status(403).json({ error: 'A recent verified administrator sign-in is required.' });
+      return;
+    }
 
     const { bootstrapSecret, targetUid } = req.body || {};
     if (!SUPER_ADMIN_BOOTSTRAP_SECRET || bootstrapSecret !== SUPER_ADMIN_BOOTSTRAP_SECRET) {
@@ -4373,7 +3817,8 @@ async function startServer() {
       });
       customClaimAssigned = true;
     } catch {
-      // Custom claim assignment best-effort when running without service account private key
+      res.status(503).json({ ok: false, customClaimAssigned: false, error: 'Administrator claims could not be saved.' });
+      return;
     }
     res.json({
       ok: true,
@@ -4381,7 +3826,7 @@ async function startServer() {
       customClaimAssigned,
       message: `Single platform Super Admin verified and bound exclusively to UID "${SUPER_ADMIN_UID}".`,
     });
-  });
+  }));
 
   // 1B. First-Login User Role Onboarding & Profile Persistence (Buyer vs Seller; Strictly Blocks Super Admin Self-Assignment)
   interface ServerUserProfileRecord {
@@ -4781,20 +4226,10 @@ async function startServer() {
         });
       });
       serverUserProfiles.set(user.uid, savedProfile);
-    } catch (err: any) {
-      if (
-        err?.code === 7 ||
-        err?.status === 403 ||
-        String(err?.message || '').includes('Missing or insufficient permissions') ||
-        String(err?.message || '').includes('PERMISSION_DENIED')
-      ) {
-        console.warn('Firestore ADC unauthorized in local dev container; updated local profile registry.');
-        serverUserProfiles.set(user.uid, savedProfile);
-      } else {
-        console.error('Durable user role save failed:', err);
-        res.status(503).json({ error: 'Your account role could not be saved securely. Please retry.' });
-        return;
-      }
+    } catch (err) {
+      console.error('Durable user role save failed:', err);
+      res.status(503).json({ error: 'Your account role could not be saved securely. Please retry.' });
+      return;
     }
 
     res.json({
@@ -4927,14 +4362,14 @@ async function startServer() {
     });
   };
 
-  app.get('/api/users/profile', handleGetUserProfile);
-  app.post('/api/users/profile', handleSaveUserProfile);
-  app.post('/api/users/role', handleSaveUserProfile);
-  app.get('/api/auth/onboarding', handleGetUserProfile);
-  app.post('/api/auth/onboarding', handleSaveUserProfile);
-  app.get('/api/navigation/access', handleVerifyNavigationAndScreenAccess);
-  app.post('/api/navigation/access', handleVerifyNavigationAndScreenAccess);
-  app.get('/api/auth/verify-screen-access', handleVerifyNavigationAndScreenAccess);
+  app.get('/api/users/profile', asyncRoute(handleGetUserProfile));
+  app.post('/api/users/profile', asyncRoute(handleSaveUserProfile));
+  app.post('/api/users/role', asyncRoute(handleSaveUserProfile));
+  app.get('/api/auth/onboarding', asyncRoute(handleGetUserProfile));
+  app.post('/api/auth/onboarding', asyncRoute(handleSaveUserProfile));
+  app.get('/api/navigation/access', asyncRoute(handleVerifyNavigationAndScreenAccess));
+  app.post('/api/navigation/access', asyncRoute(handleVerifyNavigationAndScreenAccess));
+  app.get('/api/auth/verify-screen-access', asyncRoute(handleVerifyNavigationAndScreenAccess));
 
   // 2. Multi-Vendor Store Lookup, Slug Availability & Store Creation
   const RESERVED_SLUGS = new Set([
@@ -4985,7 +4420,7 @@ async function startServer() {
     return copy as Omit<ServerStoreRecord, 'ownerEmail'> & { ownerEmail?: string };
   };
 
-  app.get('/api/stores', async (req, res) => {
+  app.get('/api/stores', asyncRoute(async (req, res) => {
     const viewer = await extractVerifiedCaller(req);
     const isSuper = isStrictSuperAdminUser(viewer);
     const visibleStores = Array.from(serverStores.values())
@@ -5002,9 +4437,9 @@ async function startServer() {
     res.json({
       stores: visibleStores,
     });
-  });
+  }));
 
-  app.post('/api/stores/visit', async (req, res) => {
+  app.post('/api/stores/visit', asyncRoute(async (req, res) => {
     const rawTarget = String(req.body?.storeId || req.body?.storeSlug || '').trim();
     if (!rawTarget || rawTarget.length > 100) {
       res.status(400).json({ error: 'Valid storeId or storeSlug is required.' });
@@ -5024,9 +4459,9 @@ async function startServer() {
       checkoutViewsCount: stats.checkoutViewsCount,
       lastVisitedAtIso: stats.lastVisitedAtIso,
     });
-  });
+  }));
 
-  app.get('/api/stores/check-slug', (req, res) => {
+  app.get('/api/stores/check-slug', asyncRoute((req, res) => {
     const rawSlug = String(req.query.slug || '').trim().toLowerCase();
     const excludeStoreId = String(req.query.excludeStoreId || '').trim();
     const excludeOwnerId = String(req.query.excludeOwnerId || '').trim();
@@ -5078,7 +4513,7 @@ async function startServer() {
       slug: rawSlug,
       reason: null,
     });
-  });
+  }));
 
   const handleGetStoreBySlug = async (req: express.Request, res: express.Response) => {
     const slug = String(req.params.slug || '').trim().toLowerCase();
@@ -5105,8 +4540,8 @@ async function startServer() {
     });
   };
 
-  app.get('/api/stores/by-slug/:slug', handleGetStoreBySlug);
-  app.get('/api/stores/:slug', handleGetStoreBySlug);
+  app.get('/api/stores/by-slug/:slug', asyncRoute(handleGetStoreBySlug));
+  app.get('/api/stores/:slug', asyncRoute(handleGetStoreBySlug));
 
   // Create or Upsert Seller Store with Cryptographic Identity & Ownership Verification
   const handleCreateOrUpsertStore = async (req: express.Request, res: express.Response) => {
@@ -5238,30 +4673,17 @@ async function startServer() {
     try {
       const storeCollection = adminFirestoreDb.collection('stores');
       const storeRef = storeCollection.doc(storeId);
-      let existingDoc: any = { exists: false, get: () => undefined };
-      try {
-        const [docSnap, slugMatches] = await Promise.all([
-          storeRef.get(),
-          storeCollection.where('storeSlug', '==', rawSlug).limit(10).get(),
-        ]);
-        existingDoc = docSnap;
-        if (existingDoc.exists && String(existingDoc.get('ownerId') || '') !== ownerId) {
-          res.status(403).json({ error: 'This store belongs to another seller.' });
-          return;
-        }
-        if (slugMatches.docs.some((doc) => doc.id !== storeId)) {
-          res.status(409).json({ error: 'That store URL is already taken. Choose another name.' });
-          return;
-        }
-      } catch (checkErr: any) {
-        if (
-          checkErr?.code !== 7 &&
-          checkErr?.status !== 403 &&
-          !String(checkErr?.message || '').includes('PERMISSION_DENIED') &&
-          !String(checkErr?.message || '').includes('Missing or insufficient permissions')
-        ) {
-          throw checkErr;
-        }
+      const [existingDoc, slugMatches] = await Promise.all([
+        storeRef.get(),
+        storeCollection.where('storeSlug', '==', rawSlug).limit(10).get(),
+      ]);
+      if (existingDoc.exists && String(existingDoc.get('ownerId') || '') !== ownerId) {
+        res.status(403).json({ error: 'This store belongs to another seller.' });
+        return;
+      }
+      if (slugMatches.docs.some((doc) => doc.id !== storeId)) {
+        res.status(409).json({ error: 'That store URL is already taken. Choose another name.' });
+        return;
       }
       // Preserve an existing reviewed plan/status. Client-supplied Pro values
       // never upgrade sellers; public store documents contain no owner email.
@@ -5296,43 +4718,21 @@ async function startServer() {
         createdAt: existingDoc.exists ? existingDoc.get('createdAt') || now : now,
         updatedAt: now,
       };
-      try {
-        await storeRef.set(storeDocument);
-      } catch (setErr: any) {
-        if (
-          setErr?.code !== 7 &&
-          setErr?.status !== 403 &&
-          !String(setErr?.message || '').includes('PERMISSION_DENIED') &&
-          !String(setErr?.message || '').includes('Missing or insufficient permissions')
-        ) {
-          throw setErr;
-        }
-      }
+      await storeRef.set(storeDocument);
       serverStores.set(storeId, record);
-      const statusCode = existingDoc.exists || existingById ? 200 : 201;
+      const statusCode = existingDoc.exists ? 200 : 201;
       res.status(statusCode).json({ ok: true, store: record });
-    } catch (err: any) {
-      if (
-        err?.code === 7 ||
-        err?.status === 403 ||
-        String(err?.message || '').includes('Missing or insufficient permissions') ||
-        String(err?.message || '').includes('PERMISSION_DENIED')
-      ) {
-        serverStores.set(storeId, record);
-        const statusCode = existingById ? 200 : 201;
-        res.status(statusCode).json({ ok: true, store: record });
-        return;
-      }
+    } catch (err) {
       console.error('Verified store creation failed:', err);
       res.status(503).json({ error: 'Store could not be saved securely. Please retry.' });
     }
   };
 
-  app.post('/api/stores/create', handleCreateOrUpsertStore);
-  app.post('/api/stores/upsert', handleCreateOrUpsertStore);
+  app.post('/api/stores/create', asyncRoute(handleCreateOrUpsertStore));
+  app.post('/api/stores/upsert', asyncRoute(handleCreateOrUpsertStore));
 
   // 3. Cross-Seller Store Update Endpoint (Enforces Cryptographic Seller Isolation, Overdue Commission Restriction & Pro Theme Entitlements)
-  app.post('/api/stores/update', async (req, res) => {
+  app.post('/api/stores/update', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
@@ -5474,7 +4874,7 @@ async function startServer() {
       user.rawToken
     );
     res.json({ ok: true, store: updated });
-  });
+  }));
 
   // Helper to verify whether a user is a registered store owner (seller) in memory or Firestore
   const resolveOwnedStoreForUser = async (uid: string): Promise<ServerStoreRecord | undefined> => {
@@ -5662,16 +5062,16 @@ async function startServer() {
     res.json({ ok: true, settings: record });
   };
 
-  app.get('/api/payment-settings/:storeId', handleGetPaymentSettings);
-  app.get('/api/payment-settings', handleGetPaymentSettings);
-  app.post('/api/payment-settings/save', handleSavePaymentSettings);
-  app.get('/api/seller-settings/:storeId', handleGetPaymentSettings);
-  app.get('/api/seller-settings', handleGetPaymentSettings);
-  app.post('/api/seller-settings', handleSavePaymentSettings);
+  app.get('/api/payment-settings/:storeId', asyncRoute(handleGetPaymentSettings));
+  app.get('/api/payment-settings', asyncRoute(handleGetPaymentSettings));
+  app.post('/api/payment-settings/save', asyncRoute(handleSavePaymentSettings));
+  app.get('/api/seller-settings/:storeId', asyncRoute(handleGetPaymentSettings));
+  app.get('/api/seller-settings', asyncRoute(handleGetPaymentSettings));
+  app.post('/api/seller-settings', asyncRoute(handleSavePaymentSettings));
 
   // Sanitized Checkout Payment Instructions Endpoint
   // Resolves the verified owner of the requested store and serves ONLY safe buyer-facing checkout instructions (never private seller PII or direct client Firestore reads).
-  app.get('/api/checkout/payment-instructions/:storeId', async (req, res) => {
+  app.get('/api/checkout/payment-instructions/:storeId', asyncRoute(async (req, res) => {
     const rawParam = String(req.params.storeId || '').trim();
     if (!rawParam) {
       res.status(400).json({ error: 'storeId or storeSlug is required.' });
@@ -5740,13 +5140,13 @@ async function startServer() {
       instructions,
       paymentInstructions: instructions,
     });
-  });
+  }));
 
   // Verified upload fallback for server-email sessions that do not have a Firebase
   // browser SDK session. Does not accept base64 or publicly expose signed URLs.
   app.post('/api/uploads/product',
     express.raw({ type: 'application/octet-stream', limit: '5mb' }),
-    async (req, res) => {
+    asyncRoute(async (req, res) => {
       const user = await requireAuthenticatedUser(req, res);
       if (!user) return;
       if (!user.emailVerified || isVerifiedBuyerOnly(user.uid)) {
@@ -5832,7 +5232,7 @@ async function startServer() {
       } catch {
         res.status(503).json({ error: 'Secure upload failed. Try again before publishing.' });
       }
-    }
+    })
   );
 
   // 4. Cross-Seller Product Upsert / Save & Delete Endpoints (Enforces Cryptographic Seller Isolation & Overdue Commission Restrictions)
@@ -5978,22 +5378,12 @@ async function startServer() {
     try {
       const savedDeliverable = await authoritativeDeliverableRef.get();
       authoritativeDeliverable = savedDeliverable.exists ? savedDeliverable.data() : undefined;
-    } catch (authErr: any) {
-      if (
-        authErr?.code !== 7 &&
-        authErr?.status !== 403 &&
-        !String(authErr?.message || '').includes('PERMISSION_DENIED') &&
-        !String(authErr?.message || '').includes('Missing or insufficient permissions')
-      ) {
-        res.status(503).json({ error: 'Could not verify private product file. Product was not published.' });
-        return;
-      }
+    } catch {
+      res.status(503).json({ error: 'Could not verify private product file. Product was not published.' });
+      return;
     }
-    let requestedReference = String(productPayload.fileDataUrl || '').trim();
-    if (!requestedReference && wantsPublished && productPayload.fileName) {
-      requestedReference = `storage://deliverables/${effectiveOwnerId}/${record.id}/${productPayload.fileName}`;
-    }
-    const storedReference = String(authoritativeDeliverable?.fileDataUrl || requestedReference).trim();
+    const requestedReference = String(productPayload.fileDataUrl || '').trim();
+    const storedReference = String(authoritativeDeliverable?.fileDataUrl || '').trim();
     // New uploads use private references. Updating product metadata without a
     // new upload is allowed only if the existing verified reference is present.
     const fileReference = requestedReference || storedReference;
@@ -6003,8 +5393,8 @@ async function startServer() {
         return;
       }
       if (
-        String(authoritativeDeliverable?.ownerId || effectiveOwnerId) !== effectiveOwnerId ||
-        String(authoritativeDeliverable?.productId || record.id) !== record.id
+        String(authoritativeDeliverable?.ownerId || '') !== effectiveOwnerId ||
+        String(authoritativeDeliverable?.productId || '') !== record.id
       ) {
         res.status(403).json({ error: 'Private file does not belong to this seller/product.' });
         return;
@@ -6037,24 +5427,9 @@ async function startServer() {
           res.status(422).json({ error: 'Original file size or type is not supported (maximum 5 MB).' });
           return;
         }
-      } catch (storageErr: any) {
-        if (
-          process.env.NODE_ENV !== 'production' ||
-          record.id.startsWith('prod-beta-') ||
-          storageErr?.code === 7 ||
-          storageErr?.code === 404 ||
-          storageErr?.status === 403 ||
-          storageErr?.status === 404 ||
-          String(storageErr?.message || '').includes('No such object') ||
-          String(storageErr?.message || '').includes('PERMISSION_DENIED') ||
-          String(storageErr?.message || '').includes('Missing or insufficient permissions') ||
-          !FIREBASE_STORAGE_BUCKET
-        ) {
-          // Dev container fallback when Storage ADC credentials or test objects are not uploaded
-        } else {
-          res.status(503).json({ error: 'Original file could not be verified in Firebase Storage. Try uploading again.' });
-          return;
-        }
+      } catch {
+        res.status(503).json({ error: 'Original file could not be verified in Firebase Storage. Try uploading again.' });
+        return;
       }
     }
 
@@ -6062,68 +5437,29 @@ async function startServer() {
       // Server commit is the public publish gate; the browser initially saves a
       // draft and must not expose unverified files to buyers.
       const productDocRef = adminFirestoreDb.collection('products').doc(record.id);
-      let existingSnap: any = { exists: false, get: () => undefined };
-      try {
-        existingSnap = await productDocRef.get();
-        if (existingSnap.exists) {
-          if (existingSnap.get('deleted') === true) {
-            res.status(410).json({ error: 'This product was removed and cannot be republished. Create a new listing.' });
-            return;
-          }
-          const savedOwner = String(existingSnap.get('ownerId') || '');
-          const savedStore = String(existingSnap.get('storeId') || '');
-          if (savedOwner !== effectiveOwnerId || savedStore !== record.storeId) {
-            res.status(403).json({ error: 'Existing product belongs to another owner or store.' });
-            return;
-          }
+      const existingSnap = await productDocRef.get();
+      if (existingSnap.exists) {
+        if (existingSnap.get('deleted') === true) {
+          res.status(410).json({ error: 'This product was removed and cannot be republished. Create a new listing.' });
+          return;
         }
-      } catch (readErr: any) {
-        if (
-          process.env.NODE_ENV === 'production' &&
-          readErr?.code !== 7 &&
-          readErr?.status !== 403 &&
-          readErr?.status !== 'PERMISSION_DENIED' &&
-          !String(readErr?.message || '').includes('PERMISSION_DENIED') &&
-          !String(readErr?.message || '').includes('Missing or insufficient')
-        ) {
-          throw readErr;
+        const savedOwner = String(existingSnap.get('ownerId') || '');
+        const savedStore = String(existingSnap.get('storeId') || '');
+        if (savedOwner !== effectiveOwnerId || savedStore !== record.storeId) {
+          res.status(403).json({ error: 'Existing product belongs to another owner or store.' });
+          return;
         }
       }
       const now = new Date();
-      try {
-        await productDocRef.set({
-          ...record,
-          deleted: false,
-          createdAt: existingSnap.exists ? existingSnap.get('createdAt') || now : now,
-          updatedAt: now,
-        }, { merge: true });
-      } catch (setErr: any) {
-        if (
-          process.env.NODE_ENV === 'production' &&
-          setErr?.code !== 7 &&
-          setErr?.status !== 403 &&
-          setErr?.status !== 'PERMISSION_DENIED' &&
-          !String(setErr?.message || '').includes('PERMISSION_DENIED') &&
-          !String(setErr?.message || '').includes('Missing or insufficient')
-        ) {
-          throw setErr;
-        }
-      }
-    } catch (saveErr: any) {
-      if (
-        process.env.NODE_ENV !== 'production' ||
-        saveErr?.code === 7 ||
-        saveErr?.status === 403 ||
-        saveErr?.status === 'PERMISSION_DENIED' ||
-        String(saveErr?.message || '').includes('PERMISSION_DENIED') ||
-        String(saveErr?.message || '').includes('insufficient permissions') ||
-        String(saveErr?.message || '').includes('Missing or insufficient')
-      ) {
-        console.warn('Firestore ADC unauthorized in local dev container; saved product locally.');
-      } else {
-        res.status(503).json({ error: 'Could not save product to Firebase. Product was not published.' });
-        return;
-      }
+      await productDocRef.set({
+        ...record,
+        deleted: false,
+        createdAt: existingSnap.exists ? existingSnap.get('createdAt') || now : now,
+        updatedAt: now,
+      }, { merge: true });
+    } catch {
+      res.status(503).json({ error: 'Could not save product to Firebase. Product was not published.' });
+      return;
     }
     serverProducts.set(record.id, record);
     if (wantsPublished) {
@@ -6139,11 +5475,11 @@ async function startServer() {
     res.json({ ok: true, product: record });
   };
 
-  app.post('/api/products/upsert', handleUpsertProduct);
-  app.post('/api/products/save', handleUpsertProduct);
-  app.post('/api/products', handleUpsertProduct);
+  app.post('/api/products/upsert', asyncRoute(handleUpsertProduct));
+  app.post('/api/products/save', asyncRoute(handleUpsertProduct));
+  app.post('/api/products', asyncRoute(handleUpsertProduct));
 
-  app.post('/api/products/delete', async (req, res) => {
+  app.post('/api/products/delete', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
@@ -6182,10 +5518,10 @@ async function startServer() {
       console.error('Product archive failed:', err);
       res.status(503).json({ error: 'Product could not be removed safely. Please retry.' });
     }
-  });
+  }));
 
   // 5. Server-Side Commission Calculator Endpoint
-  app.post('/api/commission/calculate', (req, res) => {
+  app.post('/api/commission/calculate', asyncRoute((req, res) => {
     const { amountMajor, currency = 'PKR', paymentMethod = 'jazzcash' } = req.body;
     const gross = Math.max(0, Number(amountMajor) || 0);
     const breakdown = computeServerCommissionMinor(
@@ -6195,7 +5531,7 @@ async function startServer() {
       String(paymentMethod)
     );
     res.json(breakdown);
-  });
+  }));
 
   // 6. Protected Super Admin Commission Configuration Endpoint
   // Strictly requires cryptographically verified token for SUPER_ADMIN_UID
@@ -6224,8 +5560,8 @@ async function startServer() {
     });
   };
 
-  app.post('/api/admin/commission-config', handleUpdateCommissionConfig);
-  app.post('/api/admin/commission-rate', handleUpdateCommissionConfig);
+  app.post('/api/admin/commission-config', asyncRoute(handleUpdateCommissionConfig));
+  app.post('/api/admin/commission-rate', asyncRoute(handleUpdateCommissionConfig));
 
   // 7. Auditable Persistent Transaction Ledger & Immutable Audit Trail Endpoint
   // Enforces Cryptographic Token Verification & Strict Seller Isolation
@@ -6328,11 +5664,11 @@ async function startServer() {
     });
   };
 
-  app.get('/api/ledger', handleGetLedger);
-  app.get('/api/ledger/transactions', handleGetLedger);
+  app.get('/api/ledger', asyncRoute(handleGetLedger));
+  app.get('/api/ledger/transactions', asyncRoute(handleGetLedger));
 
   // 8. Backend Price Validation, Commission Snapshot & Duplicate Payment/Ledger Prevention
-  app.post('/api/checkout/validate-and-prepare', async (req, res) => {
+  app.post('/api/checkout/validate-and-prepare', asyncRoute(async (req, res) => {
     try {
       const verifiedBuyer = await requireAuthenticatedUser(req, res);
       if (!verifiedBuyer) return;
@@ -6413,6 +5749,19 @@ async function startServer() {
         return;
       }
 
+      if (items.length !== 1 || Number(items[0]?.quantity ?? 1) !== 1) {
+        res.status(422).json({ error: 'Please check out one digital product at a time. Each order includes one download license.' });
+        return;
+      }
+      if (typeof idempotencyKey !== 'string' || idempotencyKey.length > 200 || !items[0]?.id ||
+        !/^[A-Za-z0-9_-]{2,128}$/.test(String(items[0].id))) {
+        res.status(400).json({ error: 'Invalid checkout request.' });
+        return;
+      }
+      if (!verifiedBuyer.emailVerified) {
+        res.status(403).json({ error: 'Verify your account email before placing an order.' });
+        return;
+      }
       if (!(await ensureFinancialDatabaseReady(res))) return;
       const confirmedBuyerEmail = String(verifiedBuyer.email || '').trim().toLowerCase();
       if (!confirmedBuyerEmail || confirmedBuyerEmail !== String(customerEmail || '').trim().toLowerCase()) {
@@ -6441,10 +5790,14 @@ async function startServer() {
         return;
       }
 
-      // Refresh the published catalog once on a cache miss. Never trust buyer-supplied prices.
-      if (items.some((item) => !serverProducts.has(String(item.id)))) {
-        await hydratePublishedProductsFromFirestore();
+      // Always fetch current pricing/visibility before checkout, not a startup cache.
+      const productSnapshot = await adminFirestoreDb!.collection('products').doc(String(items[0].id)).get();
+      if (!productSnapshot.exists || productSnapshot.get('deleted') === true) {
+        res.status(404).json({ error: 'Product not found in the verified catalog. Checkout was not created.' });
+        return;
       }
+      const freshProduct = productSnapshot.data() as ServerProductRecord;
+      serverProducts.set(String(items[0].id), { ...freshProduct, id: String(items[0].id) });
 
       let calculatedTotal = 0;
       const targetStoreRecord = storeId ? await resolveVerifiedStoreRecord(String(storeId)) : undefined;
@@ -6645,7 +5998,7 @@ async function startServer() {
           : 'Pending Payment Verification';
 
       const computedSummary = items
-        .map((i) => `${i.title}${Number(i.quantity) > 1 ? ` x${i.quantity}` : ''}`)
+        .map((i) => String(serverProducts.get(String(i.id))?.title || 'Digital Product'))
         .join(', ')
         .slice(0, 1000);
       const computedCount = items.reduce(
@@ -6695,6 +6048,19 @@ async function startServer() {
           return { duplicate: true, orderNumber: String(prior.orderNumber || ''), orderId: String(prior.orderId || '') };
         }
         if (priorOrder.exists) throw new Error('Order ID collision. Please retry checkout.');
+        const [productNow, storeNow] = await Promise.all([
+          tx.get(financialDb.collection('products').doc(primaryProductId)),
+          tx.get(financialDb.collection('stores').doc(resolvedStoreId)),
+        ]);
+        if (!productNow.exists || !storeNow.exists || storeNow.get('status') !== 'Active' ||
+          storeNow.get('ownerId') !== resolvedSellerId || productNow.get('deleted') === true ||
+          productNow.get('published') !== true || productNow.get('status') !== 'Available' ||
+          productNow.get('storeId') !== resolvedStoreId || productNow.get('ownerId') !== resolvedSellerId ||
+          productNow.get('isFree') !== freshProduct.isFree ||
+          productNow.get('priceUsd') !== freshProduct.priceUsd || productNow.get('pricePkr') !== freshProduct.pricePkr) {
+          throw new Error('Product price or availability changed. Refresh your cart and try again.');
+        }
+
         const timestamp = new Date();
         tx.create(ledgerRef, ledgerRecord as unknown as Record<string, unknown>);
         tx.create(buyerOrderRef, {
@@ -6775,11 +6141,11 @@ async function startServer() {
         error: err instanceof Error ? err.message : 'Server checkout validation failed.',
       });
     }
-  });
+  }));
 
   // 9. Server-Side Manual Payment Verification
   // Enforces Cryptographic Seller Identity, Blocks Buyer Self-Approval, Requires Statement Confirmation, Unlocks Signed Token & Triggers Smart 5% Commission Invoice Check
-  app.post('/api/orders/verify-payment', async (req, res) => {
+  app.post('/api/orders/verify-payment', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
@@ -6790,7 +6156,7 @@ async function startServer() {
       res.status(400).json({ error: 'Invalid payment verification status.' });
       return;
     }
-    const entry = persistentLedger.get(String(orderNumber));
+    const entry = await loadFinancialOrder(String(orderNumber));
     if (!entry) {
       res.status(404).json({ error: `Order "${orderNumber}" not found in persistent ledger.` });
       return;
@@ -6964,7 +6330,7 @@ async function startServer() {
         });
       }
     });
-  });
+  }));
 
   // 9B. Real-Time Express Order List & Synchronization Endpoint (Cryptographically Authenticated Seller, Buyer & Super Admin Isolation)
   const authorizeAndFilterOrdersList = (
@@ -7178,6 +6544,26 @@ async function startServer() {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
 
+    if (!(await ensureFinancialDatabaseReady(res))) return;
+    const ledger = adminFirestoreDb!.collection('ledger');
+    const snapshots = isVerifiedSuperAdmin(user)
+      ? [await ledger.get()]
+      : await Promise.all([
+          ledger.where('buyerId', '==', user.uid).get(),
+          ledger.where('sellerId', '==', user.uid).get(),
+        ]);
+    for (const [number, record] of persistentLedger) {
+      if (isVerifiedSuperAdmin(user) || record.buyerId === user.uid || record.sellerId === user.uid) {
+        persistentLedger.delete(number);
+      }
+    }
+    for (const snapshot of snapshots) {
+      for (const doc of snapshot.docs) {
+        const entry = doc.data() as LedgerEntry;
+        if (entry.orderNumber === doc.id) persistentLedger.set(doc.id, entry);
+      }
+    }
+
     const result = authorizeAndFilterOrdersList(
       user,
       (req.query || {}) as Record<string, unknown>
@@ -7185,18 +6571,18 @@ async function startServer() {
     res.status(result.status).json(result.body);
   };
 
-  app.get('/api/orders/sync', handleSyncOrListOrders);
-  app.get('/api/orders/list', handleSyncOrListOrders);
+  app.get('/api/orders/sync', asyncRoute(handleSyncOrListOrders));
+  app.get('/api/orders/list', asyncRoute(handleSyncOrListOrders));
 
   // 9C. Buyer Paid Order Email Notification Lookup & Idempotent Re-Trigger Endpoint
   // Strictly restricted to the verified order buyer, the verified store seller, or Super Admin
-  app.get('/api/orders/:orderNumber/email-notification', async (req, res) => {
+  app.get('/api/orders/:orderNumber/email-notification', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
 
     const orderNumber = String(req.params.orderNumber || '').trim();
-    const entry = persistentLedger.get(orderNumber);
+    const entry = await loadFinancialOrder(orderNumber);
     if (!entry) {
       res.status(404).json({ error: `Order "${orderNumber}" not found.` });
       return;
@@ -7229,17 +6615,17 @@ async function startServer() {
           }
         : null,
     });
-  });
+  }));
 
   // 10. Server-Side Refund & Commission Reversal Endpoint (Cryptographically Authenticated Seller or Super Admin)
-  app.post('/api/orders/refund', async (req, res) => {
+  app.post('/api/orders/refund', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
 
     const { orderNumber, reason } = req.body || {};
     if (!(await ensureFinancialDatabaseReady(res))) return;
-    const entry = persistentLedger.get(String(orderNumber));
+    const entry = await loadFinancialOrder(String(orderNumber));
     if (!entry) {
       res.status(404).json({ error: `Order "${orderNumber}" not found in persistent ledger.` });
       return;
@@ -7329,16 +6715,16 @@ async function startServer() {
         commissionSummary,
       });
     });
-  });
+  }));
 
   // 10B. Commission Settlement & Dispute Status Transition Endpoint
-  app.post('/api/ledger/commission-status', async (req, res) => {
+  app.post('/api/ledger/commission-status', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
 
     const { orderNumber, newCommissionStatus, note } = req.body || {};
-    const entry = persistentLedger.get(String(orderNumber));
+    const entry = await loadFinancialOrder(String(orderNumber));
     if (!entry) {
       res.status(404).json({ error: `Ledger record "${orderNumber}" not found.` });
       return;
@@ -7418,7 +6804,7 @@ async function startServer() {
         commissionSummary,
       });
     });
-  });
+  }));
 
   // 10C. SMART 5% COMMISSION MANAGEMENT SYSTEM ENDPOINTS
   // GET /api/commission/status (and /api/commissions/invoices) — Cryptographically Authenticated Seller & Super Admin Commission Status Summary
@@ -7482,8 +6868,8 @@ async function startServer() {
     res.json(summary);
   };
 
-  app.get('/api/commission/status', handleGetCommissionStatus);
-  app.get('/api/commissions/invoices', handleGetCommissionStatus);
+  app.get('/api/commission/status', asyncRoute(handleGetCommissionStatus));
+  app.get('/api/commissions/invoices', asyncRoute(handleGetCommissionStatus));
 
   // GET /api/commission/admin-overview (and /api/commission/admin/overview) — Strictly Super Admin view of all stores, visits, invoices, payments & adjustments
   const handleAdminCommissionOverview = async (
@@ -7572,8 +6958,8 @@ async function startServer() {
     });
   };
 
-  app.get('/api/commission/admin-overview', handleAdminCommissionOverview);
-  app.get('/api/commission/admin/overview', handleAdminCommissionOverview);
+  app.get('/api/commission/admin-overview', asyncRoute(handleAdminCommissionOverview));
+  app.get('/api/commission/admin/overview', asyncRoute(handleAdminCommissionOverview));
 
   // POST /api/commission/admin/grant-pro — Strictly Super Admin Pro Entitlement Grant/Revoke
   const handleAdminGrantPro = async (req: express.Request, res: express.Response) => {
@@ -7621,11 +7007,11 @@ async function startServer() {
     });
   };
 
-  app.post('/api/commission/admin/grant-pro', handleAdminGrantPro);
-  app.post('/api/admin/subscriptions/grant-pro', handleAdminGrantPro);
+  app.post('/api/commission/admin/grant-pro', asyncRoute(handleAdminGrantPro));
+  app.post('/api/admin/subscriptions/grant-pro', asyncRoute(handleAdminGrantPro));
 
   // POST /api/admin/stores/status — Strictly Super Admin Store Moderation Mutation
-  app.post('/api/admin/stores/status', async (req, res) => {
+  app.post('/api/admin/stores/status', asyncRoute(async (req, res) => {
     const adminUser = await requireSuperAdminUser(req, res);
     if (!adminUser) return;
 
@@ -7655,10 +7041,10 @@ async function startServer() {
       status: store.status,
       updatedByUid: adminUser.uid,
     });
-  });
+  }));
 
   // POST /api/admin/stores/control — Instant Super Admin Multi-Store Command Endpoint
-  app.post('/api/admin/stores/control', async (req, res) => {
+  app.post('/api/admin/stores/control', asyncRoute(async (req, res) => {
     const adminUser = await requireSuperAdminUser(req, res);
     if (!adminUser) return;
 
@@ -7774,10 +7160,10 @@ async function startServer() {
         lastVisitedAtIso: visits.lastVisitedAtIso,
       },
     });
-  });
+  }));
 
   // POST /api/commission/submit-payment — Seller submits commission payment details & proof
-  app.post('/api/commission/submit-payment', async (req, res) => {
+  app.post('/api/commission/submit-payment', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
@@ -7918,7 +7304,7 @@ async function startServer() {
         commissionSummary: summary,
       });
     });
-  });
+  }));
 
   // POST /api/commission/verify-payment (and /api/admin/commission/verify-payment)
   // Strictly Restricted to Verified Single-UID DreamStore Super Admin (SUPER_ADMIN_UID)
@@ -8089,12 +7475,12 @@ async function startServer() {
     });
   };
 
-  app.post('/api/commission/verify-payment', handleVerifyCommissionPaymentOnServer);
-  app.post('/api/admin/commission/verify-payment', handleVerifyCommissionPaymentOnServer);
-  app.post('/api/commissions/verify-payment', handleVerifyCommissionPaymentOnServer);
+  app.post('/api/commission/verify-payment', asyncRoute(handleVerifyCommissionPaymentOnServer));
+  app.post('/api/admin/commission/verify-payment', asyncRoute(handleVerifyCommissionPaymentOnServer));
+  app.post('/api/commissions/verify-payment', asyncRoute(handleVerifyCommissionPaymentOnServer));
 
   // POST /api/commission/simulate-overdue — Protected by Cryptographic Auth & Ownership
-  app.post('/api/commission/simulate-overdue', async (req, res) => {
+  app.post('/api/commission/simulate-overdue', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
@@ -8139,10 +7525,10 @@ async function startServer() {
         commissionSummary: summary,
       });
     });
-  });
+  }));
 
   // 10D. Server-Validated Free vs Pro Entitlements & Subscriptions Endpoints
-  app.get('/api/entitlements/:sellerId', async (req, res) => {
+  app.get('/api/entitlements/:sellerId', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
@@ -8178,7 +7564,7 @@ async function startServer() {
         advancedAnalytics: hasPro,
       },
     });
-  });
+  }));
 
   const handleGetSubscriptions = async (req: express.Request, res: express.Response) => {
     const user = await requireAuthenticatedUser(req, res);
@@ -8251,10 +7637,10 @@ async function startServer() {
     });
   };
 
-  app.get('/api/subscriptions', handleGetSubscriptions);
-  app.get('/api/subscription/status', handleGetSubscriptions);
+  app.get('/api/subscriptions', asyncRoute(handleGetSubscriptions));
+  app.get('/api/subscription/status', asyncRoute(handleGetSubscriptions));
 
-  app.post('/api/subscriptions', async (req, res) => {
+  app.post('/api/subscriptions', asyncRoute(async (req, res) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
     const isSuper = isStrictSuperAdminUser(user);
@@ -8320,135 +7706,28 @@ async function startServer() {
         status: body.status === 'Waitlist' ? 'Waitlist' : 'Active',
       },
     });
-  });
+  }));
 
-  // 11. Provider Webhook Endpoint with Signature Verification & Idempotency
-  app.post('/api/webhooks/:provider', async (req, res) => {
-    const { provider } = req.params;
-    const signature = req.headers['x-webhook-signature'] as string | undefined;
-    const { eventId, orderNumber, status } = req.body;
+  // No gateway adapter is installed. Do not acknowledge or simulate payment events.
+  app.post('/api/webhooks/:provider', asyncRoute((_req, res) => {
+    res.status(503).json({ error: 'Automatic payment webhooks are not enabled. Use the verified manual payment workflow.' });
+  }));
 
-    if (!eventId || !orderNumber) {
-      res.status(400).json({ error: 'Missing eventId or orderNumber in webhook payload.' });
+  app.post('/api/downloads/token', asyncRoute(async (req, res) => {
+    const user = await requireAuthenticatedUser(req, res);
+    if (!user) return;
+    if (!(await ensureFinancialDatabaseReady(res))) return;
+    const entry = await loadFinancialOrder(String(req.body?.orderNumber || ''));
+    if (!entry || entry.buyerId !== user.uid || entry.paymentStatus !== 'Paid' ||
+      Date.now() >= entry.expiresAtMs || entry.downloadCount >= entry.maxDownloads) {
+      res.status(403).json({ error: 'A valid order belonging to your account is required.' });
       return;
     }
-
-    if (processedWebhookIds.has(eventId)) {
-      res.status(409).json({
-        duplicate: true,
-        error: `Duplicate webhook event ${eventId} ignored by idempotency guard.`,
-      });
-      return;
-    }
-
-    const configuredWebhookSecret = (
-      process.env.WEBHOOK_SIGNING_SECRET ||
-      process.env.PAYONEER_WEBHOOK_SECRET ||
-      ''
-    ).trim();
-    if (
-      configuredWebhookSecret.length < 32 ||
-      !isRealCredentialValue(configuredWebhookSecret)
-    ) {
-      res.status(503).json({
-        error: 'Webhook endpoint disabled: No live provider webhook signing secret configured.',
-      });
-      return;
-    }
-
-    const expectedSig = crypto
-      .createHmac('sha256', configuredWebhookSecret)
-      .update(`${provider}:${eventId}:${orderNumber}:${status}`)
-      .digest('hex');
-
-    if (!signature || signature !== expectedSig) {
-      res.status(401).json({ error: 'Invalid webhook HMAC signature.' });
-      return;
-    }
-
-    processedWebhookIds.add(eventId);
-    const entry = persistentLedger.get(orderNumber);
-    let emailNotification: BuyerPaidEmailNotificationRecord | null = null;
-    if (entry) {
-      const prevStatus = entry.paymentStatus;
-      if (status === 'Paid') {
-        entry.paymentStatus = 'Paid';
-        entry.verificationMode = 'Gateway Verified';
-        entry.commissionStatus = 'outstanding';
-        entry.payoutStatus = 'Unsettled (Launch Blocker: Live Split Payout API Not Connected)';
-        entry.downloadToken = createSignedDownloadToken({
-          orderNumber: entry.orderNumber,
-          productId: entry.primaryProductId,
-          buyerId: entry.buyerId,
-          expiresAtMs: entry.expiresAtMs,
-        });
-        emailNotification = await triggerBuyerPaidOrderEmail(entry, `webhook:${provider}`);
-      } else {
-        entry.paymentStatus = 'Failed';
-        entry.verificationMode = 'Unverified';
-        entry.commissionStatus = 'reversed';
-        entry.payoutStatus = 'Failed';
-      }
-      entry.updatedAtIso = new Date().toISOString();
-
-      appendAuditEntry({
-        orderNumber: entry.orderNumber,
-        orderId: entry.orderId,
-        sellerId: entry.sellerId,
-        actorUid: `webhook:${provider}`,
-        action: status === 'Paid' ? 'MANUAL_PAYMENT_VERIFIED' : 'PAYMENT_REJECTED',
-        previousStatus: prevStatus,
-        newStatus: entry.paymentStatus,
-        verificationMode: entry.verificationMode,
-        detail: `Signed provider webhook (${provider}, event ${eventId}) updated status to ${entry.paymentStatus}.`,
-      });
-      reconcileSellerCommissionState(entry.sellerId);
-    }
-
-    res.json({ ok: true, verifiedProvider: provider, orderNumber, status, emailNotification });
-  });
-
-  // 11B. Download Token Generator Endpoint (Supports Free Instant Downloads & Rejects Unverified Orders)
-  app.post('/api/downloads/token', async (req, res) => {
-    const { orderId, orderNumber, productId, isFreeOrder, buyerEmail } = req.body || {};
-    if (isFreeOrder) {
-      const expiresAtMs = Date.now() + 7 * 86400000;
-      const downloadToken = createSignedDownloadToken({
-        orderNumber: String(orderNumber || 'DS-FREE-001'),
-        productId: String(productId || 'prod-free'),
-        buyerId: String(buyerEmail || 'free-shopper'),
-        expiresAtMs,
-      });
-      res.json({
-        ok: true,
-        downloadToken,
-        expiresAtMs,
-        orderId: String(orderId || 'free-instant-sample'),
-        orderNumber: String(orderNumber || 'DS-FREE-001'),
-        productId: String(productId || 'prod-free'),
-      });
-      return;
-    }
-
-    const orderNum = String(orderNumber || '').trim();
-    const entry = persistentLedger.get(orderNum);
-    if (!entry || entry.paymentStatus !== 'Paid') {
-      res.status(403).json({
-        allowed: false,
-        error: 'Unverified paid orders cannot generate download tokens. Payment must be verified first.',
-      });
-      return;
-    }
-
-    res.json({
-      ok: true,
-      downloadToken: entry.downloadToken,
-      expiresAtMs: entry.expiresAtMs,
-    });
-  });
+    res.json({ ok: true, downloadToken: entry.downloadToken, expiresAtMs: entry.expiresAtMs });
+  }));
 
   // 12. Verify Download Token & Server-Authoritative Payment Status before serving protected file
-  app.post('/api/delivery/verify-download', async (req, res) => {
+  app.post('/api/delivery/verify-download', asyncRoute(async (req, res) => {
     const verifiedUser = await requireAuthenticatedUser(req, res);
     if (!verifiedUser) return;
     if (!(await ensureFinancialDatabaseReady(res))) return;
@@ -8464,7 +7743,7 @@ async function startServer() {
       expiresAtMs,
     } = req.body || {};
 
-    const ledgerEntry = persistentLedger.get(String(orderNumber));
+    const ledgerEntry = await loadFinancialOrder(String(orderNumber));
     if (!ledgerEntry) {
       res.status(404).json({ allowed: false, error: 'Verified order not found. Download denied.' });
       return;
@@ -8727,11 +8006,11 @@ async function startServer() {
       fileDataUrl: protectedDeliverable?.fileDataUrl,
       message: 'Download token & payment status verified by server.',
     });
-  });
+  }));
 
   // 13. Comprehensive Automated Functional, Ledger, Manual Payment & Multi-Tenant Security Audit Suite
   // Protected by Super Admin authentication so only the verified SUPER_ADMIN_UID can execute it
-  app.post('/api/test-suite/run', async (req, res) => {
+  app.post('/api/test-suite/run', asyncRoute(async (req, res) => {
     const adminUser = await requireSuperAdminUser(req, res);
     if (!adminUser) return;
 
@@ -8951,7 +8230,7 @@ async function startServer() {
       timestamp: new Date().toISOString(),
       results,
     });
-  });
+  }));
 
   // 14. Server-Side Gemini Multi-Turn Chat Assistant (Free-Tier Friendly)
   const ROLE_SYSTEM_INSTRUCTIONS: Record<string, string> = {
@@ -8989,7 +8268,7 @@ async function startServer() {
     return `[Turn #${turnCount || 1} • ${roleId === 'seller_coach' ? 'Seller Coach' : roleId === 'buyer_concierge' ? 'Buyer Concierge' : 'Copywriter'}]\n For **${storeName}** (${productCount} active products in ${currency}): I can help you optimize your storefront, write product descriptions, explain Express Payment Verification, or guide buyers through checkout. What would you like to work on next?`;
   }
 
-  app.post('/api/gemini/chat', async (req, res) => {
+  app.post('/api/gemini/chat', asyncRoute(async (req, res) => {
     try {
       const { messages, roleId = 'seller_coach', modelTier = 'fast', storeContext } = req.body || {};
       if (!Array.isArray(messages) || messages.length === 0) {
@@ -9132,7 +8411,10 @@ async function startServer() {
         error: err?.message || 'Failed to generate chat response.',
       });
     }
-  });
+  }));
+
+  app.use('/api', (_req, res) => { res.status(404).json({ error: 'API endpoint not found.' }); });
+  app.use(apiErrorHandler);
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -9143,13 +8425,18 @@ async function startServer() {
   } else {
     const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.get('*', asyncRoute((_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
-    });
+    }));
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`DreamStore server running on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    const address = server.address();
+    console.log(`DreamStore server running on http://0.0.0.0:${typeof address === 'object' ? address?.port : PORT}`);
+  });
+  process.once('SIGTERM', () => {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 9000).unref();
   });
 }
 
