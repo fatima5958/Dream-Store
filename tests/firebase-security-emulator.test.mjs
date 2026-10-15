@@ -141,7 +141,7 @@ test('No browser Firebase client can create or change a financial ledger documen
   }));
 });
 
-test('New seller can create a Free store but cannot self-grant Pro plan', async () => {
+test('Browser users cannot create/update stores or forge slug reservations', async () => {
   const base = {
     ownerId: 'seller-one',
     storeSlug: 'seller-one-live',
@@ -163,8 +163,16 @@ test('New seller can create a Free store but cannot self-grant Pro plan', async 
   };
   await assertFails(setDoc(doc(user('seller-one').firestore(), 'stores', 'store-seller-one'),
     { ...base, plan: 'Pro' }));
-  await assertSucceeds(setDoc(doc(user('seller-one').firestore(), 'stores', 'store-seller-one'),
+  await assertFails(setDoc(doc(user('seller-one').firestore(), 'stores', 'store-seller-one'),
     { ...base, plan: 'Free' }));
+  await assertFails(updateDoc(doc(user('seller-one').firestore(), 'stores', 'store-one'), {
+    storeSlug: 'another-sellers-slug', updatedAt: serverTimestamp(),
+  }));
+  await assertFails(deleteDoc(doc(user('seller-one').firestore(), 'stores', 'store-one')));
+  await assertFails(setDoc(doc(user('seller-one').firestore(), 'store_slugs', 'claimed'), {
+    storeId: 'store-one', ownerId: 'seller-one',
+  }));
+  await assertFails(getDoc(doc(user('seller-one').firestore(), 'store_slugs', 'claimed')));
 });
 
 test('Seller can create an incomplete draft but cannot publish or delete directly', async () => {

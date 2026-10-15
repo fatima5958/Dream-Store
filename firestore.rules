@@ -530,39 +530,13 @@ service cloud.firestore {
       );
       allow list: if resource.data.status == 'Active' || (isSignedIn() && resource.data.ownerId == request.auth.uid) || isAdmin();
 
-      allow create: if isVerifiedUser() &&
-        isValidId(storeId) &&
-        isValidStore(incoming()) &&
-        incoming().ownerId == request.auth.uid &&
-        incoming().status == 'Active' &&
-        incoming().plan in ['Free', 'Pro', 'Basic'] &&
-        (isAdmin() || incoming().plan == 'Free') &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time;
+      // Backend Admin SDK is the only writer: protects ownership and slug uniqueness.
+      allow create, update, delete: if false;
+    }
 
-      allow update: if isVerifiedUser() &&
-        isValidId(storeId) &&
-        isValidStore(incoming()) &&
-        incoming().ownerId == existing().ownerId &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (
-            isOwner(existing().ownerId) &&
-            existing().status != 'Suspended' &&
-            incoming().status == existing().status &&
-            incoming().plan == existing().plan &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'storeSlug', 'storeName', 'ownerName', 'instagramHandle',
-              'sellerCountry', 'productType', 'announcementText',
-              'heroHeadingLine1', 'heroHeadingLine2', 'heroSubheading',
-              'heroButtonText', 'heroImage', 'logoUrl', 'theme',
-              'customAccentColor', 'currency', 'exchangeRatePkr', 'updatedAt'
-            ])
-          )
-        );
-
-      allow delete: if isValidId(storeId) && (isOwner(existing().ownerId) || isAdmin());
+    match /store_slugs/{slug} {
+      // Unique slug reservations are managed by trusted backend transactions.
+      allow read, write: if false;
     }
 
     // 2A. Seller Payment Settings Collection (Strictly Private: Verified Owner or Super Admin ONLY)

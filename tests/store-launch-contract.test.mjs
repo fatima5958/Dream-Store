@@ -18,7 +18,8 @@ test('seller store is created only after an acknowledged server save', () => {
   assert.match(content, /if \(!saveResponse\.ok \|\| !saveResult\.ok\)/);
   assert.doesNotMatch(content, /INITIAL_PRODUCTS\.slice/);
   assert.doesNotMatch(content, /await setDoc\(/);
-  assert.match(server, /await storeRef\.set\(storeDocument\)/);
+  assert.match(server, /await db\.runTransaction/);
+  assert.match(server, /tx\.set\(storeRef, storeDocument\)/);
   assert.match(server, /Store could not be saved securely/);
   const editor = app.slice(app.indexOf('  const handleUpdateConfig ='), app.indexOf('  const handleCompleteWizard ='));
   assert.match(editor, /activeScreen === 'wizard'/);
@@ -165,4 +166,17 @@ test('admin interface never invents usage metrics or approves orders in bulk', (
   const planHandler = admin.slice(admin.indexOf('const handleToggleStorePlan'), admin.indexOf('const handleInstantControlCommand'));
   assert.ok(planHandler.indexOf('if (!res.ok') < planHandler.indexOf('setStores((prev)'));
   assert.match(admin, /Bulk payment approvals and mass store activation are disabled/);
+});
+
+test('atomic URL reservation and backend-only store edits prevent collisions', () => {
+  const r = read('firestore.rules');
+  const storeSection = r.slice(r.indexOf('match /stores/{storeId}'), r.indexOf('// 2A. Seller Payment Settings Collection'));
+  assert.match(storeSection, /allow create, update, delete: if false/);
+  assert.ok(storeSection.includes('match /store_slugs/{slug}'));
+  assert.match(server, /tx\.create\(slugRef/);
+  assert.match(server, /tx\.create\(newRef/);
+  assert.match(server, /tx\.delete\(oldRef\)/);
+  const wizard = read('src/components/screens/StoreSetupWizard.tsx');
+  assert.doesNotMatch(wizard, /Fallback to Firestore check if network request fails/);
+  assert.doesNotMatch(wizard, /Ignore read errors if offline/);
 });

@@ -21,8 +21,6 @@ import {
   Rocket,
   CreditCard,
 } from 'lucide-react';
-import { getDocs } from 'firebase/firestore';
-import { db, collection, query, where } from '../../lib/firebase';
 import {
   buildPublicStoreUrl,
   CURRENCY_META,
@@ -257,50 +255,24 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
       };
     }
 
-    // 1. Check server-side store registry
+    // Never assume a slug is free after a network or authorization failure.
     try {
       const params = new URLSearchParams({
         slug: normalized,
         excludeStoreId: config.storeId || '',
-        excludeOwnerId: currentUserUid || config.ownerId || '',
       });
       const res = await fetch(`/api/stores/check-slug?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.available === false) {
-          return {
-            available: false,
-            reason:
-              data.reason ||
-              `The store URL "${normalized}" is already taken by another creator.`,
-          };
-        }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.available !== true) {
+        return {
+          available: false,
+          reason: data.reason || 'Store URL verification unavailable. Please retry.',
+        };
       }
+      return { available: true, reason: null };
     } catch {
-      // Fallback to Firestore check if network request fails
+      return { available: false, reason: 'Connection lost. Please retry URL verification.' };
     }
-
-    // 2. Check Firestore stores collection directly
-    try {
-      const q = query(collection(db, 'stores'), where('storeSlug', '==', normalized));
-      const snap = await getDocs(q);
-      for (const docSnap of snap.docs) {
-        const storeData = docSnap.data();
-        const isOurStore =
-          docSnap.id === config.storeId ||
-          (currentUserUid && storeData.ownerId === currentUserUid);
-        if (!isOurStore) {
-          return {
-            available: false,
-            reason: `The store URL "${normalized}" is already registered by another store. Please choose a unique slug.`,
-          };
-        }
-      }
-    } catch {
-      // Ignore read errors if offline
-    }
-
-    return { available: true, reason: null };
   };
 
   useEffect(() => {

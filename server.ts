@@ -4471,58 +4471,40 @@ async function startServer() {
     });
   }));
 
-  app.get('/api/stores/check-slug', asyncRoute((req, res) => {
-    const rawSlug = String(req.query.slug || '').trim().toLowerCase();
-    const excludeStoreId = String(req.query.excludeStoreId || '').trim();
-    const excludeOwnerId = String(req.query.excludeOwnerId || '').trim();
-
-    if (!rawSlug || rawSlug.length < 2) {
-      res.json({
-        available: false,
-        slug: rawSlug,
-        reason: 'Store slug must be at least 2 characters long.',
-      });
+  app.get('/api/stores/check-slug', asyncRoute(async (req, res) => {
+    const slug = String(req.query.slug || '').trim().toLowerCase();
+    if (!SLUG_REGEX.test(slug) || RESERVED_SLUGS.has(slug)) {
+      res.json({ available: false, slug, reason: 'Choose a valid, non-reserved store URL.' });
       return;
     }
-    if (!SLUG_REGEX.test(rawSlug)) {
-      res.json({
-        available: false,
-        slug: rawSlug,
-        reason:
-          'Store slug may only contain lowercase letters, numbers, hyphens (-), underscores (_), or dots (.).',
-      });
+    if (!adminFirestoreDb) {
+      res.status(503).json({ available: false, slug, reason: 'Cannot verify store URL right now.' });
       return;
     }
-    if (RESERVED_SLUGS.has(rawSlug)) {
+    try {
+      const db = adminFirestoreDb;
+      const viewer = await extractVerifiedCaller(req);
+      const requestedExclude = String(req.query.excludeStoreId || '').trim();
+      const [reservation, matches] = await Promise.all([
+        db.collection('store_slugs').doc(slug).get(),
+        db.collection('stores').where('storeSlug', '==', slug).get(),
+      ]);
+      const owned = viewer && requestedExclude && /^[a-zA-Z0-9_-]{1,128}$/.test(requestedExclude)
+        ? await db.collection('stores').doc(requestedExclude).get()
+        : null;
+      const ownId = owned?.exists &&
+        (owned.get('ownerId') === viewer?.uid || isStrictSuperAdminUser(viewer))
+        ? requestedExclude : '';
+      const available = !(reservation.exists && reservation.get('storeId') !== ownId) &&
+        !matches.docs.some(doc => doc.id !== ownId);
       res.json({
-        available: false,
-        slug: rawSlug,
-        reason: `The slug "${rawSlug}" is a reserved system path. Please choose another URL.`,
+        available, slug,
+        reason: available ? null : 'This store URL is already taken by another creator.',
       });
-      return;
+    } catch (err) {
+      console.error('Store URL lookup failed:', err);
+      res.status(503).json({ available: false, slug, reason: 'Store URL verification failed. Retry shortly.' });
     }
-
-    const existing = Array.from(serverStores.values()).find(
-      (s) =>
-        s.storeSlug.toLowerCase() === rawSlug &&
-        s.storeId !== excludeStoreId &&
-        (!excludeOwnerId || s.ownerId !== excludeOwnerId)
-    );
-
-    if (existing) {
-      res.json({
-        available: false,
-        slug: rawSlug,
-        reason: `The store URL "${rawSlug}" is already taken by another store.`,
-      });
-      return;
-    }
-
-    res.json({
-      available: true,
-      slug: rawSlug,
-      reason: null,
-    });
   }));
 
   const handleGetStoreBySlug = async (req: express.Request, res: express.Response) => {
@@ -4681,58 +4663,73 @@ async function startServer() {
       return;
     }
     try {
-      const storeCollection = adminFirestoreDb.collection('stores');
-      const storeRef = storeCollection.doc(storeId);
-      const [existingDoc, slugMatches] = await Promise.all([
-        storeRef.get(),
-        storeCollection.where('storeSlug', '==', rawSlug).limit(10).get(),
-      ]);
-      if (existingDoc.exists && String(existingDoc.get('ownerId') || '') !== ownerId) {
+      const db = adminFirestoreDb;
+      const collectionRef = db.collection('stores');
+      const slugCollection = db.collection('store_slugs');
+      const storeRef = collectionRef.doc(storeId);
+      // Transactional slug document is shared by every Cloud Run instance.
+      const outcome = await db.runTransaction(async tx => {
+        const existingDoc = await tx.get(storeRef);
+        const slugRef = slugCollection.doc(rawSlug);
+        const reservation = await tx.get(slugRef);
+        const slugMatches = await tx.get(collectionRef.where('storeSlug', '==', rawSlug));
+        const oldSlug = existingDoc.exists ? String(existingDoc.get('storeSlug') || '').toLowerCase() : '';
+        const oldRef = oldSlug && oldSlug !== rawSlug ? slugCollection.doc(oldSlug) : null;
+        const oldReservation = oldRef ? await tx.get(oldRef) : null;
+        if (existingDoc.exists && String(existingDoc.get('ownerId') || '') !== ownerId) {
+          throw Object.assign(new Error('Store belongs to another seller.'), { code: 'owner-conflict' });
+        }
+        if ((reservation.exists && reservation.get('storeId') !== storeId) ||
+            slugMatches.docs.some(doc => doc.id !== storeId)) {
+          throw Object.assign(new Error('Store URL already taken.'), { code: 'slug-conflict' });
+        }
+        record.plan = isSuper && body.plan === 'Pro' ? 'Pro'
+          : String(existingDoc.get('plan') || 'Free') === 'Pro' ? 'Pro' : 'Free';
+        record.status = isSuper && body.status ? body.status
+          : String(existingDoc.get('status') || 'Active');
+        const now = new Date();
+        const storeDocument = {
+          ownerId,
+          storeSlug: rawSlug,
+          storeName: record.storeName,
+          ownerName: record.ownerName,
+          instagramHandle: record.instagramHandle || '',
+          sellerCountry: country,
+          productType: record.productType || 'Digital Products',
+          announcementText: record.announcementText || 'Welcome',
+          heroHeadingLine1: record.heroHeadingLine1 || storeName,
+          heroHeadingLine2: record.heroHeadingLine2 || 'Digital Products',
+          heroSubheading: record.heroSubheading || 'Explore our products.',
+          heroButtonText: record.heroButtonText || 'Shop Now',
+          heroImage: record.heroImage || '',
+          logoUrl: record.logoUrl || '',
+          theme: record.theme || 'blush-rose',
+          customAccentColor: String(body.customAccentColor || ''),
+          currency,
+          exchangeRatePkr: record.exchangeRatePkr,
+          status: record.status,
+          plan: record.plan,
+          createdAt: existingDoc.exists ? existingDoc.get('createdAt') || now : now,
+          updatedAt: now,
+        };
+        tx.set(storeRef, storeDocument);
+        if (!reservation.exists) tx.create(slugRef, { storeId, ownerId, createdAt: now });
+        if (oldRef && oldReservation?.exists && oldReservation.get('storeId') === storeId) tx.delete(oldRef);
+        return { existed: existingDoc.exists };
+      });
+      serverStores.set(storeId, record);
+      const statusCode = outcome.existed ? 200 : 201;
+      res.status(statusCode).json({ ok: true, store: record });
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'slug-conflict') {
+        res.status(409).json({ error: 'Store URL is already taken. Choose another.' });
+        return;
+      }
+      if (code === 'owner-conflict') {
         res.status(403).json({ error: 'This store belongs to another seller.' });
         return;
       }
-      if (slugMatches.docs.some((doc) => doc.id !== storeId)) {
-        res.status(409).json({ error: 'That store URL is already taken. Choose another name.' });
-        return;
-      }
-      // Preserve an existing reviewed plan/status. Client-supplied Pro values
-      // never upgrade sellers; public store documents contain no owner email.
-      record.plan = isSuper && body.plan === 'Pro'
-        ? 'Pro'
-        : String(existingDoc.get('plan') || existingById?.plan || 'Free') === 'Pro' ? 'Pro' : 'Free';
-      record.status = isSuper && body.status
-        ? body.status
-        : String(existingDoc.get('status') || existingById?.status || 'Active');
-      const now = new Date();
-      const storeDocument = {
-        ownerId,
-        storeSlug: rawSlug,
-        storeName: record.storeName,
-        ownerName: record.ownerName,
-        instagramHandle: record.instagramHandle || '',
-        sellerCountry: country,
-        productType: record.productType || 'Digital Products',
-        announcementText: record.announcementText || 'Welcome',
-        heroHeadingLine1: record.heroHeadingLine1 || storeName,
-        heroHeadingLine2: record.heroHeadingLine2 || 'Digital Products',
-        heroSubheading: record.heroSubheading || 'Explore our products.',
-        heroButtonText: record.heroButtonText || 'Shop Now',
-        heroImage: record.heroImage || '',
-        logoUrl: record.logoUrl || '',
-        theme: record.theme || 'blush-rose',
-        customAccentColor: String(body.customAccentColor || ''),
-        currency,
-        exchangeRatePkr: record.exchangeRatePkr,
-        status: record.status,
-        plan: record.plan,
-        createdAt: existingDoc.exists ? existingDoc.get('createdAt') || now : now,
-        updatedAt: now,
-      };
-      await storeRef.set(storeDocument);
-      serverStores.set(storeId, record);
-      const statusCode = existingDoc.exists ? 200 : 201;
-      res.status(statusCode).json({ ok: true, store: record });
-    } catch (err) {
       console.error('Verified store creation failed:', err);
       res.status(503).json({ error: 'Store could not be saved securely. Please retry.' });
     }
@@ -4914,15 +4911,46 @@ async function startServer() {
       }
       patch.exchangeRatePkr = rate;
     }
-    await adminFirestoreDb.runTransaction(async tx => {
-      const ref = adminFirestoreDb!.collection('stores').doc(storeId);
-      const fresh = await tx.get(ref);
-      if (!fresh.exists || (!isSuper && fresh.get('ownerId') !== user.uid)) throw new Error('Store ownership changed.');
-      const matches = await tx.get(adminFirestoreDb!.collection('stores').where('storeSlug', '==', updated.storeSlug));
-      if (matches.docs.some(doc => doc.id !== storeId)) throw new Error('Store URL already taken.');
-      if (!isSuper) { patch.plan = fresh.get('plan') || 'Free'; patch.status = fresh.get('status') || 'Active'; }
-      tx.set(ref, patch, { merge: true });
-    });
+    try {
+      const db = adminFirestoreDb;
+      await db.runTransaction(async tx => {
+        const ref = db.collection('stores').doc(storeId);
+        const fresh = await tx.get(ref);
+        if (!fresh.exists || (!isSuper && fresh.get('ownerId') !== user.uid)) {
+          throw Object.assign(new Error('Store ownership changed.'), { code: 'owner-conflict' });
+        }
+        const nextSlug = updated.storeSlug;
+        const currentSlug = String(fresh.get('storeSlug') || '').toLowerCase();
+        const newRef = db.collection('store_slugs').doc(nextSlug);
+        const reservation = await tx.get(newRef);
+        const matches = await tx.get(db.collection('stores').where('storeSlug', '==', nextSlug));
+        const oldRef = currentSlug && currentSlug !== nextSlug ? db.collection('store_slugs').doc(currentSlug) : null;
+        const oldReservation = oldRef ? await tx.get(oldRef) : null;
+        if ((reservation.exists && reservation.get('storeId') !== storeId) ||
+            matches.docs.some(doc => doc.id !== storeId)) {
+          throw Object.assign(new Error('Store URL already taken.'), { code: 'slug-conflict' });
+        }
+        if (!isSuper) { patch.plan = fresh.get('plan') || 'Free'; patch.status = fresh.get('status') || 'Active'; }
+        tx.set(ref, patch, { merge: true });
+        if (!reservation.exists) tx.create(newRef, {
+          storeId, ownerId: String(fresh.get('ownerId') || ''), createdAt: new Date(),
+        });
+        if (oldRef && oldReservation?.exists && oldReservation.get('storeId') === storeId) tx.delete(oldRef);
+      });
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'slug-conflict') {
+        res.status(409).json({ error: 'Store URL already taken. Choose another.' });
+        return;
+      }
+      if (code === 'owner-conflict') {
+        res.status(403).json({ error: 'Store ownership changed. Please sign in again.' });
+        return;
+      }
+      console.error('Store update failed:', err);
+      res.status(503).json({ error: 'Store settings were not saved securely. Please retry.' });
+      return;
+    }
     const saved = { ...updated, ...patch } as ServerStoreRecord;
     serverStores.set(store.storeId, saved);
     res.json({ ok: true, store: saved });
