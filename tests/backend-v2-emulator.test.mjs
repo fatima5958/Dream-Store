@@ -17,6 +17,7 @@ import { assertIsolatedV2Environment } from '../server/v2/config/staging.ts';
 let app, db, auth, bucket, server, base, profiles, stores;
 const tokens = {}, identities = {};
 const config = JSON.parse(readFileSync(new URL('../firebase-applet-config.json', import.meta.url), 'utf8'));
+const emulatorConfig = JSON.parse(readFileSync(new URL('../firebase.v2.emulator.json', import.meta.url), 'utf8'));
 const projectId = process.env.DREAMSTORE_V2_PROJECT_ID;
 async function request(path, caller, body, method = body === undefined ? 'GET' : 'POST', extra = {}) {
   const response = await fetch(base + path, { method, headers: {
@@ -56,6 +57,12 @@ before(async () => {
   await start();
 });
 after(async () => { if (server) await new Promise(resolve => server.close(resolve)); if (app) await deleteApp(app); });
+
+test('V2 emulator explicitly loads closed Firestore rules without unsupported multi-database config', () => {
+  assert.equal(Array.isArray(emulatorConfig.firestore), false,
+    'firebase-tools does not load Firestore rules from a multi-database config array');
+  assert.equal(emulatorConfig.firestore?.rules, 'firestore.v2.rules');
+});
 
 test('real Auth/Firestore/Storage: Seller create→update→upload→publish→public view→restart; Buyer stays isolated', async () => {
   for (const name of ['seller','other','buyer']) {

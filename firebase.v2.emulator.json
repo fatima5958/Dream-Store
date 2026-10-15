@@ -1,14 +1,7 @@
 {
-  "firestore": [
-    {
-      "database": "(default)",
-      "rules": "firestore.v2.rules"
-    },
-    {
-      "database": "ai-studio-dreamstore-fac8084d-6f5b-423c-9b66-3ce72d622890",
-      "rules": "firestore.v2.rules"
-    }
-  ],
+  "firestore": {
+    "rules": "firestore.v2.rules"
+  },
   "storage": {
     "rules": "storage.v2.rules"
   },
