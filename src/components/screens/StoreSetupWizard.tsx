@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getAuthHeaders } from '../../lib/firebase';
 import {
   Store,
   Folder,
@@ -261,7 +262,10 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
         slug: normalized,
         excludeStoreId: config.storeId || '',
       });
-      const res = await fetch(`/api/stores/check-slug?${params.toString()}`);
+      const authHeaders = await getAuthHeaders({}, { requireAuth: true });
+      const res = await fetch(`/api/stores/check-slug?${params.toString()}`, {
+        headers: authHeaders,
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.available !== true) {
         return {

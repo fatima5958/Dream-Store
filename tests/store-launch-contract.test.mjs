@@ -180,3 +180,9 @@ test('atomic URL reservation and backend-only store edits prevent collisions', (
   assert.doesNotMatch(wizard, /Fallback to Firestore check if network request fails/);
   assert.doesNotMatch(wizard, /Ignore read errors if offline/);
 });
+
+test('wizard checks existing creator URL with an authenticated identity', () => {
+  const wizard = read('src/components/screens/StoreSetupWizard.tsx');
+  assert.match(wizard, /getAuthHeaders\(\{\}, \{ requireAuth: true \}\)/);
+  assert.match(wizard, /headers: authHeaders/);
+});
