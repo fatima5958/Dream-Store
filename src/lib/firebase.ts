@@ -1,7 +1,8 @@
 import { initializeApp } from 'firebase/app';
-import { getStorage } from 'firebase/storage';
+import { getStorage, connectStorageEmulator } from 'firebase/storage';
 import {
   getAuth,
+  connectAuthEmulator,
   GoogleAuthProvider,
   browserPopupRedirectResolver,
   signInWithPopup,
@@ -18,6 +19,7 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore,
+  connectFirestoreEmulator,
   doc,
   getDoc,
   getDocFromServer,
@@ -75,15 +77,28 @@ function resolveEffectiveAuthDomain(): string {
   return firebaseConfig.authDomain || '';
 }
 
-const effectiveAuthDomain = resolveEffectiveAuthDomain();
+export const IS_V2_STAGING = import.meta.env.DEV && import.meta.env.VITE_DREAMSTORE_V2_STAGING === '1';
+const stagingProjectId = String(import.meta.env.VITE_DREAMSTORE_V2_PROJECT_ID || '');
+if (import.meta.env.VITE_DREAMSTORE_V2_STAGING === '1' &&
+    (!IS_V2_STAGING || !/^demo-[a-z0-9-]+$/.test(stagingProjectId) ||
+     !['localhost', '127.0.0.1'].includes(window.location.hostname))) {
+  throw new Error('V2 frontend requires localhost development and a demo-* Firebase project.');
+}
+const effectiveAuthDomain = IS_V2_STAGING ? 'localhost' : resolveEffectiveAuthDomain();
 
 const app = initializeApp({
   ...firebaseConfig,
+  ...(IS_V2_STAGING ? { projectId: stagingProjectId, storageBucket: stagingProjectId + '.appspot.com' } : {}),
   authDomain: effectiveAuthDomain,
 });
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const storage = getStorage(app);
 export const auth = getAuth(app);
+if (IS_V2_STAGING) {
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099');
+  connectFirestoreEmulator(db, '127.0.0.1', 8080);
+  connectStorageEmulator(storage, '127.0.0.1', 9199);
+}
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope('profile');
 googleProvider.addScope('email');
@@ -156,7 +171,7 @@ const authStateSubscribers = new Set<(user: FirebaseUser | null) => void>();
 let currentServerEmailSession: StoredServerEmailSession | null = null;
 
 function loadStoredEmailSession(): StoredServerEmailSession | null {
-  if (typeof window === 'undefined') return null;
+  if (IS_V2_STAGING || typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(EMAIL_SESSION_STORAGE_KEY);
     if (!raw) return null;
@@ -304,7 +319,7 @@ export async function signUpWithEmailAccount(
     return cred.user;
   } catch (err: unknown) {
     const code = (err as { code?: string })?.code || '';
-    if (import.meta.env.PROD || code !== 'auth/operation-not-allowed') {
+    if (IS_V2_STAGING || import.meta.env.PROD || code !== 'auth/operation-not-allowed') {
       throw err;
     }
     // Seamless fallback to server-verified Email/Password account when Firebase Console provider is disabled
@@ -348,7 +363,7 @@ export async function signInWithEmailAccount(
     return cred.user;
   } catch (err: unknown) {
     const code = (err as { code?: string })?.code || '';
-    if (import.meta.env.PROD || code !== 'auth/operation-not-allowed') {
+    if (IS_V2_STAGING || import.meta.env.PROD || code !== 'auth/operation-not-allowed') {
       throw err;
     }
     const res = await fetch('/api/auth/email/signin', {
@@ -404,7 +419,7 @@ export async function resetEmailAccountPassword(
     await sendPasswordResetEmail(auth, email);
   } catch (err: unknown) {
     const code = (err as { code?: string })?.code || '';
-    if (import.meta.env.PROD || code !== 'auth/operation-not-allowed') {
+    if (IS_V2_STAGING || import.meta.env.PROD || code !== 'auth/operation-not-allowed') {
       throw err;
     }
     const res = await fetch('/api/auth/email/reset-password', {

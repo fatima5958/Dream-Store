@@ -1,6 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
-import { ApiError } from '../errors';
-import type { CreatorCampaignRepository } from '../contracts';
+import { ApiError } from '../errors.ts';
+import type { CreatorCampaignRepository } from '../contracts.ts';
 
 export const FIRST_CREATORS_LIMIT = 100;
 export const FIRST_CREATORS_ID = 'first-100-creators';
@@ -20,5 +20,3 @@ export function createCreatorCampaignRepository(db: Firestore): CreatorCampaignR
     },
   };
 }
-// Claim mutation deliberately remains in the tested V1 Firestore transaction
-// until the store-write module passes concurrency + rollback tests.

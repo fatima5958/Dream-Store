@@ -1,0 +1,8 @@
+rules_version = '2';
+// Isolated V2 emulator only: bytes are uploaded through authenticated APIs.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /stores/{ownerId}/public/{fileName} { allow get: if true; }
+    match /{allPaths=**} { allow read, write: if false; }
+  }
+}

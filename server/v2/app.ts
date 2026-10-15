@@ -1,9 +1,11 @@
 import express, { type Request, type Response } from 'express';
-import { ApiError, handleApiError } from './errors';
-import type { Principal, Role, UserProfile, V2Dependencies } from './contracts';
-import { authenticatedPrincipal, isVerifiedSuperAdmin } from './modules/auth';
-import { canonicalStoreId, rolePermissions } from './modules/users';
-import { isValidStoreSlug } from './modules/stores';
+import { ApiError, handleApiError } from './errors.ts';
+import type { Principal, Role, UserProfile, V2Dependencies } from './contracts.ts';
+import { authenticatedPrincipal, isVerifiedSuperAdmin } from './modules/auth.ts';
+import { canonicalStoreId, rolePermissions } from './modules/users.ts';
+import { publicStoreProjection, isValidStoreSlug } from './modules/stores.ts';
+
+import { requireSeller, requireId } from './modules/policy.ts';
 
 const jsonRoute = (callback: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: (error?: unknown) => void) => {
@@ -39,7 +41,7 @@ function validateRole(raw: unknown): 'buyer' | 'seller' {
 export function createV2App(deps: V2Dependencies) {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '64kb' }));
+  app.use(express.json({ limit: '1mb' }));
   app.use('/api', (_req, res, next) => {
     res.set('Cache-Control', 'no-store');
     res.set('X-Content-Type-Options', 'nosniff');
@@ -176,9 +178,90 @@ export function createV2App(deps: V2Dependencies) {
   app.post('/api/stores/create', createStore);
   app.post('/api/stores/upsert', createStore);
 
-  // No shadow writes, payments or public file access. These endpoints stay on
-  // V1 until ported and individually tested. A V2-only process must never
-  // silently pretend an unimplemented operation succeeded.
+  const updateStore = jsonRoute(async (req, res) => {
+    const principal = await authenticatedPrincipal(req, deps);
+    await requireSeller(principal, deps);
+    if (!deps.stores) throw new ApiError(501, 'backend/v2-not-implemented', 'Store operations unavailable.');
+    const store = await deps.stores.update(principal, requireId(req.body?.storeId, 'store ID'), req.body?.updates);
+    res.json({ ok: true, store });
+  });
+  app.post('/api/stores/update', updateStore);
+  app.post('/api/stores/visit', jsonRoute(async (req, res) => {
+    if (!deps.allowWrites) throw new ApiError(503, 'backend/staging-readonly', 'Visits require isolated staging writes.');
+    if (!deps.stores) throw new ApiError(501, 'backend/v2-not-implemented', 'Store operations unavailable.');
+    const target = req.body?.storeId || req.body?.storeSlug;
+    if (typeof target !== 'string' || !target || target.length > 128) throw new ApiError(422, 'store/invalid-target', 'A store ID or slug is required.');
+    await deps.stores.visit(target, req.body?.isCheckoutView === true, req.ip || 'unknown');
+    // Public visits never expose a seller's conversion metrics.
+    res.json({ ok: true });
+  }));
+  const storefront = jsonRoute(async (req, res) => {
+    if (!deps.stores || !deps.products) throw new ApiError(501, 'backend/v2-not-implemented', 'Storefront unavailable.');
+    const viewer = req.headers.authorization ? await authenticatedPrincipal(req, deps) : null;
+    const store = await deps.stores.find(String(req.params.slug));
+    if (!store || store.status !== 'Active' && !(viewer?.emailVerified && store.ownerId === viewer.uid)) throw new ApiError(404, 'store/not-found', 'Public store not found.');
+    res.json({ store: publicStoreProjection(store.storeId, store), products: await deps.products.list(store.storeId, viewer) });
+  });
+  // Static routes precede this single-segment slug route.
+  app.get('/api/stores/by-slug/:slug', storefront);
+  app.get('/api/stores/:slug', storefront);
+
+  app.get('/api/products', jsonRoute(async (req, res) => {
+    if (!deps.products) throw new ApiError(501, 'backend/v2-not-implemented', 'Catalog unavailable.');
+    const viewer = req.headers.authorization ? await authenticatedPrincipal(req, deps) : null;
+    res.json({ products: await deps.products.list(requireId(req.query.storeId, 'store ID'), viewer) });
+  }));
+  const saveProduct = jsonRoute(async (req, res) => {
+    const principal = await authenticatedPrincipal(req, deps);
+    await requireSeller(principal, deps);
+    if (!deps.products) throw new ApiError(501, 'backend/v2-not-implemented', 'Catalog unavailable.');
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) throw new ApiError(422, 'request/invalid-body', 'A product object is required.');
+    res.json({ ok: true, product: await deps.products.save(principal, req.body) });
+  });
+  for (const path of ['/api/products', '/api/products/upsert', '/api/products/save']) app.post(path, saveProduct);
+  app.post('/api/products/delete', jsonRoute(async (req, res) => {
+    const principal = await authenticatedPrincipal(req, deps);
+    await requireSeller(principal, deps);
+    if (!deps.products) throw new ApiError(501, 'backend/v2-not-implemented', 'Catalog unavailable.');
+    const id = requireId(req.body?.productId, 'product ID');
+    await deps.products.remove(principal, id);
+    res.json({ ok: true, deletedId: id, archived: true });
+  }));
+  // Authenticate before parsing up to 5 MiB of binary data.
+  const authorizeUpload: express.RequestHandler = (req, res, next) => {
+    Promise.resolve((async () => {
+      const principal = await authenticatedPrincipal(req, deps);
+      await requireSeller(principal, deps);
+      res.locals.principal = principal;
+      next();
+    })()).catch(next);
+  };
+  for (const kind of ['product', 'cover'] as const) {
+    app.post('/api/uploads/' + kind, authorizeUpload,
+      express.raw({ type: 'application/octet-stream', limit: 5 * 1024 * 1024 }), jsonRoute(async (req, res) => {
+        if (!deps.uploads) throw new ApiError(501, 'backend/v2-not-implemented', 'Uploads unavailable.');
+        let fileName = '';
+        try { fileName = decodeURIComponent(String(req.headers['x-file-name'] || '')); }
+        catch { throw new ApiError(422, 'upload/invalid-name', 'Filename is invalid.'); }
+        res.json(await deps.uploads.save(res.locals.principal, {
+          productId: requireId(req.headers['x-product-id'], 'product ID'),
+          storeId: requireId(req.headers['x-store-id'], 'store ID'), fileName,
+          contentType: String(req.headers['x-file-type'] || '').toLowerCase(), data: req.body, kind,
+        }));
+      }));
+  }
+  app.get('/api/assets/covers/:ownerId/:fileName', jsonRoute(async (req, res) => {
+    if (!deps.covers) throw new ApiError(501, 'backend/v2-not-implemented', 'Covers unavailable.');
+    const ownerId = requireId(req.params.ownerId, 'owner ID');
+    const name = String(req.params.fileName);
+    if (!/^[A-Za-z0-9._-]{1,180}$/.test(name)) throw new ApiError(422, 'upload/invalid-name', 'Invalid cover name.');
+    const cover = await deps.covers.read(ownerId, name);
+    res.set('Content-Type', cover.contentType);
+    res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.send(cover.data);
+  }));
+
+  // Financial, download and administrative modules remain deliberately unavailable.
   app.use('/api', (_req, res) => {
     res.status(501).json({
       code: 'backend/v2-not-implemented',

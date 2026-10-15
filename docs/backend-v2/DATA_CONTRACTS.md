@@ -42,8 +42,8 @@ These are source-observed collection calls; nested collections, REST paths, and 
 - Campaign: `creator_launch_campaigns/first-100-creators` (`claimedCount`, `limit`).
 - Claim identity: `creator_launch_claims/{verifiedOwnerUid}`.
 - Store slug reservation: `store_slugs/{storeSlug}`.
-- All original store creation, slug uniqueness, campaign counter update, and claim creation stay in one Firestore transaction in V1, not in V2 yet.
-- V2 implements **read-only** `GET /api/launch/creator-spots` with actual counter; it cannot make creator claims. Signup and returning login never consume creator spots.
+- V2 now creates a store, reserves its slug, increments the campaign and records the UID claim in one Firestore transaction. Existing owner lookup preserves legacy IDs. Seller retries and edits do not add a founder claim. Deterministic repository tests cover contention; emulator concurrency coverage is present but has not run here.
+- V2 exposes the authoritative counter through `GET /api/launch/creator-spots` and claims a spot only when a new Seller store is atomically created. Signup, Buyer onboarding, returning login and store updates do not consume spots.
 
 ## Finance and private customer records
 
@@ -54,3 +54,16 @@ These are source-observed collection calls; nested collections, REST paths, and 
 ## Migration constraints
 
 No collection rename, schema rewrite, Firebase project switch, Storage bucket replacement, or bulk role migration has been performed. Breaking a persisted field or Store slug must block cutover.
+
+## Store records and slug reservations
+
+- `stores/{existingStoreId}` retains persisted IDs and `ownerId`; new records use `store-{first 20 UID chars}`. `store_slugs/{slug}` contains store/owner IDs and timestamps. Slug changes reserve new and release old atomically.
+- Store private settings stay persisted for compatibility, but never appear in public store projections. Visit events use a SHA-256 key; raw network addresses are not stored.
+
+## Products and upload jobs
+
+- `products/{productId}` retains owner/store/listing/price fields. Sales/download metrics stay server controlled through merges. Removed products set `deleted: true`.
+- `products/{productId}/deliverables/main` stores the private path, owner, product, filename, MIME, byte count, Storage generation and timestamp. Public API projections omit it.
+- `v2_upload_jobs/{uuid}` records owner/path/state. A pending job locks the product. Failed cleanup remains reconcilable. Replaced objects receive a one-day orphan job.
+- Digital objects use `deliverables/{uid}/{productId}/{random}-{filename}`; cover objects use `stores/{uid}/public/{random}-{filename}`. Digital files do not get public download tokens.
+- Upload limit remains 5 MiB. Accepted files: PDF, EPUB, ZIP, TXT, DOC, DOCX; covers: PNG, JPEG, WebP, GIF. Filename, extension, MIME and signature are validated.

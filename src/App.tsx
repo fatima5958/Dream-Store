@@ -61,6 +61,7 @@ import {
   onAuthStateChanged,
   subscribeAuthState,
   hasFirebaseSdkSession,
+  IS_V2_STAGING,
   googleProvider,
   handleFirestoreError,
   OperationType,
@@ -195,6 +196,7 @@ export default function App() {
     displayName: string;
     email: string;
     onboardingCompleted: boolean;
+    storeId?: string;
   } | null>(null);
   const [roleOnboardingOpen, setRoleOnboardingOpen] = useState<boolean>(false);
   const [activeBuyerSection, setActiveBuyerSection] = useState<BuyerNavSection>('storefronts');
@@ -210,24 +212,24 @@ export default function App() {
 
   // Demo storefronts are only for local preview, not published visitor listings.
   const [storeConfigs, setStoreConfigs] = useState<Record<string, StoreConfig>>(
-    import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}
+    (IS_V2_STAGING ? {} : (import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}))
   );
   const storeConfigsRef = useRef<Record<string, StoreConfig>>(
-    import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}
+    (IS_V2_STAGING ? {} : (import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}))
   );
   useEffect(() => {
     storeConfigsRef.current = storeConfigs;
   }, [storeConfigs]);
 
   const [activeStoreId, setActiveStoreId] = useState<string>(() =>
-    import.meta.env.DEV ? INITIAL_STORE_CONFIG.storeId : ''
+    (IS_V2_STAGING ? '' : (import.meta.env.DEV ? INITIAL_STORE_CONFIG.storeId : ''))
   );
   const activeStoreIdRef = useRef<string>(activeStoreId);
   useEffect(() => {
     activeStoreIdRef.current = activeStoreId;
   }, [activeStoreId]);
 
-  const config = storeConfigs[activeStoreId] || (import.meta.env.DEV ? INITIAL_STORE_CONFIG : NEUTRAL_PUBLIC_STORE_CONFIG);
+  const config = storeConfigs[activeStoreId] || ((IS_V2_STAGING ? NEUTRAL_PUBLIC_STORE_CONFIG : (import.meta.env.DEV ? INITIAL_STORE_CONFIG : NEUTRAL_PUBLIC_STORE_CONFIG)));
   const setConfig = (
     updater: StoreConfig | ((prev: StoreConfig) => StoreConfig),
     explicitStoreId?: string
@@ -245,7 +247,7 @@ export default function App() {
       return updatedMap;
     });
   };
-  const [products, setProducts] = useState<Product[]>(import.meta.env.DEV ? INITIAL_PRODUCTS : []);
+  const [products, setProducts] = useState<Product[]>((IS_V2_STAGING ? [] : (import.meta.env.DEV ? INITIAL_PRODUCTS : [])));
   const [selectedProductId, setSelectedProductId] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -352,14 +354,14 @@ export default function App() {
   });
 
   const [platformStores, setPlatformStores] = useState<PlatformStore[]>(
-    import.meta.env.DEV ? INITIAL_PLATFORM_STORES : []
+    (IS_V2_STAGING ? [] : (import.meta.env.DEV ? INITIAL_PLATFORM_STORES : []))
   );
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
   const [dockMinimized, setDockMinimized] = useState<boolean>(true);
   const [cartToast, setCartToast] = useState<string | null>(null);
   const cartToastTimerRef = useRef<number | null>(null);
   const isDevControlsEnabled =
-    import.meta.env.DEV &&
+    import.meta.env.DEV && !IS_V2_STAGING &&
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('dev') === 'true';
 
@@ -804,7 +806,7 @@ export default function App() {
         if (isStale()) return;
         setIsSuperAdminVerified(verifiedSuperAdmin);
 
-        const userStoreId = `store-${user.uid.slice(0, 20)}`;
+        let userStoreId = `store-${user.uid.slice(0, 20)}`;
         const freshDefault = buildFreshUserStoreConfig(user);
         const defaultName =
           user.displayName?.trim() ||
@@ -943,6 +945,17 @@ export default function App() {
                 (verifiedSuperAdmin && profData.profile.role === 'super_admin'))
             ) {
               existingRole = profData.profile.role;
+              if (existingRole === 'seller' && typeof profData.profile.storeId === 'string' &&
+                  /^[A-Za-z0-9_-]{1,128}$/.test(profData.profile.storeId)) {
+                userStoreId = profData.profile.storeId;
+                freshDefault.storeId = userStoreId;
+                if (hasFirebaseSdkSession()) {
+                  const ownedSnap = await getDoc(doc(db, 'stores', userStoreId));
+                  if (isStale()) return;
+                  hasExistingStoreDoc = ownedSnap.exists();
+                  existingStoreData = ownedSnap.exists() ? ownedSnap.data() : null;
+                }
+              }
               existingName = String(profData.profile.displayName || defaultName);
               existingEmail = String(profData.profile.email || defaultEmail);
             }
@@ -977,6 +990,7 @@ export default function App() {
         const resolvedProfile = {
           uid: user.uid,
           role: resolvedRole,
+          ...(resolvedRole === 'seller' ? { storeId: userStoreId } : {}),
           displayName: existingName,
           email: existingEmail,
           onboardingCompleted: true,
@@ -1174,7 +1188,7 @@ export default function App() {
   useEffect(() => {
     if (!authReady || !currentUser || !hasFirebaseSdkSession()) return;
 
-    const userStoreId = `store-${currentUser.uid.slice(0, 20)}`;
+    const userStoreId = userProfile?.storeId || `store-${currentUser.uid.slice(0, 20)}`;
     const isBuyerOnly = userProfile?.role === 'buyer';
 
     // Listen to Seller Store Document (only for sellers / Super Admin)
@@ -1231,7 +1245,7 @@ export default function App() {
     const unsubProducts = onSnapshot(
       qProducts,
       (snap) => {
-        const loaded: Product[] = snap.docs.filter((docSnap) => docSnap.data().deleted !== true).map((docSnap) => {
+        const loaded: Product[] = snap.docs.filter((docSnap) => docSnap.data().deleted !== true && typeof docSnap.data().title === 'string').map((docSnap) => {
             const d = docSnap.data();
             return {
               id: docSnap.id,
@@ -1511,7 +1525,7 @@ export default function App() {
       unsubSettings();
       unsubAudit();
     };
-  }, [authReady, currentUser, userProfile?.role]);
+  }, [authReady, currentUser, userProfile?.role, userProfile?.storeId]);
 
   // 3A. URL Manipulation & Role Access Guard: Enforce verified backend role permissions on direct URLs and screen state
   useEffect(() => {
@@ -1594,7 +1608,7 @@ export default function App() {
 
     // 3. Prevent an authenticated seller from managing another seller's store via ?store= or ?screen=
     if (isSuperAdminVerified) return;
-    const userStoreId = `store-${currentUser.uid.slice(0, 20)}`;
+    const userStoreId = userProfile?.storeId || `store-${currentUser.uid.slice(0, 20)}`;
     const isSellerManagementScreen =
       activeScreen === 'owner-dashboard' ||
       activeScreen === 'wizard' ||
@@ -1782,7 +1796,7 @@ export default function App() {
     const safeRole: OnboardingUserRole = payload.role === 'seller' ? 'seller' : 'buyer';
     const cleanName = payload.displayName.trim().slice(0, 120) || 'Shopper';
     const cleanEmail = (payload.email.trim() || currentUser.email || '').slice(0, 254);
-    const userStoreId = `store-${currentUser.uid.slice(0, 20)}`;
+    const userStoreId = userProfile?.storeId || `store-${currentUser.uid.slice(0, 20)}`;
 
     let authHeaders: Record<string, string>;
     try {
@@ -1823,7 +1837,7 @@ export default function App() {
       throw new Error(data.error || 'Unable to save your role right now. Please try again.');
     }
 
-    if (hasFirebaseSdkSession() && currentUser.emailVerified !== false) {
+    if (!IS_V2_STAGING && hasFirebaseSdkSession() && currentUser.emailVerified !== false) {
       try {
         const userRef = doc(db, 'users', currentUser.uid);
         const existingSnap = await getDoc(userRef);
@@ -1924,7 +1938,7 @@ export default function App() {
 
   const persistStoreEverywhere = async (nextConfig: StoreConfig) => {
     const resolvedStoreId = currentUser
-      ? `store-${currentUser.uid.slice(0, 20)}`
+      ? userProfile?.storeId || `store-${currentUser.uid.slice(0, 20)}`
       : nextConfig.storeId &&
         nextConfig.storeId !== 'store-fatima-tech' &&
         nextConfig.storeId !== 'store-in-ananya'
@@ -1998,7 +2012,7 @@ export default function App() {
 
   const handleUpdateConfig = async (partial: Partial<StoreConfig>) => {
     const current = storeConfigsRef.current[activeStoreIdRef.current] || config;
-    const userStoreId = currentUser ? `store-${currentUser.uid.slice(0, 20)}` : null;
+    const userStoreId = currentUser ? userProfile?.storeId || `store-${currentUser.uid.slice(0, 20)}` : null;
 
     // Prevent an authenticated seller from modifying another seller's store (except buyer currency switch)
     if (
@@ -2069,7 +2083,7 @@ export default function App() {
 
     // Firebase accounts stage the draft in Firestore. Authenticated server-email
     // accounts stage private file metadata through /api/uploads/product.
-    if (hasFirebaseSdkSession()) {
+    if (hasFirebaseSdkSession() && !IS_V2_STAGING) {
       try {
         await setDoc(doc(db, 'products', newProduct.id), {
           storeId: config.storeId,
@@ -2148,7 +2162,7 @@ export default function App() {
 
     // Store the replacement private file reference before the server verifies
     // the object and publishes a new version of this listing.
-    if (hasFirebaseSdkSession() &&
+    if (!IS_V2_STAGING && hasFirebaseSdkSession() &&
         merged.fileDataUrl?.startsWith('storage://') &&
         merged.fileDataUrl !== target.fileDataUrl) {
       try {
@@ -2385,7 +2399,7 @@ export default function App() {
     // Resolve cart products to the authenticated user's seeded Firestore products if applicable BEFORE calling server
     const resolvedCart = cart.map((c) => {
       if (currentUser) {
-        const userStoreId = `store-${currentUser.uid.slice(0, 20)}`;
+        const userStoreId = userProfile?.storeId || `store-${currentUser.uid.slice(0, 20)}`;
         const userSeededProdId = `${c.product.id}-${currentUser.uid.slice(0, 8)}`;
         const matchingUserProd = products.find(
           (p) =>

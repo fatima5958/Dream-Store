@@ -9,7 +9,11 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
   └── server/v2/app.ts         [separate Express app, no /api proxy to V1]
        ├── modules/auth.ts    [Firebase Admin verifyIdToken(token, true)]
        ├── modules/users.ts   [role permissions, named-Firestore profile read/transactional onboarding]
-       ├── modules/creators.ts[read-only, durable first-100 campaign counter]
+       ├── modules/creators.ts[durable campaign counter]
+       ├── modules/stores.ts  [owner restoration, atomic store/slug/claim]
+       ├── modules/products.ts[owner catalog, public projection, publish gates]
+       ├── modules/uploads.ts [5 MiB validation, immutable objects, cleanup jobs]
+       ├── modules/policy.ts  [shared owner/email/image validation]
        ├── config/firebase.ts [project-locked Admin initialization, named database, bucket, readiness]
        ├── contracts.ts       [typed dependency injection boundaries]
        └── errors.ts          [safe 401 / 403 / 409 / 503 responses]
@@ -19,8 +23,8 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
 
 - The existing Dockerfile runs `scripts/start.mjs` and therefore **V1**. No dual server process, parallel webhook worker or duplicate payment processor is started.
 - V2 requires `DREAMSTORE_V2_STAGING=1`; its default bind address is `127.0.0.1:8091`.
-- V2 account writes are disabled unless running against a configured Firestore emulator. Production Firestore is never writable through this staging process.
-- V2 currently implements profile read/onboarding, Admin session verification, role-based navigation authorization, creator-count read, public Store Directory, slug checks, emulator-only store creation, and health/readiness. Unsupported API routes explicitly return HTTP 501.
+- V2 refuses startup unless `DREAMSTORE_V2_STAGING=1`, a `demo-*` project and loopback Auth, named Firestore and Storage emulators are configured. It uses a separate Firebase Admin app. The frontend connects only with `VITE_DREAMSTORE_V2_STAGING=1` during localhost Vite development with a `demo-*` project.
+- V2 implements profile/onboarding, Admin identity verification, directory/storefront, atomic Store create/update/visits, slug checks, Seller product create/edit/publish/delete/list, verified private uploads and public cover delivery. Checkout/order/payment/fulfillment/commission/download APIs remain pending and return 501.
 - Readiness probes Firebase Auth permissions, named Firestore reads, Storage bucket access and durable signing-secret presence; it is not merely a server liveness flag. The public response is only `ready/not_ready`.
 - Never include token, password, cookies, private payment fields, Firebase credential values, or full SDK errors in logs.
 
@@ -37,7 +41,7 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
 
 - Live `/api/ready` previously returned `not_ready`. Cloud Run IAM, Firebase Storage and signing-secret configuration must be diagnosed independently.
 - Google Cloud OAuth redirect URI still needs **actual Google Console** confirmation; hardcoded diagnostic lists are not proof.
-- V2 store writes, orders, payments, uploads, financial transaction consistency, downloads and worker behavior are not implemented.
+- Cloud IAM and real deployment verification remain pending. Payments, financial consistency and downloads remain pending. Upload cleanup requires the manual staging reconciliation script.
 - Full staging integration, emulator credential isolation, cross-instance rate limiting and rollback rehearsal remain prerequisites for traffic switch.
 ## Public Store Directory (next implementation slice)
 
@@ -46,3 +50,13 @@ scripts/start-backend-v2.mjs   [explicit DREAMSTORE_V2_STAGING=1 required]
 - A positive allowlist excludes private seller payment settings, emails and any future sensitive database fields.
 - Availability/read errors return 503, never misleading `{ stores: [] }`.
 - Public store-by-slug pages still need compatible product-list retrieval and ownership-safe read logic before they can migrate.
+
+
+## Store, product and upload behavior
+
+- Existing Store IDs are found by verified `ownerId` and restored to the Seller profile. New stores use `store-{first 20 UID chars}` unless that collides with an existing full-UID record. Multiple legacy stores block writes for admin review.
+- First-store creation, claim, slug reservation and campaign increment commit together. Retries do not overwrite newer configuration or change the counter.
+- Owner identity, status, plan, product metrics and payment settings are never accepted as seller authority. Public projections expose only storefront/listing fields.
+- Product deletion uses a tombstone, retaining existing purchase history and original files. Only the owner can change products; active status is checked within each transaction.
+- Upload reservation/job is persisted before bytes. Storage uses create-only random object paths; stored type/size/generation are verified. Final reference commit rechecks ownership/status. Failures compensate objects or leave a cleanup job.
+- `firestore.v2.rules` and `storage.v2.rules` are emulator-only deny-by-default rules. Never deploy them over production rules in this phase.

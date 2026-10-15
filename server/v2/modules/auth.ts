@@ -1,7 +1,7 @@
 import type { Request } from 'express';
 import type { Auth } from 'firebase-admin/auth';
-import { ApiError } from '../errors';
-import type { Principal, AuthVerifier, V2Dependencies } from '../contracts';
+import { ApiError } from '../errors.ts';
+import type { Principal, AuthVerifier, V2Dependencies } from '../contracts.ts';
 
 const INVALID_USER_TOKEN_CODES = new Set([
   'auth/id-token-expired',
@@ -18,7 +18,8 @@ export function createFirebaseVerifier(auth: Pick<Auth, 'verifyIdToken'>): AuthV
         // No local JWT decode is considered proof of identity. Every token
         // must pass Firebase Admin signature AND revocation validation.
         const claims = await auth.verifyIdToken(token, true);
-        if (!claims.uid || typeof claims.uid !== 'string') {
+        if (typeof claims.uid !== 'string' || !claims.uid || claims.uid.length > 128 ||
+            /[\s/\x00-\x1f\x7f]/.test(claims.uid)) {
           throw new ApiError(401, 'auth/session-invalid', 'Please sign in again.');
         }
         return {
@@ -48,13 +49,14 @@ export async function authenticatedPrincipal(req: Request, deps: V2Dependencies)
   if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
     throw new ApiError(401, 'auth/session-invalid', 'A verified sign-in is required.');
   }
-  const bearer = authorization.slice(7).trim();
-  if (!bearer || bearer.length > 10000 || bearer.split('.').length !== 3) {
+  const bearer = authorization.slice(7);
+  if (!bearer || bearer.length > 10000 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/.test(bearer) ||
+      (bearer.endsWith('.') && deps.allowUnsignedEmulatorTokens !== true)) {
     throw new ApiError(401, 'auth/session-invalid', 'A verified sign-in is required.');
   }
   const principal = await deps.auth.verifyBearer(bearer);
   const body = req.body && typeof req.body === 'object' ? req.body : {};
-  const claimedUids = [body.uid, body.userId, body.ownerId, body.callerUid,
+  const claimedUids = [body.uid, body.userId, body.ownerId, body.buyerId, body.callerUid,
     req.query.callerUid, req.query.callerId, req.headers['x-caller-uid'], req.headers['x-dreamstore-uid']];
   if (claimedUids.some(value => value != null && String(value).trim() !== '' &&
     String(value).trim() !== principal.uid)) {

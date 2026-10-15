@@ -13,8 +13,11 @@
     "test:contracts": "node --test tests/secure-deliverables-contract.test.mjs tests/store-launch-contract.test.mjs",
     "test:server": "node --import tsx --test tests/server-runtime.test.mjs tests/http-security.test.mjs",
     "release:preflight": "node scripts/release-preflight.mjs",
-    "test:v2": "node --import tsx --test tests/backend-v2.test.mjs",
-    "start:backend-v2": "node scripts/start-backend-v2.mjs"
+    "test:v2": "node --import tsx --test tests/backend-v2.test.mjs tests/backend-auth-unit.test.mjs tests/backend-v2-repositories.test.mjs",
+    "start:backend-v2": "node scripts/start-backend-v2.mjs",
+    "test:v2:unit": "node --experimental-strip-types --test tests/backend-auth-unit.test.mjs tests/backend-v2-repositories.test.mjs",
+    "test:v2:emulator": "node --import tsx --test tests/backend-v2-emulator.test.mjs",
+    "cleanup:v2:uploads": "node scripts/cleanup-v2-uploads.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

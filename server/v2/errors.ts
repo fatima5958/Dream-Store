@@ -1,13 +1,14 @@
 import type { ErrorRequestHandler } from 'express';
 
 export class ApiError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly code: string,
-    message: string,
-  ) {
+  public readonly status: number;
+  public readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
     super(message);
     this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
   }
 }
 
@@ -22,6 +23,15 @@ export const handleApiError: ErrorRequestHandler = (error: unknown, _req, res, _
   if (res.headersSent) return;
   if (error instanceof ApiError) {
     res.status(error.status).json({ code: error.code, error: error.message });
+    return;
+  }
+  const parserError = error as { type?: unknown; status?: unknown } | null;
+  if (parserError?.type === 'entity.parse.failed' && parserError.status === 400) {
+    res.status(400).json({ code: 'request/invalid-json', error: 'Request body must be valid JSON.' });
+    return;
+  }
+  if (parserError?.type === 'entity.too.large' && parserError.status === 413) {
+    res.status(413).json({ code: 'request/too-large', error: 'Request body exceeds the allowed size.' });
     return;
   }
   // Deliberately never serialize the thrown error: it may contain tokens,

@@ -39,6 +39,8 @@ function fixture(options = {}) {
     readiness: { async check() { return options.ready === true; } },
     adminUid: 'admin_uid',
     stores: options.stores,
+    products: options.products,
+    uploads: options.uploads,
     allowWrites: options.allowWrites === true,
   };
   const app = createV2App(deps);
@@ -242,5 +244,51 @@ test('V2 directory infrastructure failures are never misreported as empty stores
     assert.equal(status, 503);
     assert.equal(response.code, 'backend/unavailable');
     assert.equal('stores' in response, false);
+  });
+});
+
+
+test('V2 storefront JSON preserves frontend shape and hides drafts for guests', async () => {
+  const { app } = fixture({ stores: { async find() { return { storeId: 'legacy-store', ownerId: 'seller', status: 'Active', storeName: 'Books', ownerEmail: 'private', paymentSettings: 'private' }; } },
+    products: { async list(id, viewer) { assert.equal(id, 'legacy-store'); assert.equal(viewer, null); return [{ id: 'book', published: true }]; } } });
+  await withServer(app, async request => {
+    for (const path of ['/api/stores/by-slug/books', '/api/stores/books']) {
+      const [status, body] = await request(path);
+      assert.equal(status, 200); assert.equal(body.store.ownerEmail, undefined);
+      assert.equal(body.store.paymentSettings, undefined); assert.equal(body.products[0].id, 'book');
+    }
+  });
+});
+
+test('V2 product and upload routes reject Buyer and unauthenticated writes', async () => {
+  const { app, profiles } = fixture({ allowWrites: true });
+  profiles.set('buyer', { role: 'buyer', onboardingCompleted: true });
+  await withServer(app, async request => {
+    for (const path of ['/api/stores/update', '/api/products/upsert', '/api/products/delete', '/api/uploads/product', '/api/uploads/cover']) {
+      assert.equal((await request(path, undefined, {}))[0], 401);
+      assert.equal((await request(path, 'buyer', {}))[0], 403);
+    }
+  });
+});
+
+test('V2 product aliases return the backend-acknowledged listing contract', async () => {
+  let writes = 0;
+  const { app, profiles } = fixture({ allowWrites: true, products: { async save(p, body) { assert.equal(p.uid, 'seller'); writes++; return { id: body.id, published: false }; } } });
+  profiles.set('seller', { role: 'seller', onboardingCompleted: true });
+  await withServer(app, async request => {
+    for (const path of ['/api/products', '/api/products/save', '/api/products/upsert']) {
+      const [status, body] = await request(path, 'seller', { id: 'book', published: false });
+      assert.equal(status, 200); assert.deepEqual(body, { ok: true, product: { id: 'book', published: false } });
+    }
+  });
+  assert.equal(writes, 3);
+});
+
+test('V2 writes remain blocked outside isolated staging even for a valid Seller', async () => {
+  const { app, profiles } = fixture();
+  profiles.set('seller', { role: 'seller', onboardingCompleted: true });
+  await withServer(app, async request => {
+    for (const path of ['/api/stores/update', '/api/products/upsert', '/api/products/delete', '/api/uploads/product']) assert.equal((await request(path, 'seller', {}))[0], 503);
+    assert.equal((await request('/api/stores/visit', undefined, { storeSlug: 'books' }))[0], 503);
   });
 });

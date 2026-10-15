@@ -19,11 +19,27 @@
 ## Commands (local isolated staging)
 
 ```sh
-npm run test:v2
-DREAMSTORE_V2_STAGING=1 FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 npm run start:backend-v2
+# Install Java and Firebase CLI separately, then run only the demo project.
+DREAMSTORE_V2_STAGING=1 DREAMSTORE_V2_PROJECT_ID=demo-dreamstore-v2 \
+SUPER_ADMIN_UID=v2-admin firebase emulators:exec \
+  --project demo-dreamstore-v2 --config firebase.v2.emulator.json \
+  --only auth,firestore,storage \
+  "FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199 npm run test:v2:emulator"
+
+# Dependency-free deterministic repository/security checks
+npm run test:v2:unit
+npm run test:contracts
+
+# Local app: start V2 with the same emulator environment, then
+VITE_DREAMSTORE_V2_STAGING=1 VITE_DREAMSTORE_V2_PROJECT_ID=demo-dreamstore-v2 npm run dev
+
+# Explicitly reconcile expired failed/replaced uploads (demo emulators only)
+DREAMSTORE_V2_STAGING=1 DREAMSTORE_V2_PROJECT_ID=demo-dreamstore-v2 \
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 \
+FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199 npm run cleanup:v2:uploads
 ```
 
-V2 uses the committed Firebase project and *named database* configuration; the emulator must be explicitly isolated from production. Until the remaining APIs are migrated, the V2 process intentionally returns 501 for unsupported routes. **Do not switch frontend or production traffic.**
+V2 uses the committed Firebase project and *named database* configuration; the emulator must be explicitly isolated from production. V2 writes require all three loopback emulators and a `demo-*` project. The frontend flag is rejected outside localhost development and never enabled in production builds. Unsupported routes return 501. **Do not switch production traffic.**
 
 ## Current rollback
 
@@ -32,3 +48,10 @@ No production runtime file or existing API route has been replaced. Rollback mea
 ## Production credentials
 
 Never paste Firebase ID tokens, refresh tokens, service-account secrets, passwords or cookies into issues, chat or logs. An earlier exposed session must be revoked by an authorized operator before real-account testing. This migration does not perform that action.
+
+## Store + product phase status
+
+- Implemented: public stores/storefront, owner restore/create/update, slug reservation, visit events, Seller product APIs, product projections, private uploads and public cover delivery.
+- Locally automated: deterministic repository/unit checks and source contracts. Fake transactions model serialization and do not prove emulator behavior.
+- Not verified in this environment: Express route tests, Firebase emulators, browser signup-to-published-store smoke, Vite build/typecheck, GitHub Actions. Install dependencies plus Java/Firebase CLI, then pass these before closing the milestone.
+- Pending: seller payment settings APIs, checkout, orders, payment verification, ledger/5% commission, fulfillment/downloads and financial Admin operations.

@@ -46,6 +46,9 @@ export interface StoreRepository {
   listPublic(): Promise<Array<Record<string, unknown>>>;
   checkSlug(slug: string, viewer?: Principal | null, excludeStoreId?: string): Promise<boolean>;
   create(principal: Principal, body: Record<string, unknown>): Promise<StoreCreateResult>;
+  find(target: string): Promise<Record<string, any> | null>;
+  update(principal: Principal, storeId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>>;
+  visit(target: string, checkout: boolean, visitorKey: string): Promise<void>;
 }
 
 export interface ReadinessService {
@@ -57,10 +60,23 @@ export interface V2Dependencies {
   profiles: ProfileRepository;
   creators: CreatorCampaignRepository;
   stores?: StoreRepository;
+  products?: ProductRepository;
+  uploads?: UploadRepository;
+  covers?: { read(ownerId: string, fileName: string): Promise<{ data: Buffer; contentType: string }> };
   readiness: ReadinessService;
   adminUid: string;
   // Staging writes are disabled by default. Real production cutover is separate.
   allowWrites: boolean;
+  allowUnsignedEmulatorTokens?: boolean;
 }
 
 export type AuthenticatedRequest = Request & { principal?: Principal };
+
+export interface ProductRepository {
+  list(storeId: string, viewer?: Principal | null): Promise<Array<Record<string, unknown>>>;
+  save(principal: Principal, input: Record<string, any>): Promise<Record<string, unknown>>;
+  remove(principal: Principal, id: string): Promise<void>;
+}
+export interface UploadRepository {
+  save(principal: Principal, input: { productId: string; storeId: string; fileName: string; contentType: string; data: Buffer; kind: 'product' | 'cover' }): Promise<Record<string, unknown>>;
+}

@@ -1,205 +1,168 @@
+import { createHash } from 'node:crypto';
 import type { Firestore, Transaction } from 'firebase-admin/firestore';
-import { ApiError } from '../errors';
-import type { Principal, StoreCreateResult, StoreRepository } from '../contracts';
-import { canonicalStoreId } from './users';
-import { FIRST_CREATORS_ID, FIRST_CREATORS_LIMIT } from './creators';
+import { ApiError } from '../errors.ts';
+import type { Principal, StoreCreateResult, StoreRepository } from '../contracts.ts';
+import { canonicalStoreId } from './users.ts';
+import { FIRST_CREATORS_ID, FIRST_CREATORS_LIMIT } from './creators.ts';
+import { assertOwnedActive, requireId, safeImage, validId } from './policy.ts';
 
-// Matches existing V1 URL rules; never trust a client-supplied store ID or role.
 export const STORE_SLUG_REGEX = /^[a-z0-9_.-]{2,40}$/;
-export const RESERVED_STORE_SLUGS = new Set([
-  'admin', 'superadmin', 'api', 'login', 'checkout', 'support', 'dashboard', 'settings',
-]);
-export const isValidStoreSlug = (slug: string): boolean =>
-  STORE_SLUG_REGEX.test(slug) && !RESERVED_STORE_SLUGS.has(slug);
-
+export const RESERVED_STORE_SLUGS = new Set(['admin', 'superadmin', 'api', 'login', 'checkout', 'support', 'dashboard', 'settings', 'check-slug', 'by-slug']);
+export const isValidStoreSlug = (slug: string): boolean => STORE_SLUG_REGEX.test(slug) && !RESERVED_STORE_SLUGS.has(slug);
 const currencies = new Set(['PKR', 'INR', 'USD', 'GBP', 'EUR', 'AED', 'SAR', 'CAD', 'AUD']);
-
-const PUBLIC_STORE_FIELDS = [
-  // Explicit positive allowlist: new private fields cannot leak by accident.
-  'ownerId', 'storeSlug', 'storeName', 'ownerName', 'country', 'sellerCountry',
-  'productType', 'instagramHandle', 'announcementText', 'heroHeadingLine1',
-  'heroHeadingLine2', 'heroSubheading', 'heroButtonText', 'heroImage', 'logoUrl',
-  'theme', 'customAccentColor', 'currency', 'exchangeRatePkr', 'plan', 'status',
-] as const;
-
+const proThemes = new Set(['peach-petal', 'rose-garden', 'midnight-muse', 'midnight-fairy', 'clean-canvas', 'minimal-muse']);
+const textFields: Record<string, number> = { storeName: 100, ownerName: 100, country: 80, sellerCountry: 80,
+  productType: 100, instagramHandle: 100, announcementText: 240, heroHeadingLine1: 120,
+  heroHeadingLine2: 120, heroSubheading: 500, heroButtonText: 60, theme: 80, customAccentColor: 20 };
+const publicFields = [...Object.keys(textFields), 'ownerId', 'storeSlug', 'currency', 'plan', 'status', 'heroImage', 'logoUrl', 'ownerAvatar'];
 export function publicStoreProjection(id: string, source: Record<string, unknown>) {
-  const publicStore: Record<string, unknown> = { storeId: id };
-  for (const name of PUBLIC_STORE_FIELDS) {
-    const value = source[name];
-    if (typeof value === 'string' || (name === 'exchangeRatePkr' &&
-        typeof value === 'number' && Number.isFinite(value))) {
-      publicStore[name] = value;
-    }
+  const result: Record<string, unknown> = { storeId: id };
+  for (const key of publicFields) if (typeof source[key] === 'string') result[key] = source[key];
+  if (typeof source.exchangeRatePkr === 'number' && Number.isFinite(source.exchangeRatePkr)) result.exchangeRatePkr = source.exchangeRatePkr;
+  return result;
+}
+function editable(input: Record<string, unknown>, old: Record<string, any>) {
+  const patch: Record<string, any> = {};
+  for (const [name, max] of Object.entries(textFields)) {
+    if (!Object.hasOwn(input, name)) continue;
+    if (typeof input[name] !== 'string' || (input[name] as string).length > max) throw new ApiError(422, 'store/invalid-field', `Invalid ${name}.`);
+    patch[name] = (input[name] as string).trim();
   }
-  // No payment settings, seller email, buyer data, bank details, or internal
-  // Firestore metadata may be returned through the discovery endpoint.
-  return publicStore;
-}
-
-
-
-function field(value: unknown, max: number, fallback = ''): string {
-  if (typeof value !== 'string') return fallback;
-  return value.trim().slice(0, max);
-}
-
-function createStoreDocument(
-  input: Record<string, unknown>,
-  principal: Principal,
-  storeId: string,
-  slug: string,
-  old: Record<string, any>,
-  now: Date,
-) {
-  const name = field(input.storeName, 100);
-  const country = field(input.country || input.sellerCountry, 80, 'Pakistan');
-  const currency = String(input.currency || 'PKR');
-  const rate = Number(input.exchangeRatePkr);
-  const stableRate = Number.isFinite(rate) && rate > 0 && rate < 1000000 ? rate : 278;
-  return {
-    ownerId: principal.uid,
-    storeSlug: slug,
-    storeName: name,
-    ownerName: field(input.ownerName, 100, name),
-    instagramHandle: field(input.instagramHandle, 100, '@' + slug),
-    sellerCountry: country,
-    productType: field(input.productType, 100, 'Ebooks & Guides'),
-    announcementText: field(input.announcementText, 240, 'Welcome to ' + name),
-    heroHeadingLine1: field(input.heroHeadingLine1, 120, name),
-    heroHeadingLine2: field(input.heroHeadingLine2, 120, 'Digital Products'),
-    heroSubheading: field(input.heroSubheading, 500, 'Explore our products.'),
-    heroButtonText: field(input.heroButtonText, 60, 'Shop Now'),
-    heroImage: field(input.heroImage, 8192),
-    logoUrl: field(input.logoUrl, 8192),
-    theme: field(input.theme, 80, 'blush-rose'),
-    customAccentColor: field(input.customAccentColor, 64),
-    currency: currencies.has(currency) ? currency : 'PKR',
-    exchangeRatePkr: stableRate,
-    // Paid entitlements and suspension are NEVER client-authoritative.
-    plan: old.plan === 'Pro' ? 'Pro' : 'Free',
-    status: typeof old.status === 'string' ? old.status : 'Active',
-    createdAt: old.createdAt || now,
-    updatedAt: now,
-    // Explicitly exclude ownerEmail and private payment settings from public
-    // store documents returned to the browser.
-  };
+  if (Object.hasOwn(input, 'storeSlug')) {
+    const slug = typeof input.storeSlug === 'string' ? input.storeSlug.trim().toLowerCase() : '';
+    if (!isValidStoreSlug(slug)) throw new ApiError(422, 'store/invalid-slug', 'Choose a valid non-reserved store URL.');
+    patch.storeSlug = slug;
+  }
+  if (Object.hasOwn(input, 'currency')) {
+    if (!currencies.has(String(input.currency))) throw new ApiError(422, 'store/invalid-currency', 'Unsupported currency.');
+    patch.currency = input.currency;
+  }
+  if (Object.hasOwn(input, 'exchangeRatePkr')) {
+    const rate = input.exchangeRatePkr;
+    if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 1 || rate > 10000) throw new ApiError(422, 'store/invalid-rate', 'Exchange rate must be between 1 and 10000.');
+    patch.exchangeRatePkr = rate;
+  }
+  for (const key of ['heroImage', 'logoUrl', 'ownerAvatar']) if (Object.hasOwn(input, key)) patch[key] = safeImage(input[key]);
+  if (patch.storeName === '') throw new ApiError(422, 'store/name-required', 'Store name is required.');
+  if (patch.theme && patch.theme !== old.theme && proThemes.has(patch.theme) && old.plan !== 'Pro') throw new ApiError(403, 'store/pro-required', 'This theme requires Pro.');
+  return patch;
 }
 
 export function createFirestoreStoreRepository(db: Firestore): StoreRepository {
   const stores = db.collection('stores');
   const slugs = db.collection('store_slugs');
   const campaign = db.collection('creator_launch_campaigns').doc(FIRST_CREATORS_ID);
-
+  const fromSnap = (snap: any) => snap.exists ? { ...snap.data(), storeId: snap.id } : null;
   return {
     async listPublic() {
-      // Query only published, active stores; return bounded records and project
-      // fields explicitly, never the full Firestore document.
       const result = await stores.where('status', '==', 'Active').limit(100).get();
       return result.docs.map(snap => publicStoreProjection(snap.id, snap.data() || {}));
     },
-
+    async find(target) {
+      if (!target || target.length > 128) throw new ApiError(422, 'store/invalid-target', 'Invalid store.');
+      if (validId(target)) {
+        const exact = await stores.doc(target).get();
+        if (exact.exists) return fromSnap(exact);
+      }
+      const slug = target.toLowerCase();
+      if (!isValidStoreSlug(slug)) return null;
+      const matches = await stores.where('storeSlug', '==', slug).limit(2).get();
+      if (matches.docs.length > 1) throw new ApiError(503, 'store/ambiguous-slug', 'Store URL requires administrator repair.');
+      return matches.docs.length ? fromSnap(matches.docs[0]) : null;
+    },
     async checkSlug(slug, viewer, excludeStoreId) {
       if (!isValidStoreSlug(slug)) return false;
       let ownId = '';
-      if (viewer && excludeStoreId &&
-          /^store-[A-Za-z0-9_-]{1,128}$/.test(excludeStoreId)) {
+      if (viewer && validId(excludeStoreId)) {
         const owned = await stores.doc(excludeStoreId).get();
         if (owned.exists && owned.get('ownerId') === viewer.uid) ownId = excludeStoreId;
       }
-      const [reservation, matches] = await Promise.all([
-        slugs.doc(slug).get(),
-        stores.where('storeSlug', '==', slug).get(),
-      ]);
-      return !(reservation.exists && reservation.get('storeId') !== ownId) &&
-        !matches.docs.some(snap => snap.id !== ownId);
+      const [reservation, matches] = await Promise.all([slugs.doc(slug).get(), stores.where('storeSlug', '==', slug).get()]);
+      return !(reservation.exists && reservation.get('storeId') !== ownId) && !matches.docs.some(snap => snap.id !== ownId);
     },
-
     async create(principal, input): Promise<StoreCreateResult> {
-      const slug = field(input.storeSlug, 256).toLowerCase();
-      const name = field(input.storeName, 100);
-      if (!name || !slug) {
-        throw new ApiError(400, 'store/required-fields', 'Store name and store URL are required.');
-      }
-      if (!isValidStoreSlug(slug)) {
-        throw new ApiError(400, 'store/invalid-slug', 'Choose a valid, non-reserved store URL.');
-      }
-      if (input.sellerId != null && String(input.sellerId) !== principal.uid) {
-        throw new ApiError(403, 'auth/identity-mismatch', 'Cannot create another Seller account.');
-      }
-      const storeId = canonicalStoreId(principal.uid);
-      const fullUidStoreId = 'store-' + principal.uid;
-      if (input.storeId != null &&
-          String(input.storeId) !== storeId &&
-          String(input.storeId) !== fullUidStoreId) {
-        throw new ApiError(403, 'store/owner-forbidden', 'You cannot use another store identifier.');
-      }
-      const targetId = typeof input.storeId === 'string' ? input.storeId : storeId;
-      const storeRef = stores.doc(targetId);
-      const reservationRef = slugs.doc(slug);
+      if (!principal.emailVerified) throw new ApiError(403, 'auth/email-not-verified', 'Verify your email first.');
+      if (input.ownerId != null && input.ownerId !== principal.uid || input.sellerId != null && input.sellerId !== principal.uid) throw new ApiError(403, 'store/owner-forbidden', 'Cannot create another seller account.');
+      const requested = input.storeId == null ? '' : requireId(input.storeId, 'store ID');
       const claimRef = db.collection('creator_launch_claims').doc(principal.uid);
-
       return db.runTransaction(async (tx: Transaction) => {
-        // All reads before writes, including query-based reservations.
-        // Firestore retries conflicting transactions for concurrent claims.
-        const oldSnap = await tx.get(storeRef);
+        // UID-keyed claim + owner query serialize competing full/truncated-ID requests.
+        const claim = await tx.get(claimRef);
+        const owned = await tx.get(stores.where('ownerId', '==', principal.uid).limit(2));
+        if (owned.docs.length > 1) throw new ApiError(409, 'store/multiple-owned', 'Multiple legacy stores require administrator review.');
+        const existing = owned.docs[0];
+        if (existing) {
+          assertOwnedActive(existing.data(), principal);
+          if (requested && requested !== existing.id) throw new ApiError(409, 'store/already-exists', 'Use your existing store.');
+          // Creation retries never overwrite later edits or claim another spot.
+          return { store: publicStoreProjection(existing.id, existing.data()), existed: true, creatorClaimNumber: claim.exists ? Number(claim.get('claimNumber')) : null };
+        }
+        const targetId = requested || canonicalStoreId(principal.uid);
+        if (targetId !== canonicalStoreId(principal.uid) && targetId !== 'store-' + principal.uid) throw new ApiError(403, 'store/owner-forbidden', 'Invalid new store identifier.');
+        requireId(targetId, 'store ID');
+        const patch = editable(input, {});
+        if (!patch.storeName || !patch.storeSlug) throw new ApiError(400, 'store/required-fields', 'Store name and URL are required.');
+        const storeRef = stores.doc(targetId);
+        const reservationRef = slugs.doc(patch.storeSlug);
+        const old = await tx.get(storeRef);
         const reservation = await tx.get(reservationRef);
-        const matchingStores = await tx.get(stores.where('storeSlug', '==', slug));
-        const oldFields = oldSnap.data() || {};
-        const previousSlug = String(oldFields.storeSlug || '').toLowerCase();
-        const priorReservationRef = previousSlug && previousSlug !== slug ? slugs.doc(previousSlug) : null;
-        const priorReservation = priorReservationRef ? await tx.get(priorReservationRef) : null;
-
-        const isFirst = !oldSnap.exists;
-        const campaignSnap = isFirst ? await tx.get(campaign) : null;
-        const claimSnap = isFirst ? await tx.get(claimRef) : null;
-
-        if (oldSnap.exists && oldFields.ownerId !== principal.uid) {
-          throw new ApiError(403, 'store/owner-forbidden', 'This store belongs to another creator.');
-        }
-        if (oldSnap.exists && oldFields.status !== 'Active') {
-          throw new ApiError(403, 'store/suspended', 'Suspended stores cannot be changed.');
-        }
-        if ((reservation.exists && reservation.get('storeId') !== targetId) ||
-            matchingStores.docs.some(doc => doc.id !== targetId)) {
-          throw new ApiError(409, 'store/slug-taken', 'This store URL is already taken.');
-        }
-
-        let creatorClaimNumber: number | null = null;
-        if (isFirst) {
-          const claimed = campaignSnap?.exists ? Number(campaignSnap.get('claimedCount')) : 0;
-          if (!Number.isSafeInteger(claimed) || claimed < 0 || claimed > FIRST_CREATORS_LIMIT) {
-            throw new ApiError(503, 'campaign/counter-invalid', 'Creator spot availability could not be verified.');
-          }
-          if (claimSnap?.exists) {
-            throw new ApiError(409, 'creator-already-claimed', 'This creator already claimed a store.');
-          }
-          if (claimed >= FIRST_CREATORS_LIMIT) {
-            throw new ApiError(409, 'creator-spots-full', 'All 100 free creator spots have been claimed.');
-          }
-          creatorClaimNumber = claimed + 1;
-        }
+        const matching = await tx.get(stores.where('storeSlug', '==', patch.storeSlug));
+        const campaignSnap = await tx.get(campaign);
+        if (old.exists) throw new ApiError(409, 'store/id-collision', 'Store identifier already exists.');
+        if (claim.exists) throw new ApiError(409, 'creator-already-claimed', 'This creator already claimed a store.');
+        if (reservation.exists || matching.docs.length) throw new ApiError(409, 'store/slug-taken', 'Store URL already taken.');
+        const count = campaignSnap.exists ? Number(campaignSnap.get('claimedCount')) : 0;
+        if (!Number.isSafeInteger(count) || count < 0 || count > FIRST_CREATORS_LIMIT) throw new ApiError(503, 'campaign/counter-invalid', 'Creator availability cannot be verified.');
+        if (count === FIRST_CREATORS_LIMIT) throw new ApiError(409, 'creator-spots-full', 'All free creator spots are claimed.');
         const now = new Date();
-        const storeDoc = createStoreDocument(input, principal, targetId, slug, oldFields, now);
-        tx.set(storeRef, storeDoc);
-        if (!reservation.exists) {
-          tx.create(reservationRef, { storeId: targetId, ownerId: principal.uid, createdAt: now });
-        }
-        if (priorReservationRef && priorReservation?.exists &&
-            priorReservation.get('storeId') === targetId) {
-          tx.delete(priorReservationRef);
-        }
-        if (creatorClaimNumber !== null) {
-          tx.create(claimRef, { ownerId: principal.uid, storeId: targetId,
-            claimNumber: creatorClaimNumber, claimedAt: now });
-          if (campaignSnap?.exists) {
-            tx.update(campaign, { claimedCount: creatorClaimNumber, updatedAt: now });
-          } else {
-            tx.create(campaign, { limit: FIRST_CREATORS_LIMIT,
-              claimedCount: creatorClaimNumber, createdAt: now, updatedAt: now });
-          }
-        }
-        return { store: { storeId: targetId, ownerEmail: principal.email, ...storeDoc },
-          existed: oldSnap.exists, creatorClaimNumber };
+        const doc = { ...patch, ownerId: principal.uid, currency: patch.currency || 'PKR', plan: 'Free', status: 'Active', createdAt: now, updatedAt: now };
+        tx.create(storeRef, doc);
+        tx.create(reservationRef, { storeId: targetId, ownerId: principal.uid, createdAt: now });
+        tx.create(claimRef, { ownerId: principal.uid, storeId: targetId, claimNumber: count + 1, claimedAt: now });
+        tx.set(campaign, { limit: 100, claimedCount: count + 1, updatedAt: now }, { merge: true });
+        return { store: publicStoreProjection(targetId, doc), existed: false, creatorClaimNumber: count + 1 };
+      });
+    },
+    async update(principal, id, input) {
+      requireId(id, 'store ID');
+      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ApiError(422, 'store/invalid-update', 'Invalid store updates.');
+      if (['ownerId', 'sellerId', 'status', 'plan', 'storeId'].some(key => Object.hasOwn(input, key))) throw new ApiError(403, 'store/protected-field', 'Ownership, status and plan are administrator controlled.');
+      return db.runTransaction(async tx => {
+        const ref = stores.doc(id);
+        const snap = await tx.get(ref);
+        assertOwnedActive(snap.exists ? snap.data() : undefined, principal);
+        const old = snap.data()!;
+        const patch = editable(input, old);
+        const nextSlug = patch.storeSlug || old.storeSlug;
+        const newRef = slugs.doc(nextSlug);
+        const reservation = await tx.get(newRef);
+        const matches = await tx.get(stores.where('storeSlug', '==', nextSlug));
+        const oldRef = old.storeSlug && old.storeSlug !== nextSlug ? slugs.doc(old.storeSlug) : null;
+        const oldReservation = oldRef ? await tx.get(oldRef) : null;
+        if (reservation.exists && reservation.get('storeId') !== id || matches.docs.some(d => d.id !== id)) throw new ApiError(409, 'store/slug-taken', 'Store URL already taken.');
+        tx.update(ref, { ...patch, updatedAt: new Date() });
+        if (!reservation.exists) tx.create(newRef, { storeId: id, ownerId: principal.uid, createdAt: new Date() });
+        if (oldRef && oldReservation?.exists && oldReservation.get('storeId') === id) tx.delete(oldRef);
+        return publicStoreProjection(id, { ...old, ...patch });
+      });
+    },
+    async visit(target, checkout, visitorKey) {
+      const store = await this.find(target);
+      if (!store || store.status !== 'Active') throw new ApiError(404, 'store/not-found', 'Public store not found.');
+      // Best-effort abuse bound: one counter event/IP/store/15min. No raw IP stored.
+      const key = createHash('sha256').update(store.storeId + ':' + visitorKey + ':' + Math.floor(Date.now() / 900000) + ':' + checkout).digest('hex');
+      const marker = db.collection('store_visit_events').doc(key);
+      const ref = stores.doc(store.storeId);
+      await db.runTransaction(async tx => {
+        const fresh = await tx.get(ref);
+        const seen = await tx.get(marker);
+        if (!fresh.exists || fresh.get('status') !== 'Active') throw new ApiError(404, 'store/not-found', 'Public store not found.');
+        if (seen.exists) return;
+        const field = checkout ? 'checkoutViewsCount' : 'visitsCount';
+        const current = Number(fresh.get(field) || 0);
+        if (!Number.isSafeInteger(current) || current < 0) throw new ApiError(503, 'store/invalid-stats', 'Store analytics unavailable.');
+        tx.update(ref, { [field]: current + 1 });
+        tx.create(marker, { storeId: store.storeId, createdAt: new Date(), expiresAt: new Date(Date.now() + 86400000) });
       });
     },
   };

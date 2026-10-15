@@ -1,15 +1,18 @@
+import { assertIsolatedV2Environment } from './staging.ts';
 import fs from 'node:fs';
 import path from 'node:path';
-import { applicationDefault, getApps, initializeApp } from 'firebase-admin/app';
+import { getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { ApiError, safeBackendCategory } from '../errors';
-import { createFirebaseVerifier } from '../modules/auth';
-import { createFirestoreProfileRepository } from '../modules/users';
-import { createCreatorCampaignRepository } from '../modules/creators';
-import { createFirestoreStoreRepository } from '../modules/stores';
-import type { ReadinessService, V2Dependencies } from '../contracts';
+import { ApiError, safeBackendCategory } from '../errors.ts';
+import { createFirebaseVerifier } from '../modules/auth.ts';
+import { createFirestoreProfileRepository } from '../modules/users.ts';
+import { createCreatorCampaignRepository } from '../modules/creators.ts';
+import { createFirestoreStoreRepository } from '../modules/stores.ts';
+import { createFirestoreProductRepository } from '../modules/products.ts';
+import { createFirebaseUploadRepository, validateFileBytes } from '../modules/uploads.ts';
+import type { ReadinessService, V2Dependencies } from '../contracts.ts';
 
 interface PublicFirebaseConfig {
   projectId: string;
@@ -33,15 +36,18 @@ function stableSigningSecretReady(): boolean {
 }
 
 export function createProductionV2Dependencies(): V2Dependencies {
-  const config = readConfig();
-  const existing = getApps()[0];
+  assertIsolatedV2Environment(process.env);
+  const original = readConfig();
+  const config = { ...original, projectId: process.env.DREAMSTORE_V2_PROJECT_ID!,
+    storageBucket: process.env.DREAMSTORE_V2_PROJECT_ID + '.appspot.com' };
+  process.env.STORAGE_EMULATOR_HOST = 'http://' + process.env.FIREBASE_STORAGE_EMULATOR_HOST;
+  const existing = getApps().find(app => app.name === 'dreamstore-v2-isolated');
   if (existing && existing.options.projectId && existing.options.projectId !== config.projectId) {
     throw new Error('Firebase Admin project mismatch; refusing to serve accounts.');
   }
   const app = existing || initializeApp({
-    credential: applicationDefault(),
     projectId: config.projectId,
-  });
+  }, 'dreamstore-v2-isolated');
   const auth = getAuth(app);
   // The existing DreamStore data lives in a NAMED database, not (default).
   const db = getFirestore(app, config.firestoreDatabaseId);
@@ -88,10 +94,25 @@ export function createProductionV2Dependencies(): V2Dependencies {
     profiles: createFirestoreProfileRepository(db),
     creators: createCreatorCampaignRepository(db),
     stores: createFirestoreStoreRepository(db),
+    products: createFirestoreProductRepository(db, storage.bucket(config.storageBucket)),
+    uploads: createFirebaseUploadRepository(db, storage.bucket(config.storageBucket)),
+    covers: {
+      async read(ownerId, fileName) {
+        try {
+          const file = storage.bucket(config.storageBucket).file(`stores/${ownerId}/public/${fileName}`);
+          const [meta] = await file.getMetadata();
+          if (Number(meta.size) < 1 || Number(meta.size) > 5 * 1024 * 1024) throw new ApiError(404, 'cover/not-found', 'Cover not found.');
+          const [data] = await file.download({ validation: 'crc32c' });
+          const contentType = String(meta.contentType || '');
+          validateFileBytes(fileName, contentType, data, 'cover');
+          return { data, contentType };
+        } catch { throw new ApiError(404, 'cover/not-found', 'Cover not found.'); }
+      },
+    },
     readiness,
     adminUid: String(process.env.SUPER_ADMIN_UID || '').trim(),
     // No production write until separate staging verification and owner approval.
-    allowWrites: Boolean(process.env.FIRESTORE_EMULATOR_HOST) &&
-      process.env.DREAMSTORE_V2_STAGING === '1',
+    allowUnsignedEmulatorTokens: true,
+    allowWrites: true, // All three loopback emulators + demo project validated above.
   };
 }

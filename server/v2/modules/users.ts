@@ -1,6 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
-import { ApiError } from '../errors';
-import type { AccountRole, Principal, ProfileRepository, Role, UserProfile } from '../contracts';
+import { ApiError } from '../errors.ts';
+import type { AccountRole, Principal, ProfileRepository, Role, UserProfile } from '../contracts.ts';
 
 const stamp = (value: any): string =>
   value?.toDate?.()?.toISOString?.() ||
@@ -50,6 +50,11 @@ export function createFirestoreProfileRepository(db: Firestore): ProfileReposito
       if (snap.exists) {
         const fields = snap.data() || {};
         if (fields.role === 'buyer' || fields.role === 'seller') {
+          if (fields.role === 'seller') {
+            const owned = await db.collection('stores').where('ownerId', '==', principal.uid).limit(2).get();
+            if (owned.docs.length > 1) throw new ApiError(409, 'store/multiple-owned', 'Multiple stores require administrator review.');
+            return hydrated(principal, { ...fields, storeId: owned.docs[0]?.id || canonicalStoreId(principal.uid) }, 'seller');
+          }
           return hydrated(principal, fields, fields.role);
         }
         if (fields.role === 'super_admin') {
@@ -61,12 +66,13 @@ export function createFirestoreProfileRepository(db: Firestore): ProfileReposito
 
       // Compatibility with pre-profile Seller accounts: an existing store
       // is enough to restore seller navigation ONLY if ownership is verified.
-      const storeId = canonicalStoreId(principal.uid);
-      const storeSnap = await db.collection('stores').doc(storeId).get();
-      if (storeSnap.exists && storeSnap.get('ownerId') === principal.uid) {
+      const owned = await db.collection('stores').where('ownerId', '==', principal.uid).limit(2).get();
+      if (owned.docs.length > 1) throw new ApiError(409, 'store/multiple-owned', 'Multiple stores require administrator review.');
+      const storeSnap = owned.docs[0];
+      if (storeSnap) {
         return hydrated(principal, {
           displayName: storeSnap.get('ownerName') || principal.displayName,
-          storeId, onboardingCompleted: true,
+          storeId: storeSnap.id, onboardingCompleted: true,
           createdAt: storeSnap.get('createdAt'), updatedAt: storeSnap.get('updatedAt'),
         }, 'seller');
       }
@@ -79,7 +85,7 @@ export function createFirestoreProfileRepository(db: Firestore): ProfileReposito
       const cleanName = displayName.trim().slice(0, 120);
       if (!cleanName) throw new ApiError(400, 'profile/name-required', 'Please enter your name.');
       const ref = db.collection('users').doc(principal.uid);
-      const storeRef = db.collection('stores').doc(canonicalStoreId(principal.uid));
+      const ownedQuery = db.collection('stores').where('ownerId', '==', principal.uid).limit(2);
 
       return db.runTransaction(async tx => {
         const old = await tx.get(ref);
@@ -90,22 +96,24 @@ export function createFirestoreProfileRepository(db: Firestore): ProfileReposito
           throw new ApiError(403, 'auth/role-forbidden', 'This account cannot change its privileged role.');
         }
         // Never silently downgrade an account with a real existing store.
-        const store = await tx.get(storeRef);
-        if (store.exists && store.get('ownerId') === principal.uid && role !== 'seller') {
+        const owned = await tx.get(ownedQuery);
+        if (owned.docs.length > 1) throw new ApiError(409, 'store/multiple-owned', 'Multiple stores require administrator review.');
+        const store = owned.docs[0];
+        if (store && role !== 'seller') {
           throw new ApiError(409, 'profile/store-owner-role', 'This account already owns a store.');
         }
         const now = new Date();
         tx.set(ref, {
           uid: principal.uid, role, displayName: cleanName, email: principal.email,
           onboardingCompleted: true,
-          ...(role === 'seller' ? { storeId: canonicalStoreId(principal.uid) } : {}),
+          ...(role === 'seller' ? { storeId: (store?.id || canonicalStoreId(principal.uid)) } : {}),
           createdAt: old.exists ? old.get('createdAt') || now : now,
           updatedAt: now,
         });
         return hydrated(principal, {
           role, displayName: cleanName, onboardingCompleted: true,
           createdAt: old.get('createdAt') || now, updatedAt: now,
-          ...(role === 'seller' ? { storeId: canonicalStoreId(principal.uid) } : {}),
+          ...(role === 'seller' ? { storeId: (store?.id || canonicalStoreId(principal.uid)) } : {}),
         }, role);
       });
     },
