@@ -83,3 +83,24 @@ jobs:
       - name: Show server logs if failed
         if: failure()
         run: tail -160 /tmp/dreamstore-browser-smoke.log || true
+
+  production-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the same production image used for deployment
+        run: docker build --tag dreamstore:ci .
+      - name: Check production container health and paid checkout default
+        run: |
+          docker run -d --name dreamstore-ci -p 127.0.0.1:18080:8080 dreamstore:ci
+          trap 'docker logs dreamstore-ci; docker rm -f dreamstore-ci >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:18080/api/health; then break; fi
+            sleep 2
+          done
+          curl --fail --silent --show-error http://127.0.0.1:18080/api/health | grep -q '"status":"ok"'
+          # Liveness alone does not mean the application has Firebase/secret access.
+          # The readiness endpoint must fail closed without production credentials.
+          response=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/api/ready)
+          test "$response" = 503
