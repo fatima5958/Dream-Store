@@ -303,3 +303,15 @@ test('subscriptions reflect fresh store entitlements and paid simulation is neve
   assert.match(simulation, /process\.env\.NODE_ENV === 'production'/);
   assert.match(simulation, /if \(!isSuper\)/);
 });
+
+test('release requires a separate staging smoke gate, not just green CI', () => {
+  const script = read('scripts/release-preflight.mjs');
+  const status = read('PRODUCTION_RELEASE_STATUS.md');
+  assert.match(script, /\/api\/ready/);
+  assert.match(script, /\/api\/orders\/verify-payment/);
+  assert.match(script, /\/api\/commission\/verify-payment/);
+  assert.match(script, /response\.status === expected/);
+  assert.match(status, /NOT CERTIFIED FOR PAID PRODUCTION/);
+  assert.match(status, /legacy ephemeral email accounts/i);
+  assert.match(status, /DREAMSTORE_PAID_CHECKOUT_ENABLED=false/);
+});

@@ -11,7 +11,8 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test:contracts": "node --test tests/secure-deliverables-contract.test.mjs tests/store-launch-contract.test.mjs",
-    "test:server": "node --import tsx --test tests/server-runtime.test.mjs tests/http-security.test.mjs"
+    "test:server": "node --import tsx --test tests/server-runtime.test.mjs tests/http-security.test.mjs",
+    "release:preflight": "node scripts/release-preflight.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
