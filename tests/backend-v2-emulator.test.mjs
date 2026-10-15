@@ -13,9 +13,10 @@ import { createCreatorCampaignRepository } from '../server/v2/modules/creators.t
 import { createFirestoreProductRepository } from '../server/v2/modules/products.ts';
 import { createFirebaseUploadRepository } from '../server/v2/modules/uploads.ts';
 import { createFirestoreFinancialRepository } from '../server/v2/modules/finance-repository.ts';
+import { createFirestoreCommissionRepository } from '../server/v2/modules/commission-repository.ts';
 import { assertIsolatedV2Environment } from '../server/v2/config/staging.ts';
 
-let app, db, auth, bucket, server, base, profiles, stores;
+let app, db, auth, bucket, server, base, profiles, stores, financeRepo, commissionRepo;
 const tokens = {}, identities = {};
 const config = JSON.parse(readFileSync(new URL('../firebase-applet-config.json', import.meta.url), 'utf8'));
 const emulatorConfig = JSON.parse(readFileSync(new URL('../firebase.v2.emulator.json', import.meta.url), 'utf8'));
@@ -28,9 +29,11 @@ async function request(path, caller, body, method = body === undefined ? 'GET' :
   return { status: response.status, body: await response.json() };
 }
 async function start() {
+  financeRepo = createFirestoreFinancialRepository(db, bucket);
+  commissionRepo = createFirestoreCommissionRepository(db, { signingSecret: 'emulator-only-signing-secret-0123456789abcdef' });
   const deps = { auth: createFirebaseVerifier(auth), profiles, stores, creators: createCreatorCampaignRepository(db),
     products: createFirestoreProductRepository(db, bucket), uploads: createFirebaseUploadRepository(db, bucket),
-    finance: createFirestoreFinancialRepository(db, bucket),
+    finance: financeRepo, commissions: commissionRepo,
     readiness: { check: async () => true }, adminUid: identities.admin.uid, allowWrites: true, allowUnsignedEmulatorTokens: true,
     paidCheckoutEnabled: true, downloadTokenSecret: 'emulator-only-signing-secret-0123456789abcdef' };
   const express = createV2App(deps);
@@ -46,7 +49,7 @@ before(async () => {
   // Only the explicitly guarded demo project is reset. Never production data.
   const reset = await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/emulator/v1/projects/${projectId}/databases/${config.firestoreDatabaseId}/documents`, { method: 'DELETE' });
   assert.equal(reset.ok, true);
-  for (const name of ['seller','other','buyer','buyer2','admin','claim99','claim100','claim101']) {
+  for (const name of ['seller','other','buyer','buyer2','admin','claim99','claim100','claim101','comseller','combuyer']) {
     const uid = 'v2-' + name;
     await auth.deleteUser(uid).catch(error => { if (error.code !== 'auth/user-not-found') throw error; });
     identities[name] = await auth.createUser({ uid, email: name+'@example.test', emailVerified: true, password:'Emulator-only-123!' });
@@ -145,4 +148,48 @@ test('real emulator Admin claims and invalid tokens remain server-authorized', a
   await new Promise(resolve=>setTimeout(resolve,1100));
   await auth.revokeRefreshTokens(identity.uid);
   assert.equal((await request('/api/users/profile','other')).status,401);
+});
+
+test('real Firestore commission lifecycle: invoice once, owner-only proof, racing admin approvals settle exactly once, refund credit', async () => {
+  const sellerUid = identities.comseller.uid;
+  assert.equal((await request('/api/users/profile','comseller',{role:'seller',displayName:'Com Seller'})).status,200);
+  assert.equal((await request('/api/users/profile','combuyer',{role:'buyer',displayName:'Com Buyer'})).status,200);
+  await db.collection('stores').doc('store-comseller').set({ownerId:sellerUid,status:'Active',storeSlug:'com-seller',storeName:'Com Seller'});
+  await db.collection('products').doc('com-book').set({storeId:'store-comseller',ownerId:sellerUid,isFree:false,published:true,status:'Available',deleted:false,priceUsd:10,pricePkr:2780,title:'Com Book'});
+  await db.collection('sellerSettings').doc(sellerUid).set({ownerId:sellerUid,jazzCashMerchantId:'merchant-123',jazzCashEnabled:true});
+  const orders=[];
+  for(let i=1;i<=5;i++){
+    const input={orderNumber:'DS-COM-'+i,orderId:'order-com-'+i,storeId:'store-comseller',sellerId:sellerUid,buyerId:identities.combuyer.uid,primaryProductId:'com-book',
+      customerName:'Com Buyer',customerEmail:'combuyer@example.test',currency:'PKR',subtotal:2780,totalAmount:2780,grossAmountMinor:278000,commissionRateBps:500,
+      platformCommissionMinor:13900,sellerShareBeforeFeesMinor:264100,gatewayFeeMinor:0,sellerNetEarningsMinor:264100,paymentMethod:'jazzcash',
+      paymentReference:'TXN-COM-'+i,paymentStatus:'Pending',verificationMode:'Unverified',commissionStatus:'outstanding',payoutStatus:'Pending Payment Verification',
+      downloadCount:0,maxDownloads:5,expiresAtMs:Date.now()+86400000,createdAtIso:new Date(Date.now()+i).toISOString(),downloadTokenId:'tok-com-'+i,idempotencyKey:'idem-com-'+i+'-abcdefgh'};
+    await financeRepo.createOrder(input); orders.push(input);
+    const verified=await request('/api/orders/verify-payment','comseller',{orderNumber:input.orderNumber,newStatus:'Paid',statementConfirmed:true,evidenceType:'bank_statement',receivedAmountMinor:278000});
+    assert.equal(verified.status,200,JSON.stringify(verified.body));
+  }
+  const summary=await request('/api/commission/status','comseller');
+  assert.equal(summary.status,200); assert.equal(summary.body.invoices.length,1);
+  const invoice=summary.body.invoices[0]; assert.equal(invoice.commissionAmountMinor,5*13900);
+  await Promise.all(Array.from({length:5},()=>commissionRepo.issueInvoices(sellerUid)));
+  assert.equal((await db.collection('commission_invoices').where('sellerId','==',sellerUid).get()).size,1);
+  const proof={invoiceId:invoice.invoiceId,paymentMethod:'bank_transfer',paymentReference:'COMM-EMU-001'};
+  assert.equal((await request('/api/commission/submit-payment','other',proof)).status,403);
+  assert.equal((await request('/api/commission/submit-payment','combuyer',proof)).status,403);
+  assert.equal((await request('/api/commission/submit-payment','admin',proof)).status,403);
+  const submitted=await request('/api/commission/submit-payment','comseller',proof); assert.equal(submitted.status,200);
+  assert.equal((await request('/api/commission/submit-payment','comseller',{...proof,paymentReference:'COMM-EMU-002'})).body.code,'commission/proof-pending');
+  const decision={paymentId:submitted.body.payment.paymentId,decision:'approve',fundsConfirmed:true};
+  assert.equal((await request('/api/commission/verify-payment','comseller',decision)).status,403);
+  const raced=await Promise.all([request('/api/commission/verify-payment','admin',decision),request('/api/admin/commission/verify-payment','admin',decision),request('/api/commissions/verify-payment','admin',decision)]);
+  assert.deepEqual(raced.map(r=>r.status).sort(),[200,409,409]);
+  const settled=(await db.collection('commission_invoices').doc(invoice.invoiceId).get()).data();
+  assert.equal(settled.status,'paid'); assert.equal(settled.paidAmountMinor,5*13900); assert.equal(settled.remainingBalanceMinor,0);
+  for(const o of orders) assert.equal((await db.collection('ledger').doc(o.orderNumber).get()).get('commissionStatus'),'paid');
+  const audits=(await db.collection('ledger_audit').where('orderId','==',invoice.invoiceId).get()).docs.map(d=>d.get('action'));
+  assert.equal(audits.filter(a=>a==='COMMISSION_PAYMENT_VERIFIED').length,1);
+  assert.equal((await request('/api/orders/refund','comseller',{orderNumber:orders[0].orderNumber,refundConfirmed:true,refundReference:'RF-COM-1'})).status,200);
+  const credit=(await db.collection('commission_adjustments').where('invoiceId','==',invoice.invoiceId).get()).docs[0].data();
+  assert.equal(credit.creditDueMinor,13900);
+  assert.equal((await db.collection('commission_invoices').doc(invoice.invoiceId).get()).get('paidAmountMinor'),5*13900);
 });
