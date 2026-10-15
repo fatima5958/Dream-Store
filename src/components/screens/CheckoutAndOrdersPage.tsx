@@ -199,6 +199,8 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
   );
 
   const isFreeCart = cart.length > 0 && cartTotal === 0;
+  const validCheckoutCart = cart.length === 1 && cart[0].quantity === 1 && cart[0].product.storeId === config.storeId;
+  const cartRequirement = 'Check out one digital product at a time, with quantity 1, from the store you are viewing.';
 
   // Enforce strict store isolation: never use payment settings belonging to another storeId
   const isolatedStorePaymentSettings = React.useMemo<Partial<SellerPaymentSettings> | null>(() => {
@@ -219,7 +221,7 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
   );
 
   const isPaidCheckoutGloballyEnabled = gatewayStatus.paidCheckoutEnabled === true;
-  const isPaidCheckoutConfigured = isPaidCheckoutGloballyEnabled && configuredPaymentMethods.length > 0;
+  const isPaidCheckoutConfigured = validCheckoutCart && isPaidCheckoutGloballyEnabled && configuredPaymentMethods.length > 0;
 
   React.useEffect(() => {
     if (isFreeCart) {
@@ -266,6 +268,8 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
   const handleCheckoutSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setCheckoutError(null);
+    if (isSubmitting) return;
+    if (!validCheckoutCart) { setCheckoutError(cartRequirement); return; }
 
     if (!effectiveBuyerUid) {
       setCheckoutError('Please sign in to save your digital order and access your downloads.');
@@ -664,7 +668,7 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                     Checkout &amp; Payment Verification
                   </h2>
                   <p className="ds-body text-[#7A5A52] text-sm mt-0.5">
-                    Send payment directly to the creator and enter your transaction reference below.
+                    Review your bag and sign in before continuing. Only send payment when valid receiving details are shown.
                   </p>
                 </div>
               </div>
@@ -771,7 +775,9 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                 </p>
               </div>
 
-              {isFreeCart ? (
+              {!validCheckoutCart ? (
+                <div role="alert" data-testid="checkout-cart-requirement" className="p-4 text-sm font-bold">{cartRequirement}</div>
+              ) : isFreeCart ? (
                 <div className="p-4 sm:p-5 rounded-[24px] bg-[#E6F8EC] border-2 border-[#AFE0BE] text-[#236B56] text-sm font-extrabold flex items-center gap-3">
                   <Sparkles className="w-5 h-5 shrink-0" />
                   <span>
@@ -1162,7 +1168,7 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                   variant="pink"
                   size="lg"
                   loading={isSubmitting}
-                  disabled={cart.length === 0 || (!isFreeCart && !isPaidCheckoutConfigured)}
+                  disabled={isSubmitting || !validCheckoutCart || (!isFreeCart && !isPaidCheckoutConfigured)}
                   className="w-full sm:w-auto min-h-[52px] px-6"
                 >
                   <ShieldCheck className="w-4 h-4" />

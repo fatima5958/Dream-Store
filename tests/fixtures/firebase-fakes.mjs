@@ -22,7 +22,10 @@ export function getFirestore() {
   return {
     settings() {}, collection: name => ref(name),
     async runTransaction(callback) {
-      return callback({ get: r => r.get(), set: (r, data) => r.set(data), update: (r, data) => r.update(data), create: (r, data) => r.set(data) });
+      const writes = [];
+      const result = await callback({ get: r => r.get(), set: (r, data) => writes.push(() => r.set(data)), update: (r, data) => writes.push(() => r.update(data)), create: (r, data) => writes.push(() => r.set(data)) });
+      for (const write of writes) await write();
+      return result;
     },
   };
 }

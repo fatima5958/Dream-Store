@@ -1,13 +1,18 @@
 name: DreamStore Pull Request Checks
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-      - fix/launch-readiness
+      - 'fix/**'
   pull_request:
     branches:
       - main
+
+concurrency:
+  group: qa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

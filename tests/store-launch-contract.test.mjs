@@ -21,12 +21,14 @@ test('seller store is created only after an acknowledged server save', () => {
   assert.match(server, /await storeRef\.set\(storeDocument\)/);
   assert.match(server, /Store could not be saved securely/);
   const editor = app.slice(app.indexOf('  const handleUpdateConfig ='), app.indexOf('  const handleCompleteWizard ='));
-  assert.match(editor, /if \(!existingSnap\.exists\(\)\) return/);
+  assert.match(editor, /activeScreen === 'wizard'/);
+  assert.match(editor, /await fetch\('\/api\/stores\/update'/);
+  assert.doesNotMatch(editor, /await setDoc\(/);
 });
 
 test('new sellers get real empty catalog and Free plan, never mock profile/payments', () => {
   assert.doesNotMatch(onboarding, /creator@dreamstore\.app/);
-  assert.match(app, /plan: existingData\?\.plan \|\| 'Free'/);
+  assert.match(server, /existingById\?\.plan \|\| 'Free'/);
   assert.doesNotMatch(app, /plan: existingData\?\.plan \|\| 'Pro'/);
   assert.match(app, /jazzCashEnabled: false/);
   assert.match(app, /easypaisaEnabled: false/);

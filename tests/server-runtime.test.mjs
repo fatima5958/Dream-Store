@@ -110,3 +110,18 @@ test('forged forwarded headers cannot reset mutation rate limits', async t => {
   });
   assert.equal(response.status, 429);
 });
+
+
+test('store editing rejects failed saves, invalid slugs and client-controlled Pro bypasses', async t => {
+  const failed = await boot(t, 'product-write-denied');
+  const response = await request(failed, '/api/stores/update', { storeId: 'store-seller-test', updates: { storeName: 'Unsaved Name' } }, token());
+  assert.equal(response.status, 503);
+  assert.notEqual((await response.json()).ok, true);
+  const healthy = await boot(t);
+  assert.equal((await request(healthy, '/api/stores/update', { storeId: 'store-seller-test', updates: { storeSlug: 'admin' } }, token())).status, 400);
+  assert.equal((await request(healthy, '/api/stores/update', { storeId: 'store-seller-test', updates: { exchangeRatePkr: -5 } }, token())).status, 400);
+  assert.equal((await request(healthy, '/api/stores/update', { storeId: 'store-seller-test', enforceProEntitlement: false, updates: { theme: 'midnight-muse' } }, token())).status, 403);
+  const saved = await request(healthy, '/api/stores/update', { storeId: 'store-seller-test', updates: { storeName: 'Saved Name' } }, token());
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).store.storeName, 'Saved Name');
+});
