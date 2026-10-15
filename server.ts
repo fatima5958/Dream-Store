@@ -772,12 +772,6 @@ function cacheVerifiedSellerPaymentSettings(
   const normalized = normalizeSellerPaymentSettingsRecord(record, canonicalStoreId, ownerId);
   firestoreVerifiedSellerSettingsByOwner.set(ownerId, normalized);
   firestoreVerifiedSellerSettingsByStore.set(canonicalStoreId, normalized);
-  if (ownerId === SUPER_ADMIN_UID && SUPER_ADMIN_UID) {
-    firestoreVerifiedSellerSettingsByStore.set(
-      'store-fatima-tech',
-      normalizeSellerPaymentSettingsRecord(record, 'store-fatima-tech', ownerId)
-    );
-  }
   for (const s of serverStores.values()) {
     if (s.ownerId === ownerId) {
       firestoreVerifiedSellerSettingsByStore.set(
@@ -1182,18 +1176,13 @@ async function resolveVerifiedStoreRecord(
   const clean = String(rawStoreIdOrSlug || '').trim();
   if (!clean) return undefined;
   const cleanLower = clean.toLowerCase();
-  const cleanAlnum = cleanLower.replace(/[._-]/g, '');
 
   const matchInRegistry = (): ServerStoreRecord | undefined =>
     serverStores.get(clean) ||
     Array.from(serverStores.values()).find(
       (s) =>
         s.storeSlug.toLowerCase() === cleanLower ||
-        s.storeId.toLowerCase() === cleanLower ||
-        (cleanAlnum.length >= 4 &&
-          s.storeSlug.toLowerCase().replace(/[._-]/g, '') === cleanAlnum) ||
-        ((cleanLower === 'store-fatima-tech' || cleanAlnum === 'fatimatech') &&
-          s.storeSlug.toLowerCase().replace(/[._-]/g, '') === 'fatimatech')
+        s.storeId.toLowerCase() === cleanLower
     );
 
   const existing = matchInRegistry();

@@ -205,3 +205,13 @@ test('seller plan and suspension checks use fresh Firestore permissions', () => 
   assert.match(edit, /fresh\.get\('plan'\) !== 'Pro'/);
   assert.doesNotMatch(edit, /sellerProEntitlements\.get\(store\.ownerId\)/);
 });
+
+test('seller payment settings never create a privileged cross-store legacy alias', () => {
+  const privateCache = server.slice(server.indexOf('function cacheVerifiedSellerPaymentSettings'),
+    server.indexOf('function initVerifiedSellerSettingsCache'));
+  assert.doesNotMatch(privateCache, /store-fatima-tech|SUPER_ADMIN_UID/);
+  const lookup = server.slice(server.indexOf('async function resolveVerifiedStoreRecord'),
+    server.indexOf('async function hydrateModeratedStoresFromAdminFirestore'));
+  assert.doesNotMatch(lookup, /fatimatech|cleanAlnum|store-fatima-tech/);
+  assert.match(lookup, /s\.storeSlug\.toLowerCase\(\) === cleanLower/);
+});
