@@ -151,7 +151,7 @@ test('returning Firebase users never inherit seller or buyer privileges from pub
   assert.doesNotMatch(restoration, /const userSnap = await getDoc\(doc\(db, 'users', user\.uid\)\)/);
   assert.match(restoration, /if \(!existingRole\) \{\s*\/\/ Role and onboarding state must come from the verified backend/);
   assert.match(restoration, /if \(!existingRole\) \{\s*setUserProfile\(null\)/);
-  assert.match(restoration, /const profRes = await fetch\('\/api\/users\/profile'/);
+  assert.match(restoration, /let profRes = await fetch\('\/api\/users\/profile'/);
   assert.match(restoration, /profRes\.status === 401/);
 });
 
