@@ -5,7 +5,7 @@
 ## Required before any cutover proposal
 
 - [ ] Complete Phases 1–7 and close or explicitly accept every API-inventory blocker.
-- [ ] Provision and independently verify a dedicated cloud-staging Firebase project, named database, bucket and Cloud Run service identity. Prove runtime refusal for production project/database/bucket identities.
+- [ ] Provision and independently verify a dedicated cloud-staging Firebase project, named database, bucket and Cloud Run service identity using `STAGING_SETUP.md`. The code now fails closed on configured and metadata project/service identity mismatches; prove this with a private cloud service and isolated synthetic resources.
 - [ ] Configure dedicated Secret Manager secrets for staging; verify rotation, access boundaries and durable signing behavior. Never copy production signing credentials into staging.
 - [ ] Validate Firebase Auth verification/revocation, email verification and Google OAuth domains/redirect URIs with synthetic staging identities.
 - [ ] Run authenticated Buyer signup/login/refresh/returning-order, Seller onboarding/store/product, and Super Admin audit/suspend/restore journeys against cloud staging.
@@ -16,6 +16,10 @@
 - [ ] Compare V1 and V2 API/data contracts on a read-only anonymized dataset; verify store IDs/slugs, product metadata, status semantics, currency/minor-unit amounts, order/download rights and Admin identity.
 - [ ] Rehearse rollback: stop V2 traffic, restore V1 routing, preserve V2 staging exports for reconciliation, and verify no duplicate order/payment processing.
 - [ ] Obtain explicit written release approval before changing production startup, Dockerfile, hosting route, AI Studio deployment or Firebase write target.
+
+## Phase 8 current release gate
+
+Cloud staging configuration code and mocked guard tests do not equal a live staging validation. No cloud service has been deployed, no staging project/IAM has been verified, and no OAuth/browser Buyer/Seller/Admin journey or rollback rehearsal has been executed. Do not cut over. The owner must provision/authorize a dedicated non-production Firebase/GCP project, named database, Storage bucket, Cloud Run service account and Secret Manager secret, then authorize any billable Cloud Run/Build deployment. Keep V1 as the production backend until the checklist above has run against that private cloud service and evidence is retained.
 
 ## Cutover controls
 

@@ -1,4 +1,5 @@
 import { assertIsolatedV2Environment } from './staging.ts';
+import { parseCloudStagingConfiguration, verifyCloudStagingRuntime } from './cloud-staging.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getApps, initializeApp } from 'firebase-admin/app';
@@ -125,5 +126,83 @@ export function createProductionV2Dependencies(): V2Dependencies {
     allowWrites: true, // All three loopback emulators + demo project validated above.
     paidCheckoutEnabled: process.env.DREAMSTORE_PAID_CHECKOUT_ENABLED === 'true' && process.env.NODE_ENV !== 'production',
     downloadTokenSecret: String(process.env.SERVER_SIGNING_SECRET || process.env.DOWNLOAD_SIGNING_SECRET || process.env.TOKEN_SIGNING_SECRET || ''),
+  };
+}
+
+/** Separate Cloud Run mode. It never initializes the production Firebase project. */
+export async function createCloudStagingV2Dependencies(): Promise<V2Dependencies> {
+  const production = readConfig(); // Public identifiers are used only as explicit denylist values.
+  const config = parseCloudStagingConfiguration(process.env, production);
+  const runtime = await verifyCloudStagingRuntime(config);
+  const existing = getApps().find(app => app.name === 'dreamstore-v2-cloud-staging');
+  if (existing && existing.options.projectId !== config.projectId) {
+    throw new Error('Firebase Admin project mismatch; refusing to serve cloud staging.');
+  }
+  const app = existing || initializeApp({ projectId: config.projectId, storageBucket: config.storageBucket }, 'dreamstore-v2-cloud-staging');
+  const auth = getAuth(app);
+  const db = getFirestore(app, config.databaseId);
+  db.settings({ preferRest: true, ignoreUndefinedProperties: true });
+  const storage = getStorage(app);
+  const bucket = storage.bucket(config.storageBucket);
+  const management = createFirestoreAdminManagementRepository(db);
+  const readiness: ReadinessService = (() => {
+    let lastResult: { time: number; ready: boolean } | null = null;
+    let lastWarningAt = 0;
+    return {
+      async check() {
+        const now = Date.now();
+        if (lastResult && now - lastResult.time < 10000) return lastResult.ready;
+        try {
+          const [bucketMetadata] = await Promise.all([
+            bucket.getMetadata(), auth.listUsers(1), db.collection('ledger').limit(1).get(),
+          ]);
+          const bucketProjectNumber = (bucketMetadata as unknown as { projectNumber?: string | number }).projectNumber;
+          if (String(bucketProjectNumber || '') !== runtime.projectNumber) {
+            throw new Error('Staging Storage bucket belongs to another project.');
+          }
+          lastResult = { time: Date.now(), ready: true };
+          return true;
+        } catch (error) {
+          if (now - lastWarningAt > 60000) {
+            console.warn('[DreamStore V2 Ready] cloud staging dependency failed', { code: safeBackendCategory(error) });
+            lastWarningAt = now;
+          }
+          lastResult = { time: Date.now(), ready: false };
+          return false;
+        }
+      },
+    };
+  })();
+  // Startup probes fail closed before the service can accept requests.
+  if (!await readiness.check()) throw new Error('Cloud staging Firebase Auth, named Firestore, or Storage readiness check failed.');
+  return {
+    auth: createFirebaseVerifier(auth),
+    profiles: createFirestoreProfileRepository(db),
+    creators: createCreatorCampaignRepository(db),
+    stores: createFirestoreStoreRepository(db),
+    products: createFirestoreProductRepository(db, bucket),
+    finance: createFirestoreFinancialRepository(db, bucket),
+    management,
+    subscriptions: management,
+    uploads: createFirebaseUploadRepository(db, bucket),
+    covers: {
+      async read(ownerId, fileName) {
+        try {
+          const file = bucket.file(`stores/${ownerId}/public/${fileName}`);
+          const [meta] = await file.getMetadata();
+          if (Number(meta.size) < 1 || Number(meta.size) > 5 * 1024 * 1024) throw new ApiError(404, 'cover/not-found', 'Cover not found.');
+          const [data] = await file.download({ validation: 'crc32c' });
+          const contentType = String(meta.contentType || '');
+          validateFileBytes(fileName, contentType, data, 'cover');
+          return { data, contentType };
+        } catch { throw new ApiError(404, 'cover/not-found', 'Cover not found.'); }
+      },
+    },
+    readiness,
+    adminUid: config.adminUid,
+    allowUnsignedEmulatorTokens: false,
+    allowWrites: true,
+    paidCheckoutEnabled: false,
+    downloadTokenSecret: runtime.signingSecret,
   };
 }
