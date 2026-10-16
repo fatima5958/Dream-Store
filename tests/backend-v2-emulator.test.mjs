@@ -249,6 +249,54 @@ test('real Firestore competing founder claims stop exactly at 100', async () => 
   assert.equal((await db.collection('creator_launch_campaigns').doc('first-100-creators').get()).get('claimedCount'),100);
 });
 
+test('Firebase Auth emulator signup stays unverified until Admin verification; only verified Seller store creation claims a spot', async () => {
+  async function signup(name) {
+    const email = `${name}@example.test`, password = 'Emulator-only-123!';
+    const response = await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=demo-key`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, returnSecureToken: true }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json();
+    identities[name] = { uid: data.localId };
+    tokens[name] = data.idToken;
+    assert.equal((await auth.getUser(data.localId)).emailVerified, false);
+    return { email, password, uid: data.localId };
+  }
+  async function refreshSignIn(name, email, password) {
+    const response = await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=demo-key`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, returnSecureToken: true }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    tokens[name] = (await response.json()).idToken;
+  }
+  const counterRef = db.collection('creator_launch_campaigns').doc('first-100-creators');
+  await counterRef.set({ claimedCount: 17, limit: 100 });
+  const initial = await counterRef.get();
+  const initialCount = initial.exists ? Number(initial.get('claimedCount') || 0) : 0;
+
+  const buyer = await signup('signup-buyer');
+  assert.equal((await request('/api/users/profile', 'signup-buyer', { role: 'buyer', displayName: 'Signup Buyer' })).status, 403,
+    'Unverified email cannot complete role onboarding');
+  await auth.updateUser(buyer.uid, { emailVerified: true });
+  await refreshSignIn('signup-buyer', buyer.email, buyer.password);
+  assert.equal((await request('/api/users/profile', 'signup-buyer', { role: 'buyer', displayName: 'Signup Buyer' })).status, 200);
+  assert.equal((await counterRef.get()).get('claimedCount') || 0, initialCount,
+    'Buyer signup and role onboarding never consume a Creator claim');
+
+  const seller = await signup('signup-seller');
+  assert.equal((await request('/api/users/profile', 'signup-seller', { role: 'seller', displayName: 'Signup Seller' })).status, 403);
+  await auth.updateUser(seller.uid, { emailVerified: true });
+  await refreshSignIn('signup-seller', seller.email, seller.password);
+  assert.equal((await request('/api/users/profile', 'signup-seller', { role: 'seller', displayName: 'Signup Seller' })).status, 200);
+  assert.equal((await request('/api/stores/create', 'signup-seller', { storeName: 'Verified Signup', storeSlug: 'signup-verified' })).status, 201);
+  assert.equal((await counterRef.get()).get('claimedCount'), initialCount + 1,
+    'The claim increments only after verified Seller store creation succeeds');
+  assert.equal((await db.collection('creator_launch_claims').doc(seller.uid).get()).exists, true);
+  assert.equal((await db.collection('creator_launch_claims').doc(buyer.uid).get()).exists, false);
+});
+
 test('returning Buyer with exact historical UID order restores Buyer access without profile mutation', async () => {
   const uid = identities.legacyBuyer.uid;
   await db.collection('ledger').doc('DS-historic-buyer').set({ orderNumber:'DS-historic-buyer', buyerId:uid,

@@ -29,6 +29,8 @@ Set these Cloud Run environment variables only after a dedicated project and res
 | `DREAMSTORE_V2_MODE` | `cloud-staging` |
 | `DREAMSTORE_V2_CLOUD_STAGING_PROJECT_ID` | Dedicated staging Firebase/GCP project ID; must not be `dulcet-trees-qk6n5` |
 | `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_PROJECT_IDS` | Comma-separated exact project allowlist, including only the intended staging project |
+| `DREAMSTORE_V2_CLOUD_STAGING_PROJECT_NUMBER` | Exact GCP project number copied from the staging project's console overview |
+| `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_PROJECT_NUMBERS` | Exact numeric project-number allowlist; production `582009353900` is always rejected |
 | `DREAMSTORE_V2_CLOUD_STAGING_DATABASE_ID` | Dedicated non-default Firestore database ID |
 | `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_DATABASE_IDS` | Exact named database allowlist |
 | `DREAMSTORE_V2_CLOUD_STAGING_STORAGE_BUCKET` | Dedicated staging Storage bucket |
@@ -39,7 +41,7 @@ Set these Cloud Run environment variables only after a dedicated project and res
 | `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_SIGNING_SECRET_NAMES` | Exact staging secret ID allowlist |
 | `SUPER_ADMIN_UID` | The configured staging Super Admin Firebase UID |
 
-Cloud Run's metadata server must report the same project ID as the Firebase target and a service account included in the allowlist. `GOOGLE_CLOUD_PROJECT`/`GCLOUD_PROJECT`, if set, must match. Grant the runtime identity access to only the staging project resources and the named staging secret. Never configure any `*_EMULATOR_HOST`, `SERVER_SIGNING_SECRET`, `DOWNLOAD_SIGNING_SECRET`, `TOKEN_SIGNING_SECRET`, `GOOGLE_APPLICATION_CREDENTIALS` or `FIREBASE_CONFIG` in cloud mode. Do not set the paid-checkout or Gemini flags.
+Cloud Run's metadata server must report the exact allowlisted project ID **and Project Number** as the Firebase target, plus a service account included in the staging-project allowlist. `GOOGLE_CLOUD_PROJECT`/`GCLOUD_PROJECT`, if set, must match. The production project ID and project number are hard-rejected. Grant the runtime identity access to only the staging project resources and the named staging secret. Never configure any `*_EMULATOR_HOST`, `SERVER_SIGNING_SECRET`, `DOWNLOAD_SIGNING_SECRET`, `TOKEN_SIGNING_SECRET`, `GOOGLE_APPLICATION_CREDENTIALS` or `FIREBASE_CONFIG` in cloud mode. Do not set the paid-checkout or Gemini flags.
 
 ### Owner provisioning steps (Google Cloud Console)
 

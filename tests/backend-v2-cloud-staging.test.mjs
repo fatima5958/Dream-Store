@@ -13,6 +13,8 @@ const baseEnv = () => ({
   DREAMSTORE_V2_MODE: 'cloud-staging', DREAMSTORE_V2_STAGING: '1',
   DREAMSTORE_V2_CLOUD_STAGING_PROJECT_ID: 'dreamstore-stage-23',
   DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_PROJECT_IDS: 'dreamstore-stage-23',
+  DREAMSTORE_V2_CLOUD_STAGING_PROJECT_NUMBER: '123456789',
+  DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_PROJECT_NUMBERS: '123456789',
   GOOGLE_CLOUD_PROJECT: 'dreamstore-stage-23',
   DREAMSTORE_V2_CLOUD_STAGING_DATABASE_ID: 'dreamstore-stage-data',
   DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_DATABASE_IDS: 'dreamstore-stage-data',
@@ -30,6 +32,7 @@ const configFor = (env = baseEnv()) => parseCloudStagingConfiguration(env, produ
 test('cloud staging accepts only an explicitly allowlisted isolated project and named resources', () => {
   const config = configFor();
   assert.equal(config.projectId, 'dreamstore-stage-23');
+  assert.equal(config.projectNumber, '123456789');
   assert.equal(config.databaseId, 'dreamstore-stage-data');
   assert.equal(config.storageBucket, 'dreamstore-stage-23.firebasestorage.app');
 });
@@ -39,6 +42,8 @@ test('cloud staging refuses missing activation, production project, wrong projec
     env => { env.DREAMSTORE_V2_STAGING = '0'; },
     env => { env.DREAMSTORE_V2_CLOUD_STAGING_PROJECT_ID = 'dulcet-trees-qk6n5'; env.GOOGLE_CLOUD_PROJECT = 'dulcet-trees-qk6n5'; },
     env => { env.GOOGLE_CLOUD_PROJECT = 'another-project'; },
+    env => { env.DREAMSTORE_V2_CLOUD_STAGING_PROJECT_NUMBER = '582009353900'; env.DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_PROJECT_NUMBERS = '582009353900'; },
+    env => { env.DREAMSTORE_V2_CLOUD_STAGING_PROJECT_NUMBER = '987654321'; },
     env => { env.DREAMSTORE_V2_CLOUD_STAGING_DATABASE_ID = '(default)'; },
     env => { env.DREAMSTORE_V2_CLOUD_STAGING_DATABASE_ID = production.databaseId; env.DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_DATABASE_IDS = production.databaseId; },
   ]) {
@@ -110,6 +115,21 @@ test('runtime verification rejects wrong Cloud Run identity without requesting a
     return Response.json({ access_token: 'token' });
   };
   await assert.rejects(verifyCloudStagingRuntime(config, fetcher), /does not match the staging allowlist/);
+  assert.equal(secretRequested, false);
+});
+
+test('runtime verification rejects an unexpected Project Number before requesting any secret', async () => {
+  const config = configFor();
+  let secretRequested = false;
+  const fetcher = async url => {
+    const path = String(url);
+    if (path.endsWith('/project/project-id')) return new Response('dreamstore-stage-23');
+    if (path.endsWith('/project/numeric-project-id')) return new Response('987654321');
+    if (path.endsWith('/instance/service-accounts/default/email')) return new Response(config.allowedServiceAccounts[0]);
+    if (path.includes('secretmanager.googleapis.com')) secretRequested = true;
+    return Response.json({ access_token: 'token' });
+  };
+  await assert.rejects(verifyCloudStagingRuntime(config, fetcher), /project or service account/);
   assert.equal(secretRequested, false);
 });
 

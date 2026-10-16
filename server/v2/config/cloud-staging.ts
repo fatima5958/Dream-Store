@@ -1,8 +1,10 @@
 /** Cloud Run staging guard. Emulator guards in staging.ts remain intentionally separate. */
 export const PRODUCTION_FIREBASE_PROJECT_ID = 'dulcet-trees-qk6n5';
+export const PRODUCTION_FIREBASE_PROJECT_NUMBER = '582009353900';
 
 export interface CloudStagingConfiguration {
   projectId: string;
+  projectNumber: string;
   databaseId: string;
   storageBucket: string;
   serviceName: string;
@@ -45,6 +47,12 @@ export function parseCloudStagingConfiguration(
       (env.GCLOUD_PROJECT && env.GCLOUD_PROJECT !== projectId)) {
     throw new Error('Cloud staging project is not explicitly allowlisted or does not match the Cloud Run project.');
   }
+  const projectNumber = required(env, 'DREAMSTORE_V2_CLOUD_STAGING_PROJECT_NUMBER');
+  const allowedProjectNumbers = csv(env, 'DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_PROJECT_NUMBERS');
+  if (!/^\d+$/.test(projectNumber) || projectNumber === PRODUCTION_FIREBASE_PROJECT_NUMBER ||
+      !allowedProjectNumbers.includes(projectNumber)) {
+    throw new Error('Cloud staging project number is not explicitly allowlisted or identifies production.');
+  }
   const databaseId = required(env, 'DREAMSTORE_V2_CLOUD_STAGING_DATABASE_ID');
   const allowedDatabases = csv(env, 'DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_DATABASE_IDS');
   if (databaseId === '(default)' || databaseId === production.databaseId || !allowedDatabases.includes(databaseId)) {
@@ -73,7 +81,7 @@ export function parseCloudStagingConfiguration(
   }
   const adminUid = required(env, 'SUPER_ADMIN_UID');
   if (/\s|[\x00-\x1f]/.test(adminUid)) throw new Error('Configured Super Admin identity is invalid.');
-  return { projectId, databaseId, storageBucket, serviceName, allowedServiceAccounts, signingSecretName, adminUid };
+  return { projectId, projectNumber, databaseId, storageBucket, serviceName, allowedServiceAccounts, signingSecretName, adminUid };
 }
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -97,7 +105,7 @@ export async function verifyCloudStagingRuntime(
     metadataText(fetcher, 'project/numeric-project-id'),
     metadataText(fetcher, 'instance/service-accounts/default/email'),
   ]);
-  if (projectId !== config.projectId || !/^\d+$/.test(projectNumber) ||
+  if (projectId !== config.projectId || projectNumber !== config.projectNumber ||
       !config.allowedServiceAccounts.includes(serviceAccount)) {
     throw new Error('Cloud Run runtime project or service account does not match the staging allowlist.');
   }
