@@ -21,8 +21,10 @@ Local verification for the Phase 8 implementation (before GitHub Actions):
 | Production frontend build (`npm run build`) | Passed; existing large-chunk warning remains |
 | Local browser smoke | Blocked — Playwright Chromium executable is not installed; 9 tests could not launch |
 | Production container smoke | Not run locally — Docker is unavailable; CI runs this job |
-| GitHub Actions | Pending push |
+| GitHub Actions | Passed — all 3 jobs on commit `7cd61a848049daa912fe6318ae392fa728c88940`; [run 38827708475](https://github.com/fatima5958/Dream-Store/actions/runs/38827708475) |
 | Cloud staging deployment and real Auth journeys | Not run — no approved cloud resources or deployment authorization available |
 | Production container smoke test | Not run — Docker unavailable in this workspace; production Dockerfile remains unchanged |
 
 Never convert the cloud row to “passed” based on mocked tests or emulator results. Attach the Cloud Run revision, staging project/database/bucket identities, authenticated Buyer/Seller/Admin journey evidence, IAM review, audit-log review and rollback rehearsal evidence only after those actions are actually completed.
+
+GitHub Actions browser smoke and production-container jobs both passed on the same commit; the container job checked V1 liveness plus fail-closed readiness. Local browser execution was blocked by the missing Chromium binary, so CI is the browser evidence for this commit. The Docker job is the production-container evidence; no local Docker binary was available.
