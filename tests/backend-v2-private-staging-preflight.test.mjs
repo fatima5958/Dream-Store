@@ -72,6 +72,8 @@ test('preflight fails closed on readiness, privilege, and campaign discrepancies
   const config = validatePrivateStagingTarget(environment());
   const report = await verifyPrivateStagingReadOnly(config, async url => {
     if (url.endsWith('/api/ready')) return reply({ status: 'not_ready' }, 503);
+    // An accidental publicly readable admin session must fail even if healthy.
+    if (url.endsWith('/api/admin/verify-session')) return reply({ ok: true, isSuperAdmin: true }, 200);
     if (url.endsWith('/api/launch/creator-spots')) {
       return reply({ limit: 100, claimed: 10, remaining: 95, soldOut: false });
     }
