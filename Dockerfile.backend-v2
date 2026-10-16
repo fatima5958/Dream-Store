@@ -1,0 +1,25 @@
+# Separate staging candidate image. The production Dockerfile remains on V1.
+FROM oven/bun:1.4.3 AS build
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY . .
+RUN bun run lint
+
+FROM node:24-bookworm-slim AS backend-v2
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=8080 \
+    DREAMSTORE_PAID_CHECKOUT_ENABLED=false
+# This image contains no service-account key or signing secret. Cloud staging
+# obtains its signing secret from Secret Manager using the Cloud Run identity.
+# The Firebase JSON is public client config used only as a production denylist.
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/scripts/start-backend-v2.mjs ./scripts/start-backend-v2.mjs
+COPY --from=build /app/server/v2 ./server/v2
+COPY --from=build /app/firebase-applet-config.json ./firebase-applet-config.json
+RUN chown -R node:node /app
+USER node
+EXPOSE 8080
+CMD ["npm", "run", "start:backend-v2"]

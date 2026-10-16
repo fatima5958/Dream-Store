@@ -57,6 +57,20 @@ The V2 emulator journey exercises registration/onboarding, creator claim concurr
 
 No production runtime file or existing API route has been replaced. Rollback means simply stop the isolated V2 staging process; the original `scripts/start.mjs` remains active and uses the unchanged monolithic `server.ts`.
 
+## Backend replacement track (current)
+
+The separate `Dockerfile.backend-v2` builds a V2 staging candidate without changing the production `Dockerfile`; CI builds it and verifies that it refuses to start without explicit isolated-staging configuration. This is a deployable staging artifact, not a production image approval.
+
+Replace V1 only in this order:
+
+1. Owner identifies and authorizes a dedicated non-production Firebase/GCP project, named database, bucket, Cloud Run identity and signing secret. Deploy the candidate as a private staging service; do not point the existing frontend or production service at it.
+2. Resolve the current V1/V2 compatibility gaps in `API_INVENTORY.md`, especially legacy server-auth fallback and any V1 routes still returning truthful 501/503. Keep Firebase Web SDK auth as the identity source; do not restore a parallel password store.
+3. Run the full authenticated cloud Buyer/Seller/Admin journeys, ownership/rules checks, persistence/restart tests, payment-disabled checks, and rollback rehearsal against synthetic staging users and records.
+4. Compare V1/V2 behavior against a read-only, anonymized contract fixture. Confirm frontend same-origin routing for every API call; do not export production user/financial documents to staging.
+5. Prepare a narrow production change that changes only the backend route after readiness, owner approval and a rollback window are documented. Preserve V1 runtime/image as an immediate rollback target. Reconcile orders/commissions before any V1 retirement.
+
+Current blocker: there is no verified staging project or Cloud Run service, `/api/ready` on production returned 503 during the last read-only check, and its sanitized Cloud Run logs/revision are unavailable here. Existing CI and emulator success do not satisfy steps 1 or 3. Do not replace `scripts/start.mjs`, the production Dockerfile, or production routing until those blockers and all checklist gates are closed.
+
 ## Production credentials
 
 Never paste Firebase ID tokens, refresh tokens, service-account secrets, passwords or cookies into issues, chat or logs. An earlier exposed session must be revoked by an authorized operator before real-account testing. This migration does not perform that action.

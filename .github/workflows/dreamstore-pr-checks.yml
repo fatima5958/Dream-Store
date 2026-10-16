@@ -101,6 +101,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the same production image used for deployment
         run: docker build --tag dreamstore:ci .
+      - name: Build separate Backend V2 staging candidate
+        run: docker build --file Dockerfile.backend-v2 --tag dreamstore-v2:staging-candidate .
+      - name: Verify V2 candidate refuses unconfigured startup
+        run: |
+          if docker run --rm dreamstore-v2:staging-candidate; then
+            echo "Backend V2 unexpectedly started without explicit isolated staging configuration."
+            exit 1
+          fi
       - name: Check production container health and paid checkout default
         run: |
           docker run -d --name dreamstore-ci -p 127.0.0.1:18080:8080 dreamstore:ci

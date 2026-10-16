@@ -4,6 +4,8 @@
 
 V2 has two explicitly separate staging modes. The existing emulator path remains unchanged: `scripts/start-backend-v2.mjs` requires `DREAMSTORE_V2_STAGING=1`, a `demo-*` project and loopback Auth, Firestore and Storage emulator hosts. The Cloud Run mode is selected only with `DREAMSTORE_V2_MODE=cloud-staging`; it does not use the emulator config or production Dockerfile. Both modes keep automated gateways, webhooks and paid checkout disabled.
 
+The separate staging candidate image is built with `docker build -f Dockerfile.backend-v2 -t dreamstore-v2:staging-candidate .`. CI builds this image and asserts it exits when the explicit staging activation flag is missing. The production `Dockerfile` and V1 startup remain unchanged.
+
 No Cloud Run deployment or real cloud staging verification has been performed from this workspace. The repository contains no approved staging project or IAM setup. Do not create billable resources without owner approval.
 
 ## Emulator test command
