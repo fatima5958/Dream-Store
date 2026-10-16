@@ -17,7 +17,9 @@
     "start:backend-v2": "node scripts/start-backend-v2.mjs",
     "test:v2:unit": "node --experimental-strip-types --test tests/backend-auth-unit.test.mjs tests/backend-v2-repositories.test.mjs tests/backend-v2-finance.test.mjs",
     "test:v2:emulator": "node --import tsx --test tests/backend-v2-emulator.test.mjs",
-    "cleanup:v2:uploads": "node scripts/cleanup-v2-uploads.mjs"
+    "cleanup:v2:uploads": "node scripts/cleanup-v2-uploads.mjs",
+    "test:v2:private-preflight": "node --test tests/backend-v2-private-staging-preflight.test.mjs",
+    "preflight:v2:cloud": "node scripts/v2-private-staging-preflight.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
