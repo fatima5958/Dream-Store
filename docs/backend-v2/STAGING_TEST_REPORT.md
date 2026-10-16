@@ -62,10 +62,10 @@ Local verification on the Phase 9 working tree:
 | Auth + named Firestore + Storage emulator | Passed — 7 integration tests |
 | Firestore/Storage security rules emulator | Passed — 10 tests |
 | Production frontend build (`npm run build`) | Passed; existing large-chunk warning remains |
-| Local browser smoke | Not rerun locally — Playwright Chromium is not installed; CI browser job is pending |
-| Local production container | Not run — Docker is unavailable; CI container job is pending |
+| Local browser smoke | Not rerun locally — Playwright Chromium is not installed; GitHub browser job passed |
+| Local production container | Not run — Docker is unavailable; GitHub container job passed |
 | Cloud staging and authenticated real-cloud journeys | Not run — no independently verifiable, authorized cloud staging resources or access |
-| GitHub Actions for Phase 9 | Pending commit |
+| GitHub Actions for Phase 9 | Passed — all 3 jobs on commit `cb9f8a10c1dda3913e10b60e237fdad563203b44`; [run 38830597869](https://github.com/fatima5958/Dream-Store/actions/runs/38830597869) |
 
 The first Auth emulator attempt exposed that the Identity Toolkit sign-up response omits `emailVerified`; the regression was corrected to query the Auth Emulator's Admin SDK user record and then passed. A separate initial emulator invocation overlapped with the security-rules emulator on the same ports; rerunning suites sequentially passed. These were harness issues, not relaxed security expectations.
 
