@@ -66,3 +66,29 @@ curl -i "$STAGING_URL/api/ready"
 ## Stop and rollback
 
 For a staging issue, disable ingress or set the Cloud Run service minimum traffic to zero/disable the revision, revoke that runtime identity's staging grants, and preserve logs for review. No frontend or production routing points to V2. V1 remains the production backend. Do not delete staging Firestore/Storage data before exporting the synthetic test evidence needed for investigation.
+
+
+## Phase 9 — guarded read-only private staging preflight
+
+After a separate cloud-staging Firebase/GCP project, private Cloud Run service and an authorized invoker exist, operators can run a **GET-only** staging smoke test. This is not a substitute for authenticated Buyer/Seller/Admin end-to-end journeys.
+
+Set these additional environment values only in a trusted operator shell or secret-injected job (do not commit token values):
+
+| Variable | Purpose |
+| --- | --- |
+| `DREAMSTORE_V2_CLOUD_STAGING_URL` | Exact HTTPS origin of the approved *private* Cloud Run staging service, no path or query |
+| `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_ORIGINS` | Explicit comma-separated allowlist containing only the approved staging origin |
+| `DREAMSTORE_V2_CLOUD_RUN_ID_TOKEN` | Short-lived authorized Cloud Run invoker **identity token**, passed through the process environment; never paste in chat/issues or print in logs |
+
+Retain `DREAMSTORE_V2_STAGING=1`, `DREAMSTORE_V2_MODE=cloud-staging`, the exact non-production `DREAMSTORE_V2_CLOUD_STAGING_PROJECT_ID` and `DREAMSTORE_V2_CLOUD_STAGING_PROJECT_NUMBER`, and matching allowed-project ID/number lists from the staging setup table.
+
+```sh
+npm run test:v2:private-preflight   # Offline synthetic guard tests; safe in CI
+npm run preflight:v2:cloud           # Only AFTER private staging resources are provisioned and approved
+```
+
+The preflight validates the project ID, numeric project identity, exact host allowlist, HTTPS, and presence of a short-lived invoker token *before networking*. Production project `dulcet-trees-qk6n5`, project number `582009353900`, known production domains and redirects are rejected. It uses Cloud Run's `X-Serverless-Authorization` header so the application's separate Firebase `Authorization` header remains unused in these unauthenticated checks.
+
+The six GET-only checks verify liveness, readiness, guest profile denial, guest Admin denial, disabled paid checkout and the read-only founder campaign count. All requests use `redirect: manual` to prevent credentials being forwarded to redirected sites. HTTP/body responses must match expected contracts; a failed check sets a nonzero exit status. It never creates a user, store, order, product or payment; it never calls production. An unrecognized production alias is not intrinsically detectable from an allowlist alone: the operator must **independently verify** the staging service's GCP project and revision in Cloud Console before adding its URL.
+
+**Still not verified:** Cloud IAM least privilege, browser OAuth redirect registration, email delivery, actual Firebase staging user journeys, Cloud Run private-access permissions beyond invocation, cross-account isolation in the cloud, production runtime revision, or cutover readiness. Do not make Cloud Run public to work around a 403.

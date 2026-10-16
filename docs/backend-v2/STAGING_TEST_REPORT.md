@@ -70,3 +70,12 @@ Local verification on the Phase 9 working tree:
 The first Auth emulator attempt exposed that the Identity Toolkit sign-up response omits `emailVerified`; the regression was corrected to query the Auth Emulator's Admin SDK user record and then passed. A separate initial emulator invocation overlapped with the security-rules emulator on the same ports; rerunning suites sequentially passed. These were harness issues, not relaxed security expectations.
 
 Cloud staging remains blocked pending owner-provided access to a dedicated non-production Firebase/GCP project and verification of its named database, bucket, Auth providers, Cloud Run identity/IAM, Secret Manager secret, private access policy, OAuth configuration, sanitized logs, and isolated end-to-end journey evidence.
+
+
+### Phase 9 extension: read-only private Cloud Run staging preflight
+
+An additional guarded preflight script and offline regression tests were added on top of the Phase 9 staging guards. The script requires an independently approved non-production project ID/number, exact private HTTPS origin allowlist and short-lived Cloud Run invoker token. It makes six GET requests only and cannot create Firebase records, users, founder claims or payments. It rejects known production project and host identities before making network requests and prevents redirect following.
+
+**Cloud staging execution: NOT RUN.** No approved staging project, Cloud Run service revision or authorized invoker token has been supplied. Offline mocked HTTP tests can establish the script's request/response and production-rejection behavior, not the existence or IAM correctness of cloud staging. The existing live production data and deployment remain untouched.
+
+Check the latest GitHub Actions run for the offline preflight test result before marking it passed. Real browser/Auth, infrastructure IAM review, Cloud Logging, data parity against anonymized samples and rollback drills remain separate owner-approved tasks.
