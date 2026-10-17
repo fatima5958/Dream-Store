@@ -13,10 +13,12 @@ export function stagingStorageProvider(env: Record<string, string | undefined>):
 }
 
 export function parseSupabaseStagingConfiguration(env: Record<string, string | undefined>): SupabaseStagingConfiguration {
-  if (env.DREAMSTORE_V2_STAGING !== '1' || env.DREAMSTORE_V2_MODE !== 'cloud-staging' ||
-      stagingStorageProvider(env) !== 'supabase') throw new Error('Supabase Storage requires explicit isolated cloud staging.');
+  const cloud = env.DREAMSTORE_V2_MODE === 'cloud-staging';
+  const render = env.DREAMSTORE_V2_MODE === 'render-staging';
+  if (env.DREAMSTORE_V2_STAGING !== '1' || (!cloud && !render) ||
+      stagingStorageProvider(env) !== 'supabase') throw new Error('Supabase Storage requires explicit isolated staging.');
   for (const key of ['SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY', 'DREAMSTORE_V2_SUPABASE_SECRET_KEY']) {
-    if (env[key]) throw new Error('Cloud staging Supabase credentials must come from Secret Manager.');
+    if (env[key]) throw new Error('Supabase Storage refuses unapproved inline credential names.');
   }
   const rawUrl = env.DREAMSTORE_V2_SUPABASE_URL || '';
   let url: URL;
@@ -32,11 +34,16 @@ export function parseSupabaseStagingConfiguration(env: Record<string, string | u
       !csv(env.DREAMSTORE_V2_SUPABASE_ALLOWED_BUCKETS).includes(bucket)) {
     throw new Error('Supabase requires an explicitly allowlisted staging bucket.');
   }
-  const secretName = String(env.DREAMSTORE_V2_SUPABASE_SECRET_NAME || '');
-  if (!/^[A-Za-z0-9_-]{1,255}$/.test(secretName) || !/staging/i.test(secretName) ||
+  // Cloud Run retrieves a named Secret Manager secret. Render Free instead
+  // injects a server-only secret at runtime; it never fabricates Cloud Run metadata.
+  const secretName = cloud ? String(env.DREAMSTORE_V2_SUPABASE_SECRET_NAME || '') : 'render-staging-supabase';
+  if (cloud && (!/^[A-Za-z0-9_-]{1,255}$/.test(secretName) || !/staging/i.test(secretName) ||
       !csv(env.DREAMSTORE_V2_SUPABASE_ALLOWED_SECRET_NAMES).includes(secretName) ||
-      secretName === env.DREAMSTORE_V2_CLOUD_STAGING_SIGNING_SECRET_NAME) {
+      secretName === env.DREAMSTORE_V2_CLOUD_STAGING_SIGNING_SECRET_NAME)) {
     throw new Error('Supabase requires a separate allowlisted staging credential secret.');
+  }
+  if (render && (env.DREAMSTORE_V2_SUPABASE_SECRET_NAME || env.DREAMSTORE_V2_SUPABASE_ALLOWED_SECRET_NAMES)) {
+    throw new Error('Render staging must not pretend to use Cloud Run Secret Manager.');
   }
   return { url: url.origin, projectRef, bucket, secretName };
 }

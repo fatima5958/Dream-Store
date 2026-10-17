@@ -1,0 +1,21 @@
+# Optional isolated Render V2 image. Render is still configured to use ./Dockerfile (V1).
+# Do not select this image until staging secrets and gate are independently reviewed.
+FROM oven/bun:1.4.3 AS build
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY . .
+RUN bun run lint
+
+FROM node:24-bookworm-slim
+WORKDIR /app
+ENV NODE_ENV=production DREAMSTORE_PAID_CHECKOUT_ENABLED=false
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/scripts/start-backend-v2-render.mjs ./scripts/start-backend-v2-render.mjs
+COPY --from=build /app/server/v2 ./server/v2
+COPY --from=build /app/firebase-applet-config.json ./firebase-applet-config.json
+RUN chown -R node:node /app
+USER node
+EXPOSE 10000
+CMD ["node", "scripts/start-backend-v2-render.mjs"]

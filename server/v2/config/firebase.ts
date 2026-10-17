@@ -2,7 +2,9 @@ import { assertIsolatedV2Environment } from './staging.ts';
 import { parseCloudStagingConfiguration, verifyCloudStagingRuntime } from './cloud-staging.ts';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getApps, initializeApp } from 'firebase-admin/app';
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { parseRenderStagingConfig } from './render-staging.ts';
+import { createSupabaseStorageBucket } from '../storage/supabase.ts';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
@@ -180,5 +182,72 @@ export async function createCloudStagingV2Dependencies(): Promise<V2Dependencies
     allowWrites: true,
     paidCheckoutEnabled: false,
     downloadTokenSecret: runtime.signingSecret,
+  };
+}
+
+/** Render Free uses a separate, owner-approved staging-only credential secret file.
+ * Never invoke Cloud Run metadata or production service credentials here.
+ */
+export async function createRenderStagingV2Dependencies(): Promise<{
+  deps: V2Dependencies; gate: { origin: string; signingSecret: string; testerPassword: string };
+}> {
+  const production = readConfig();
+  const serviceFile = fs.readFileSync('/etc/secrets/dreamstore-v2-staging-firebase.json', 'utf8');
+  const config = parseRenderStagingConfig(process.env, serviceFile);
+  if (config.projectId === production.projectId || config.databaseId === production.firestoreDatabaseId) {
+    throw new Error('Render staging refuses production Firebase resources.');
+  }
+  const existing = getApps().find(app => app.name === 'dreamstore-v2-render-staging');
+  if (existing && existing.options.projectId !== config.projectId) {
+    throw new Error('Firebase Admin project mismatch.');
+  }
+  const app = existing || initializeApp({
+    projectId: config.projectId, credential: cert(config.serviceAccount),
+  }, 'dreamstore-v2-render-staging');
+  const auth = getAuth(app);
+  const db = getFirestore(app, config.databaseId);
+  db.settings({ preferRest: true, ignoreUndefinedProperties: true });
+  const bucket = createSupabaseStorageBucket(config.supabase, config.runtime.supabaseSecretKey);
+  const management = createFirestoreAdminManagementRepository(db);
+  const readiness: ReadinessService = (() => {
+    let checked: { time: number; ready: boolean } | null = null;
+    return { async check() {
+      const now = Date.now();
+      if (checked && now - checked.time < 10000) return checked.ready;
+      try {
+        await Promise.all([auth.listUsers(1), db.collection('ledger').limit(1).get(), bucket.checkReady()]);
+        checked = { time: Date.now(), ready: true };
+      } catch (error) {
+        console.warn('[DreamStore V2 Ready] render staging dependency failed', { code: safeBackendCategory(error) });
+        checked = { time: Date.now(), ready: false };
+      }
+      return checked.ready;
+    } };
+  })();
+  if (!await readiness.check()) throw new Error('Render staging dependencies unavailable.');
+  return {
+    deps: {
+      auth: createFirebaseVerifier(auth),
+      profiles: createFirestoreProfileRepository(db),
+      creators: createCreatorCampaignRepository(db),
+      stores: createFirestoreStoreRepository(db),
+      products: createFirestoreProductRepository(db, bucket),
+      finance: createFirestoreFinancialRepository(db, bucket, config.runtime.signingSecret),
+      management,
+      subscriptions: management,
+      uploads: createFirebaseUploadRepository(db, bucket),
+      covers: createCoverReader(bucket),
+      cleanupUploads: () => cleanupExpiredUploads(db, bucket),
+      readiness,
+      adminUid: config.adminUid,
+      allowUnsignedEmulatorTokens: false,
+      allowWrites: true,
+      paidCheckoutEnabled: false,
+      downloadTokenSecret: config.runtime.signingSecret,
+    },
+    gate: {
+      origin: config.origin, signingSecret: config.runtime.signingSecret,
+      testerPassword: config.runtime.testerPassword,
+    },
   };
 }
