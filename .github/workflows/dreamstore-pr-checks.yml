@@ -103,6 +103,16 @@ jobs:
         run: docker build --tag dreamstore:ci .
       - name: Build separate Backend V2 staging candidate
         run: docker build --file Dockerfile.backend-v2 --tag dreamstore-v2:staging-candidate .
+      - name: Build separate Render Free Backend V2 candidate
+        run: docker build --file Dockerfile.backend-v2-render --tag dreamstore-v2:render-candidate .
+
+      - name: Verify Render V2 candidate refuses missing staging credentials
+        run: |
+          if docker run --rm dreamstore-v2:render-candidate; then
+            echo "Render Backend V2 unexpectedly started without approved staging secrets."
+            exit 1
+          fi
+
       - name: Verify V2 candidate refuses unconfigured startup
         run: |
           if docker run --rm dreamstore-v2:staging-candidate; then
