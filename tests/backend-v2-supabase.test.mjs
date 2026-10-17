@@ -289,6 +289,10 @@ test('unpublished products block new checkout; free product follows existing aut
     assert.equal((await request('/api/checkout/validate-and-prepare','buyer',checkout)).status,404);
     await f.products.save(seller,{...product,published:true,isFree:true,fileName:'book.pdf'});
     const free=await request('/api/checkout/validate-and-prepare','buyer',checkout);assert.equal(free.status,201);assert.equal(free.body.initialPaymentStatus,'Paid');
+    const duplicate=await request('/api/checkout/validate-and-prepare','buyer',checkout);
+    assert.equal(duplicate.status,200);assert.equal(duplicate.body.orderNumber,free.body.orderNumber);
+    assert.ok(duplicate.body.downloadToken===free.body.downloadToken,'idempotent free checkout must sign the persisted order and nonce');
+    assert.equal(duplicate.body.expiresAtMs,free.body.expiresAtMs);
     const download=await request('/api/delivery/verify-download','buyer',{orderNumber:free.body.orderNumber,productId:'book',downloadToken:free.body.downloadToken});
     assert.equal(download.status,200); assert.equal(download.body.allowed,true);
   });

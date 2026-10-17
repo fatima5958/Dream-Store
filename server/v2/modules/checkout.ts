@@ -56,12 +56,12 @@ export function registerCheckoutRoutes(app: Express, deps: V2Dependencies) {
       downloadCount: 0, maxDownloads: 5, expiresAtMs, createdAtIso: new Date().toISOString(), updatedAtIso: new Date().toISOString(),
       idempotencyKey: key, downloadTokenId: randomUUID(), paymentAudit: [{ action: 'ORDER_CREATED', actorUid: buyer.uid, atIso: new Date().toISOString() }] };
     const committed = await deps.finance!.createOrder(order);
-    const token = createDownloadToken(order, deps.downloadTokenSecret || '');
+    const token = createDownloadToken(committed.order, deps.downloadTokenSecret || '');
     res.status(committed.duplicate ? 200 : 201).json({ orderId: committed.order.orderId, orderNumber: committed.order.orderNumber,
       storeId: committed.order.storeId, sellerId: committed.order.sellerId, calculatedSubtotal: amount, calculatedTotal: amount,
       currency, initialPaymentStatus: committed.order.paymentStatus, verificationMode: committed.order.verificationMode,
       commissionStatus: committed.order.commissionStatus, downloadToken: isFree ? token : 'LOCKED-PENDING-VERIFICATION',
-      expiresAtMs, maxDownloads: 5, commissionBreakdown: commission, payoutStatus: committed.order.payoutStatus,
+      expiresAtMs: committed.order.expiresAtMs, maxDownloads: 5, commissionBreakdown: commission, payoutStatus: committed.order.payoutStatus,
       gatewayNotice: isFree ? 'Free digital product verified. Instant download unlocked.' : 'Order recorded pending Seller payment verification. A transaction reference is not proof of payment.',
       ...(committed.duplicate ? { duplicate: true } : {}) });
   })().catch(next));
