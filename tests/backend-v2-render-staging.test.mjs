@@ -65,24 +65,28 @@ test('Render refuses production, cloud identity spoofing, public storage and mis
 });
 test('Render gate blocks every route until a same-origin tester login and preserves Firebase Authorization', async () => {
   const app = express();
-  app.use(createRenderTesterGate({ origin, testerPassword: password, signingSecret }));
+  // The production gate pins the approved Render origin. For the local test,
+  // pin the dynamically assigned loopback origin instead of spoofing Host.
+  const localGateConfig = { origin: 'http://127.0.0.1:0', testerPassword: password, signingSecret };
+  app.use(createRenderTesterGate(localGateConfig));
   app.get('/api/health', (req, res) => res.json({ ok: true, authorization: req.headers.authorization || null }));
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const base = 'http://127.0.0.1:' + server.address().port;
-  const request = (path, opts = {}) => fetch(base + path, { redirect: 'manual', headers: { Host: new URL(origin).host, ...(opts.headers || {}) }, ...opts });
+  localGateConfig.origin = base;
+  const request = (path, opts = {}) => fetch(base + path, { redirect: 'manual', ...opts });
   try {
     assert.equal((await request('/api/health')).status, 401);
     assert.equal((await request('/api/health', {headers: {Origin:'https://evil.example'}})).status,403);
     assert.equal((await request('/__staging/login')).status,200);
-    assert.equal((await request('/__staging/login', {method:'POST', headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:'password=wrong'})).status,401);
-    const login = await request('/__staging/login', {method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
+    assert.equal((await request('/__staging/login', {method:'POST', headers:{Origin:base,'Content-Type':'application/x-www-form-urlencoded'},body:'password=wrong'})).status,401);
+    const login = await request('/__staging/login', {method:'POST',headers:{Origin:base,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});
     assert.equal(login.status,303);
     const cookie = login.headers.get('set-cookie').split(';')[0];
     assert.match(login.headers.get('set-cookie'), /HttpOnly/);
     const success=await request('/api/health',{headers:{Cookie:cookie,Authorization:'Bearer synthetic-token'}});
     assert.equal(success.status,200);
     assert.equal((await success.json()).authorization,'Bearer synthetic-token');
-    assert.equal((await request('/__staging/logout',{method:'POST', headers:{Origin:origin,Cookie:cookie}})).status,204);
+    assert.equal((await request('/__staging/logout',{method:'POST', headers:{Origin:base,Cookie:cookie}})).status,204);
     const badCookie=cookie.replace(/.$/,'x');
     assert.equal((await request('/api/health',{headers:{Cookie:badCookie}})).status,401);
   } finally { await new Promise(resolve=>server.close(resolve)); }
