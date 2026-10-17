@@ -6,7 +6,7 @@
 
 - Firebase staging: `tidal-axis-511800-n1` / `1013305229350`, named Firestore `dreamstore-v2-staging`.
 - Approved staging-only Firebase runtime service account: `dreamstore-v2-staging-runtime@tidal-axis-511800-n1.iam.gserviceaccount.com`.
-- Supabase project ref: `loyuifkrcqecjmwrohwv`, PRIVATE bucket: `dreamstore-v2-staging-files`. This Supabase project must contain synthetic-only files.
+- Supabase project ref: `loyuifkrcqecjmwrohvw`, PRIVATE bucket: `dreamstore-v2-staging-files`. This Supabase project must contain synthetic-only files.
 - Render Free service: `DreamStore-V2-Staging` at `https://dreamstore-v2-staging.onrender.com`.
 - Live production Firebase `dulcet-trees-qk6n5` and project number `582009353900` are never valid staging targets.
 
@@ -25,8 +25,8 @@ Set the following **server-only** Render environment keys *after owner approval*
 | `DREAMSTORE_V2_RENDER_PROJECT_ID`, `DREAMSTORE_V2_RENDER_ALLOWED_PROJECT_IDS` | `tidal-axis-511800-n1` |
 | `DREAMSTORE_V2_RENDER_PROJECT_NUMBER`, `DREAMSTORE_V2_RENDER_ALLOWED_PROJECT_NUMBERS` | `1013305229350` |
 | `DREAMSTORE_V2_RENDER_DATABASE_ID`, `DREAMSTORE_V2_RENDER_ALLOWED_DATABASE_IDS` | `dreamstore-v2-staging` |
-| `DREAMSTORE_V2_SUPABASE_URL` | `https://loyuifkrcqecjmwrohwv.supabase.co` |
-| `DREAMSTORE_V2_SUPABASE_ALLOWED_PROJECT_REFS` | `loyuifkrcqecjmwrohwv` |
+| `DREAMSTORE_V2_SUPABASE_URL` | `https://loyuifkrcqecjmwrohvw.supabase.co` |
+| `DREAMSTORE_V2_SUPABASE_ALLOWED_PROJECT_REFS` | `loyuifkrcqecjmwrohvw` |
 | `DREAMSTORE_V2_SUPABASE_BUCKET`, `DREAMSTORE_V2_SUPABASE_ALLOWED_BUCKETS` | `dreamstore-v2-staging-files` |
 | `DREAMSTORE_V2_RENDER_SUPABASE_SECRET_KEY` | Unique approved private staging server key (NEVER `VITE_`) |
 | `DREAMSTORE_V2_RENDER_SIGNING_SECRET` | New staging-only random secret (40+ chars) |

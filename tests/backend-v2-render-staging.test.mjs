@@ -4,7 +4,7 @@ import express from 'express';
 import { parseRenderStagingConfig } from '../server/v2/config/render-staging.ts';
 import { createRenderTesterGate } from '../server/v2/modules/render-tester-gate.ts';
 
-const ref = 'loyuifkrcqecjmwrohwv';
+const ref = 'loyuifkrcqecjmwrohvw';
 const origin = 'https://dreamstore-v2-staging.onrender.com';
 const password = 'synthetic-tester-password-with-entropy-1234';
 const signingSecret = 'synthetic-staging-signing-secret-for-tests-not-for-live-123456';
