@@ -6,13 +6,15 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { ApiError, safeBackendCategory } from '../errors.ts';
+import { safeBackendCategory } from '../errors.ts';
 import { createFirebaseVerifier } from '../modules/auth.ts';
 import { createFirestoreProfileRepository } from '../modules/users.ts';
 import { createCreatorCampaignRepository } from '../modules/creators.ts';
 import { createFirestoreStoreRepository } from '../modules/stores.ts';
 import { createFirestoreProductRepository } from '../modules/products.ts';
-import { createFirebaseUploadRepository, validateFileBytes } from '../modules/uploads.ts';
+import { createFirebaseUploadRepository, cleanupExpiredUploads } from '../modules/uploads.ts';
+import { createCoverReader } from '../storage/covers.ts';
+import { selectCloudStagingStorage } from '../storage/providers.ts';
 import { createFirestoreFinancialRepository } from '../modules/finance-repository.ts';
 import { createFirestoreAdminManagementRepository } from '../modules/admin-management.ts';
 import { createGeminiService } from '../modules/assistant.ts';
@@ -104,19 +106,7 @@ export function createProductionV2Dependencies(): V2Dependencies {
     management,
     subscriptions: management,
     uploads: createFirebaseUploadRepository(db, storage.bucket(config.storageBucket)),
-    covers: {
-      async read(ownerId, fileName) {
-        try {
-          const file = storage.bucket(config.storageBucket).file(`stores/${ownerId}/public/${fileName}`);
-          const [meta] = await file.getMetadata();
-          if (Number(meta.size) < 1 || Number(meta.size) > 5 * 1024 * 1024) throw new ApiError(404, 'cover/not-found', 'Cover not found.');
-          const [data] = await file.download({ validation: 'crc32c' });
-          const contentType = String(meta.contentType || '');
-          validateFileBytes(fileName, contentType, data, 'cover');
-          return { data, contentType };
-        } catch { throw new ApiError(404, 'cover/not-found', 'Cover not found.'); }
-      },
-    },
+    covers: createCoverReader(storage.bucket(config.storageBucket)),
     readiness,
     ...(process.env.DREAMSTORE_V2_GEMINI_ENABLED === 'true' && process.env.GEMINI_API_KEY?.trim()
       ? { assistant: createGeminiService(process.env.GEMINI_API_KEY.trim()), assistantEnabled: true } : {}),
@@ -142,8 +132,9 @@ export async function createCloudStagingV2Dependencies(): Promise<V2Dependencies
   const auth = getAuth(app);
   const db = getFirestore(app, config.databaseId);
   db.settings({ preferRest: true, ignoreUndefinedProperties: true });
-  const storage = getStorage(app);
-  const bucket = storage.bucket(config.storageBucket);
+  // Firebase Storage is never initialized or probed when Supabase is selected.
+  const selectedStorage = selectCloudStagingStorage(config, runtime, () => getStorage(app).bucket(config.storageBucket!));
+  const { bucket } = selectedStorage;
   const management = createFirestoreAdminManagementRepository(db);
   const readiness: ReadinessService = (() => {
     let lastResult: { time: number; ready: boolean } | null = null;
@@ -153,13 +144,9 @@ export async function createCloudStagingV2Dependencies(): Promise<V2Dependencies
         const now = Date.now();
         if (lastResult && now - lastResult.time < 10000) return lastResult.ready;
         try {
-          const [bucketMetadata] = await Promise.all([
-            bucket.getMetadata(), auth.listUsers(1), db.collection('ledger').limit(1).get(),
+          await Promise.all([
+            selectedStorage.checkReady(), auth.listUsers(1), db.collection('ledger').limit(1).get(),
           ]);
-          const bucketProjectNumber = (bucketMetadata as unknown as { projectNumber?: string | number }).projectNumber;
-          if (String(bucketProjectNumber || '') !== runtime.projectNumber) {
-            throw new Error('Staging Storage bucket belongs to another project.');
-          }
           lastResult = { time: Date.now(), ready: true };
           return true;
         } catch (error) {
@@ -181,23 +168,12 @@ export async function createCloudStagingV2Dependencies(): Promise<V2Dependencies
     creators: createCreatorCampaignRepository(db),
     stores: createFirestoreStoreRepository(db),
     products: createFirestoreProductRepository(db, bucket),
-    finance: createFirestoreFinancialRepository(db, bucket),
+    finance: createFirestoreFinancialRepository(db, bucket, runtime.signingSecret),
     management,
     subscriptions: management,
     uploads: createFirebaseUploadRepository(db, bucket),
-    covers: {
-      async read(ownerId, fileName) {
-        try {
-          const file = bucket.file(`stores/${ownerId}/public/${fileName}`);
-          const [meta] = await file.getMetadata();
-          if (Number(meta.size) < 1 || Number(meta.size) > 5 * 1024 * 1024) throw new ApiError(404, 'cover/not-found', 'Cover not found.');
-          const [data] = await file.download({ validation: 'crc32c' });
-          const contentType = String(meta.contentType || '');
-          validateFileBytes(fileName, contentType, data, 'cover');
-          return { data, contentType };
-        } catch { throw new ApiError(404, 'cover/not-found', 'Cover not found.'); }
-      },
-    },
+    covers: createCoverReader(bucket),
+    cleanupUploads: () => cleanupExpiredUploads(db, bucket),
     readiness,
     adminUid: config.adminUid,
     allowUnsignedEmulatorTokens: false,

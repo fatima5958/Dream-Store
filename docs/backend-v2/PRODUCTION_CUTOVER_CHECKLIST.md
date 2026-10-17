@@ -7,6 +7,7 @@
 - [ ] Complete Phases 1–7 and close or explicitly accept every API-inventory blocker.
 - [ ] Provision and independently verify a dedicated cloud-staging Firebase project, named database, bucket and Cloud Run service identity using `STAGING_SETUP.md`. The code now fails closed on configured and metadata project/service identity mismatches; prove this with a private cloud service and isolated synthetic resources.
 - [ ] Configure dedicated Secret Manager secrets for staging; verify rotation, access boundaries and durable signing behavior. Never copy production signing credentials into staging.
+- [ ] If Supabase is selected for staging: independently verify exact project ref, PRIVATE bucket, zero broad anonymous/authenticated Storage policies, server-only credential storage, SDK write/read/delete behavior, unauthorized direct access, outage compensation and recovery jobs against the real isolated provider. A private-bucket metadata flag or HTTP double is not complete RLS evidence. This staging provider does not enable production Supabase or migrate customer files.
 - [ ] Validate Firebase Auth verification/revocation, email verification and Google OAuth domains/redirect URIs with synthetic staging identities.
 - [ ] Run authenticated Buyer signup/login/refresh/returning-order, Seller onboarding/store/product, and Super Admin audit/suspend/restore journeys against cloud staging.
 - [ ] Complete object-level access testing, Firestore/Storage rules tests, rate-limit/load checks, failure injection, restart persistence and transaction concurrency checks.
@@ -22,5 +23,7 @@
 Cloud staging configuration code and mocked guard tests do not equal a live staging validation. No cloud service has been deployed, no staging project/IAM has been verified, and no OAuth/browser Buyer/Seller/Admin journey or rollback rehearsal has been executed. Do not cut over. The owner must provision/authorize a dedicated non-production Firebase/GCP project, named database, Storage bucket, Cloud Run service account and Secret Manager secret, then authorize any billable Cloud Run/Build deployment. Keep V1 as the production backend until the checklist above has run against that private cloud service and evidence is retained.
 
 ## Cutover controls
+
+Phase 11 implements a private Supabase staging adapter while preserving Firebase Auth/named Firestore and Cloud Run identity guards. It does not provide a production-mode startup, non-Cloud-Run host authorization, deployed staging service or a release approval. V1's Dockerfile/startup and production Firebase configuration remain unchanged. Complete the separate free-host runtime/credential review or obtain explicit Cloud Run billing/deployment approval before a real-cloud staging test.
 
 Keep V1 as the sole active production writer until every gate above has evidence and an approved change window. Do not import emulator fixtures, rewrite ledger/invoices, migrate user roles in bulk, or enable paid checkout during a cutover. If any authorization, data parity, payment or rollback check fails, stop the V2 rollout and keep V1 active.

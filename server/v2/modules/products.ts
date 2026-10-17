@@ -1,5 +1,5 @@
 import type { Firestore } from 'firebase-admin/firestore';
-import type { Bucket } from '@google-cloud/storage';
+import { assertStorageBinding, type StorageBucket } from '../storage/contracts.ts';
 import type { Principal, ProductRepository } from '../contracts.ts';
 import { randomUUID } from 'node:crypto';
 import { ApiError } from '../errors.ts';
@@ -16,7 +16,7 @@ export function productProjection(id: string, data: Record<string, any>) {
   }
   return result;
 }
-export function createFirestoreProductRepository(db: Firestore, bucket: Pick<Bucket, 'file'>): ProductRepository {
+export function createFirestoreProductRepository(db: Firestore, bucket: StorageBucket): ProductRepository {
   const products = db.collection('products');
   return {
     async list(storeId, viewer) {
@@ -47,6 +47,7 @@ export function createFirestoreProductRepository(db: Firestore, bucket: Pick<Buc
       let verifiedGeneration = '';
       if (input.published === true) {
         if (!savedFile.exists || reference !== savedFile.get('fileDataUrl') || savedFile.get('ownerId') !== principal.uid || savedFile.get('productId') !== id) throw new ApiError(422, 'product/file-required', 'Upload your original file before publishing.');
+        assertStorageBinding(savedFile.data() || {}, bucket);
         const path = privateObjectPath(reference, principal.uid, id);
         try {
           const [metadata] = await bucket.file(path).getMetadata();
@@ -54,6 +55,9 @@ export function createFirestoreProductRepository(db: Firestore, bucket: Pick<Buc
           if (metadata.metadata?.firebaseStorageDownloadTokens) throw new ApiError(422, 'product/public-file', 'Original file has a public download token. Re-upload securely.');
           verifiedGeneration = String(metadata.generation || '');
           if (!verifiedGeneration) throw new ApiError(503, 'storage/metadata-invalid', 'File version could not be verified.');
+          if (savedFile.get('storageGeneration') && String(savedFile.get('storageGeneration')) !== verifiedGeneration) {
+            throw new ApiError(503, 'storage/file-changed', 'Original file version changed. Upload it securely again.');
+          }
         } catch (error) {
           if (error instanceof ApiError) throw error;
           throw new ApiError(503, 'storage/unavailable', 'Original file cannot be verified. Try again.');

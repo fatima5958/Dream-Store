@@ -1,4 +1,5 @@
 /** Cloud Run staging guard. Emulator guards in staging.ts remain intentionally separate. */
+import { parseSupabaseStagingConfiguration, stagingStorageProvider, validateSupabaseSecret, type SupabaseStagingConfiguration } from './storage.ts';
 export const PRODUCTION_FIREBASE_PROJECT_ID = 'dulcet-trees-qk6n5';
 export const PRODUCTION_FIREBASE_PROJECT_NUMBER = '582009353900';
 
@@ -6,7 +7,9 @@ export interface CloudStagingConfiguration {
   projectId: string;
   projectNumber: string;
   databaseId: string;
-  storageBucket: string;
+  storageProvider: 'firebase' | 'supabase';
+  storageBucket?: string;
+  supabase?: SupabaseStagingConfiguration;
   serviceName: string;
   allowedServiceAccounts: string[];
   signingSecretName: string;
@@ -58,10 +61,15 @@ export function parseCloudStagingConfiguration(
   if (databaseId === '(default)' || databaseId === production.databaseId || !allowedDatabases.includes(databaseId)) {
     throw new Error('Cloud staging requires an explicitly allowlisted, non-production named Firestore database.');
   }
-  const storageBucket = required(env, 'DREAMSTORE_V2_CLOUD_STAGING_STORAGE_BUCKET');
+  const storageProvider = stagingStorageProvider(env);
+  const supabase = storageProvider === 'supabase' ? parseSupabaseStagingConfiguration(env) : undefined;
+  if (supabase && (env.DREAMSTORE_V2_CLOUD_STAGING_STORAGE_BUCKET || env.DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_STORAGE_BUCKETS)) {
+    throw new Error('Supabase staging refuses unused Firebase Storage bucket configuration.');
+  }
+  const storageBucket = storageProvider === 'firebase' ? required(env, 'DREAMSTORE_V2_CLOUD_STAGING_STORAGE_BUCKET') : undefined;
   const allowedBuckets = csv(env, 'DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_STORAGE_BUCKETS');
-  if (!/^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$/.test(storageBucket) ||
-      storageBucket === production.storageBucket || !allowedBuckets.includes(storageBucket)) {
+  if (storageProvider === 'firebase' && (!/^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$/.test(storageBucket!) ||
+      storageBucket === production.storageBucket || !allowedBuckets.includes(storageBucket!))) {
     throw new Error('Cloud staging Storage bucket is not explicitly allowlisted or matches production.');
   }
   const serviceName = required(env, 'K_SERVICE');
@@ -81,7 +89,7 @@ export function parseCloudStagingConfiguration(
   }
   const adminUid = required(env, 'SUPER_ADMIN_UID');
   if (/\s|[\x00-\x1f]/.test(adminUid)) throw new Error('Configured Super Admin identity is invalid.');
-  return { projectId, projectNumber, databaseId, storageBucket, serviceName, allowedServiceAccounts, signingSecretName, adminUid };
+  return { projectId, projectNumber, databaseId, storageProvider, storageBucket, supabase, serviceName, allowedServiceAccounts, signingSecretName, adminUid };
 }
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -99,7 +107,7 @@ async function metadataText(fetcher: FetchLike, path: string): Promise<string> {
 export async function verifyCloudStagingRuntime(
   config: CloudStagingConfiguration,
   fetcher: FetchLike = fetch,
-): Promise<{ projectNumber: string; serviceAccount: string; signingSecret: string }> {
+): Promise<{ projectNumber: string; serviceAccount: string; signingSecret: string; supabaseSecretKey?: string }> {
   const [projectId, projectNumber, serviceAccount] = await Promise.all([
     metadataText(fetcher, 'project/project-id'),
     metadataText(fetcher, 'project/numeric-project-id'),
@@ -115,15 +123,23 @@ export async function verifyCloudStagingRuntime(
   if (!tokenResponse.ok) throw new Error('Cloud Run staging identity could not access its required services.');
   const tokenBody = await tokenResponse.json() as { access_token?: string };
   if (!tokenBody.access_token) throw new Error('Cloud Run staging identity did not provide an access token.');
-  const secretResponse = await fetcher(
-    `https://secretmanager.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/secrets/${encodeURIComponent(config.signingSecretName)}/versions/latest:access`,
-    { headers: { Authorization: `Bearer ${tokenBody.access_token}` }, signal: AbortSignal.timeout(5000) },
-  );
-  if (!secretResponse.ok) throw new Error('Staging Secret Manager access failed; refusing to start.');
-  const secretBody = await secretResponse.json() as { payload?: { data?: string } };
-  const signingSecret = Buffer.from(String(secretBody.payload?.data || ''), 'base64').toString('utf8');
+  async function readSecret(name: string) {
+    const secretResponse = await fetcher(
+      `https://secretmanager.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/secrets/${encodeURIComponent(name)}/versions/latest:access`,
+      { headers: { Authorization: `Bearer ${tokenBody.access_token}` }, signal: AbortSignal.timeout(5000) },
+    );
+    if (!secretResponse.ok) throw new Error('Staging Secret Manager access failed; refusing to start.');
+    const secretBody = await secretResponse.json() as { payload?: { data?: string } };
+    return Buffer.from(String(secretBody.payload?.data || ''), 'base64').toString('utf8');
+  }
+  const signingSecret = await readSecret(config.signingSecretName);
   if (signingSecret.trim().length < 32 || /default|placeholder|change_me/i.test(signingSecret)) {
     throw new Error('Staging signing secret is missing or invalid.');
+  }
+  if (config.supabase) {
+    const supabaseSecretKey = await readSecret(config.supabase.secretName);
+    validateSupabaseSecret(supabaseSecretKey, config.supabase.projectRef);
+    return { projectNumber, serviceAccount, signingSecret, supabaseSecretKey };
   }
   return { projectNumber, serviceAccount, signingSecret };
 }

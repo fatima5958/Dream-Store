@@ -227,6 +227,13 @@ test('Storage failure unlocks reservation and never reports successful upload',a
  await assert.rejects(upload(f),code('storage/upload-failed'));
  assert.equal(f.db.data.get('products/book').pendingUpload,null);assert.equal(f.bucket.objects.size,0);
 });
+test('Firebase create precondition failure never deletes the pre-existing object',async()=>{
+ const f=fixture();let deletes=0;
+ f.bucket.file=()=>({save:async()=>{throw Object.assign(new Error('precondition failed'),{code:412});},
+   delete:async()=>{deletes++;},getMetadata:async()=>{throw new Error('must not inspect failed write');}});
+ await assert.rejects(upload(f),code('storage/upload-failed'));
+ assert.equal(deletes,0);assert.equal(f.db.data.get('products/book').pendingUpload,null);
+});
 test('Firestore commit failure before upload cannot leave an orphan',async()=>{
  const f=fixture();f.db.failCommit=true;await assert.rejects(upload(f));
  assert.equal(f.bucket.objects.size,0);assert.equal(f.db.data.has('products/book'),false);

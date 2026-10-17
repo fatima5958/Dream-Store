@@ -88,3 +88,6 @@ No collection rename, schema rewrite, Firebase project switch, Storage bucket re
 - `v2_upload_jobs/{uuid}` records owner/path/state. A pending job locks the product. Failed cleanup remains reconcilable. Replaced objects receive a one-day orphan job.
 - Digital objects use `deliverables/{uid}/{productId}/{random}-{filename}`; cover objects use `stores/{uid}/public/{random}-{filename}`. Digital files do not get public download tokens.
 - Upload limit remains 5 MiB. Accepted files: PDF, EPUB, ZIP, TXT, DOC, DOCX; covers: PNG, JPEG, WebP, GIF. Filename, extension, MIME and signature are validated.
+## Phase 11 storage metadata
+
+Public product, upload, cover and authenticated download JSON contracts remain compatible. Private Supabase deliverable records and `v2_upload_jobs` add `storageProvider: 'supabase'`, `storageBucket` and the immutable Supabase object version in the existing `storageGeneration` field. The internal `storage://<objectPath>` format remains; no signed/public Supabase URL or server credential appears in a response. Untagged old records are Firebase, never implicitly reinterpreted after a provider switch. Already fulfilled purchases preserve the existing entitlement after catalog archival; refund/revocation continues blocking delivery. No customer data migration or financial schema/commission change is performed.

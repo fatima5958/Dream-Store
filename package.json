@@ -13,7 +13,7 @@
     "test:contracts": "node --test tests/secure-deliverables-contract.test.mjs tests/store-launch-contract.test.mjs",
     "test:server": "node --import tsx --test tests/server-runtime.test.mjs tests/http-security.test.mjs",
     "release:preflight": "node scripts/release-preflight.mjs",
-    "test:v2": "node --import tsx --test tests/backend-v2.test.mjs tests/backend-auth-unit.test.mjs tests/backend-v2-repositories.test.mjs tests/backend-v2-finance.test.mjs tests/backend-v2-cloud-staging.test.mjs",
+    "test:v2": "node --import tsx --test tests/backend-v2.test.mjs tests/backend-auth-unit.test.mjs tests/backend-v2-repositories.test.mjs tests/backend-v2-finance.test.mjs tests/backend-v2-cloud-staging.test.mjs tests/backend-v2-supabase.test.mjs",
     "start:backend-v2": "node scripts/start-backend-v2.mjs",
     "test:v2:unit": "node --experimental-strip-types --test tests/backend-auth-unit.test.mjs tests/backend-v2-repositories.test.mjs tests/backend-v2-finance.test.mjs",
     "test:v2:emulator": "node --import tsx --test tests/backend-v2-emulator.test.mjs",
@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
+    "@supabase/storage-js": "2.118.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
     "dotenv": "^17.2.3",
@@ -34,8 +35,8 @@
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "recharts": "^3.10.1",
-    "vite": "^8.3.0",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "vite": "^8.3.0"
   },
   "devDependencies": {
     "@firebase/eslint-plugin-security-rules": "^0.0.2",

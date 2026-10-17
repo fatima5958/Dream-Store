@@ -6,7 +6,15 @@ V2 has two explicitly separate staging modes. The existing emulator path remains
 
 The separate staging candidate image is built with `docker build -f Dockerfile.backend-v2 -t dreamstore-v2:staging-candidate .`. CI builds this image and asserts it exits when the explicit staging activation flag is missing. The production `Dockerfile` and V1 startup remain unchanged.
 
-No Cloud Run deployment or real cloud staging verification has been performed from this workspace. The repository contains no approved staging project or IAM setup. Do not create billable resources without owner approval.
+No Cloud Run deployment or real cloud staging verification has been performed from this workspace. The owner has reported/visually shown a separate Firebase project (`tidal-axis-511800-n1`, number `1013305229350`), named database `dreamstore-v2-staging` and enabled Auth providers. A dedicated staging service account is reported created; its exact identity/IAM is not independently verified here. These observations are not runtime access or release evidence. Do not create billable resources without owner approval.
+
+## Phase 11 — optional free private Supabase staging storage
+
+The owner selected Supabase Free because Firebase Storage is unavailable on the staging project's Spark plan. Existing private bucket: `dreamstore-v2-staging-files`, reported zero policies and a 50 MB project upload ceiling. Keep it private and synthetic-only. GitHub integration and a dashboard `main / PRODUCTION` label do not configure backend credentials, prove privacy or authorize customer data.
+
+Set `DREAMSTORE_V2_STORAGE_PROVIDER=supabase` plus the exact Supabase URL/ref, private bucket and separate Secret Manager credential allowlists in [STORAGE_CONFIGURATION.md](STORAGE_CONFIGURATION.md). In this mode the Firebase Storage bucket rows below are omitted; startup/readiness and all object operations use Supabase instead. Firebase Auth, the named Firestore database, Cloud Run identity/project guards and signing-secret requirements remain mandatory. The emulator path stays entirely local Firebase and refuses an external provider selection.
+
+This milestone adds no non-Cloud-Run runtime or deployment. [FREE_HOSTING_REVIEW.md](FREE_HOSTING_REVIEW.md) compares Render, Koyeb and Vercel; a secure independent free-host staging runtime remains future work. Do not configure fake Cloud Run metadata to run on another host. No GCP billing, cloud resources, production settings or traffic were changed.
 
 ## Emulator test command
 
@@ -35,8 +43,8 @@ Set these Cloud Run environment variables only after a dedicated project and res
 | `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_PROJECT_NUMBERS` | Exact numeric project-number allowlist; production `582009353900` is always rejected |
 | `DREAMSTORE_V2_CLOUD_STAGING_DATABASE_ID` | Dedicated non-default Firestore database ID |
 | `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_DATABASE_IDS` | Exact named database allowlist |
-| `DREAMSTORE_V2_CLOUD_STAGING_STORAGE_BUCKET` | Dedicated staging Storage bucket |
-| `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_STORAGE_BUCKETS` | Exact bucket allowlist |
+| `DREAMSTORE_V2_CLOUD_STAGING_STORAGE_BUCKET` | Dedicated staging Firebase Storage bucket (Firebase provider only) |
+| `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_STORAGE_BUCKETS` | Exact Firebase bucket allowlist (Firebase provider only) |
 | `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_SERVICES` | Exact Cloud Run service name allowlist |
 | `DREAMSTORE_V2_CLOUD_STAGING_ALLOWED_SERVICE_ACCOUNTS` | Exact Cloud Run runtime service-account email allowlist |
 | `DREAMSTORE_V2_CLOUD_STAGING_SIGNING_SECRET_NAME` | Secret Manager secret ID containing `staging` |
@@ -49,7 +57,7 @@ Cloud Run's metadata server must report the exact allowlisted project ID **and P
 
 1. **Project selector → New project**: provision a dedicated staging project. Do not import production customer data. Attach Firebase only to this project.
 2. **Firebase Console → Authentication → Sign-in method**: enable only the providers under test. **Authentication → Settings → Authorized domains**: add the staging web origin. Separately check Google OAuth client redirect URI registration in **Google Cloud Console → APIs & Services → Credentials**; Firebase Authorized Domains do not establish redirect URI registration.
-3. **Firestore Database → Add database**: create the dedicated named database and deploy the repository's restrictive Firestore rules/indexes after reviewing environment-specific references. **Storage → Get started**: create the dedicated bucket and deploy restrictive Storage rules. Do not copy production data.
+3. **Firestore Database → Add database**: create the dedicated named database and deploy the repository's restrictive Firestore rules/indexes after reviewing environment-specific references. For Firebase Storage, provision the bucket only after billing approval and deploy restrictive Storage rules. For the selected Supabase alternative, use the existing private staging bucket and follow `STORAGE_CONFIGURATION.md`; no Firebase Storage bucket is required. Do not copy production data.
 4. **IAM & Admin → Service Accounts**: create a dedicated Cloud Run runtime identity. Grant only the minimum Auth token verification/revocation permissions, named Firestore data access, bucket-scoped object permissions, logging, and Secret Manager access to the one staging signing secret. Do not use a downloaded service-account key.
 5. **Secret Manager → Create secret**: create a unique random staging signing secret with at least 32 characters. Add a version and grant Secret Manager Secret Accessor on this one secret to the runtime identity. Do not paste the secret into a ticket, chat, or environment variable.
 6. **Cloud Run → Create service**: deploy only after owner approval for any billable build/runtime resources. Use a private service requiring authentication, attach the dedicated service identity, configure the variables above, and set the container command to `node scripts/start-backend-v2.mjs`. Do not alter the production Dockerfile, V1 startup, AI Studio routing or live Firebase configuration.

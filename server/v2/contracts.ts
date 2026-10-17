@@ -84,6 +84,8 @@ export interface V2Dependencies {
   subscriptions?: SubscriptionRepository;
   uploads?: UploadRepository;
   covers?: { read(ownerId: string, fileName: string): Promise<{ data: Buffer; contentType: string }> };
+  // Operator-only maintenance; never registered as an HTTP route.
+  cleanupUploads?: () => Promise<void>;
   readiness: ReadinessService;
   assistant?: AssistantService;
   assistantEnabled?: boolean;

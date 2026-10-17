@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Firestore } from 'firebase-admin/firestore';
-import type { Bucket } from '@google-cloud/storage';
+import { assertStorageBinding, storageBinding, type StorageBucket } from '../storage/contracts.ts';
 import type { Principal, UploadRepository } from '../contracts.ts';
 import { ApiError } from '../errors.ts';
 import { assertOwnedActive, requireId } from './policy.ts';
@@ -12,6 +12,7 @@ const digital = new Map([
   ['doc', 'application/msword'], ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
 ]);
 const images = new Map([['png', 'image/png'], ['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'], ['webp', 'image/webp'], ['gif', 'image/gif']]);
+export const SUPPORTED_UPLOAD_MIME_TYPES = [...digital.values(), ...images.values()];
 export function validateFileMetadata(name: string, mime: string, bytes: number, kind: 'product' | 'cover') {
   const ext = name.split('.').pop()?.toLowerCase() || '';
   if (!name || name.length > 180 || /[/\\\x00-\x1f\x7f]/.test(name) ||
@@ -40,7 +41,7 @@ export function privateObjectPath(reference: string, uid: string, productId: str
   if (!reference.startsWith(prefix) || !/^[A-Za-z0-9._-]{1,180}$/.test(reference.slice(prefix.length))) throw new ApiError(422, 'upload/invalid-reference', 'Original file is outside the seller/product namespace.');
   return reference.slice('storage://'.length);
 }
-export function createFirebaseUploadRepository(db: Firestore, bucket: Pick<Bucket, 'file'>): UploadRepository {
+export function createFirebaseUploadRepository(db: Firestore, bucket: StorageBucket): UploadRepository {
   return {
     async save(principal, input) {
       const { productId, storeId, fileName, contentType, data, kind } = input;
@@ -62,7 +63,7 @@ export function createFirebaseUploadRepository(db: Firestore, bucket: Pick<Bucke
         if (existing.get('pendingUpload')) throw new ApiError(409, 'upload/in-progress', 'Another upload is pending. Retry after cleanup if it was interrupted.');
         tx.set(ref, { ownerId: principal.uid, storeId, pendingUpload: id,
           ...(!existing.exists ? { published: false, status: 'Draft', createdAt: new Date() } : {}), updatedAt: new Date() }, { merge: true });
-        tx.create(jobRef, { ownerId: principal.uid, storeId, productId, kind, objectPath, state: 'pending', createdAt: new Date(), expiresAt: new Date(Date.now() + 3600000) });
+        tx.create(jobRef, { ownerId: principal.uid, storeId, productId, kind, objectPath, ...storageBinding(bucket), state: 'pending', createdAt: new Date(), expiresAt: new Date(Date.now() + 3600000) });
       });
       const object = bucket.file(objectPath);
       try {
@@ -74,11 +75,13 @@ export function createFirebaseUploadRepository(db: Firestore, bucket: Pick<Bucke
           const product = await tx.get(ref);
           const deliverableRef = ref.collection('deliverables').doc('main');
           const previous = kind === 'product' ? await tx.get(deliverableRef) : null;
+          if (previous?.exists) assertStorageBinding(previous.data() || {}, bucket);
           assertOwnedActive(store.exists ? store.data() : undefined, principal);
           if (product.get('ownerId') !== principal.uid || product.get('pendingUpload') !== id || product.get('deleted') === true) throw new ApiError(409, 'upload/reservation-lost', 'Upload reservation changed.');
           if (kind === 'product') tx.set(deliverableRef, {
             ownerId: principal.uid, productId, fileName, fileMimeType: contentType,
             fileDataUrl: `storage://${objectPath}`, storageGeneration: String(metadata.generation),
+            ...storageBinding(bucket),
             fileSizeBytes: data.length, updatedAt: new Date(),
           });
           const oldReference = String(previous?.get('fileDataUrl') || '');
@@ -87,7 +90,7 @@ export function createFirebaseUploadRepository(db: Firestore, bucket: Pick<Bucke
             const orphanId = 'orphan-' + randomUUID();
             tx.create(db.collection('v2_upload_jobs').doc(orphanId), {
               ownerId: principal.uid, storeId, productId, kind: 'orphan', objectPath: oldPath,
-              state: 'orphan', createdAt: new Date(), expiresAt: new Date(Date.now() + 86400000),
+              ...storageBinding(bucket), state: 'orphan', createdAt: new Date(), expiresAt: new Date(Date.now() + 86400000),
             });
           }
           tx.update(ref, { pendingUpload: null, updatedAt: new Date() });
@@ -96,11 +99,14 @@ export function createFirebaseUploadRepository(db: Firestore, bucket: Pick<Bucke
         return { ok: true, fileName, fileMimeType: contentType, fileSizeBytes: data.length,
           fileReference: `storage://${objectPath}`,
           ...(kind === 'cover' ? { coverUrl: `/api/assets/covers/${principal.uid}/${basename}` } : {}) };
-      } catch {
+      } catch (error) {
         // Failed cleanup leaves a durable pending job; never claim success or
         // swallow the object identity. The explicit staging cleanup handles crashes.
         try {
-          await object.delete({ ignoreNotFound: true });
+          // A rejected create-only write must never delete the pre-existing object.
+          const createConflict = error instanceof ApiError && error.code === 'storage/object-exists' ||
+            [409, 412].includes(Number((error as { code?: unknown })?.code));
+          if (!createConflict) await object.delete({ ignoreNotFound: true });
           await db.runTransaction(async tx => {
             const product = await tx.get(ref);
             if (product.get('pendingUpload') === id) tx.update(ref, { pendingUpload: null });
@@ -114,11 +120,12 @@ export function createFirebaseUploadRepository(db: Firestore, bucket: Pick<Bucke
 }
 
 // Operator-only maintenance, never mounted as a public API. Caller must enforce
-// the same demo-project/emulator staging guard as the V2 entrypoint.
-export async function cleanupExpiredUploads(db: Firestore, bucket: Pick<Bucket, 'file'>, now = new Date()) {
+// the V2 entrypoint's demo/emulator OR cloud staging runtime/identity guards.
+export async function cleanupExpiredUploads(db: Firestore, bucket: StorageBucket, now = new Date()) {
   const [pending, cleaning, orphaned] = await Promise.all(['pending', 'cleaning', 'orphan'].map(state => db.collection('v2_upload_jobs').where('state', '==', state).where('expiresAt', '<=', now).limit(100).get()));
   for (const job of [...pending.docs, ...cleaning.docs, ...orphaned.docs]) {
     const data = job.data();
+    assertStorageBinding(data, bucket);
     if (!['product', 'cover', 'orphan'].includes(data.kind)) throw new ApiError(503, 'upload/invalid-job', 'Upload cleanup requires review.');
     const path = String(data.objectPath || '');
     requireId(data.ownerId, 'owner ID'); requireId(data.productId, 'product ID');

@@ -1,17 +1,17 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
-import type { Bucket } from '@google-cloud/storage';
+import { assertStorageBinding, type StorageBucket } from '../storage/contracts.ts';
 import type { FinancialRepository } from '../contracts.ts';
 import { ApiError } from '../errors.ts';
 import { commissionBreakdown, commissionEntry } from './commissions.ts';
-import { validateFileMetadata } from './uploads.ts';
+import { validateFileBytes } from './uploads.ts';
 
 const COMMISSION_INVOICE_THRESHOLD = 5;
 const COMMISSION_INVOICE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function createFirestoreFinancialRepository(
   db: Firestore,
-  bucket: Bucket,
+  bucket: StorageBucket,
   invoiceSigningSecret = String(process.env.SERVER_SIGNING_SECRET || process.env.DOWNLOAD_SIGNING_SECRET || process.env.TOKEN_SIGNING_SECRET || ''),
 ): FinancialRepository {
   const ledger = db.collection('ledger'); const orders = db.collection('orders');
@@ -630,6 +630,7 @@ export function createFirestoreFinancialRepository(
         const deliverableSnap = await tx.get(deliverableRef);
         if (!deliverableSnap.exists || deliverableSnap.get('ownerId') !== order.sellerId || deliverableSnap.get('productId') !== productId) throw new ApiError(404, 'downloads/file-not-found', 'Original product file is unavailable.');
         const deliverable = deliverableSnap.data() || {};
+        assertStorageBinding(deliverable, bucket);
         const fileRef = String(deliverable.fileDataUrl || '');
         const path = fileRef.startsWith('storage://') ? fileRef.slice('storage://'.length) : '';
         const prefix = `deliverables/${order.sellerId}/${productId}/`;
@@ -639,9 +640,11 @@ export function createFirestoreFinancialRepository(
           const [[bytes], [metadata]] = await Promise.all([file.download(), file.getMetadata()]);
           const contentType = String(metadata.contentType || deliverable.fileMimeType || 'application/octet-stream');
           if (metadata.metadata?.firebaseStorageDownloadTokens) throw new ApiError(403, 'downloads/public-file-rejected', 'The stored original is not private.');
-          validateFileMetadata(String(deliverable.fileName || ''), contentType, Number(metadata.size), 'product');
-          if (metadata.metadata?.firebaseStorageDownloadTokens) throw new ApiError(403, 'downloads/public-file-rejected', 'The stored original is not private.');
-          validateFileMetadata(String(deliverable.fileName || ''), contentType, Number(metadata.size), 'product');
+          validateFileBytes(String(deliverable.fileName || ''), contentType, bytes, 'product');
+          if (Number(metadata.size) !== bytes.length || deliverable.storageGeneration &&
+              String(deliverable.storageGeneration) !== String(metadata.generation)) {
+            throw new ApiError(503, 'storage/file-changed', 'Protected file version could not be verified.');
+          }
           const next = { ...order, downloadCount: Number(order.downloadCount || 0) + 1, downloadTokenId: randomUUID(), updatedAtIso: new Date().toISOString() };
           tx.update(orderRef, { downloadCount: next.downloadCount, downloadTokenId: next.downloadTokenId, updatedAtIso: next.updatedAtIso });
           tx.set(orders.doc(String(order.orderId)), { downloadCount: next.downloadCount, downloadTokenId: next.downloadTokenId, updatedAt: new Date() }, { merge: true });

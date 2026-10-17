@@ -79,3 +79,41 @@ An additional guarded preflight script and offline regression tests were added o
 **Cloud staging execution: NOT RUN.** No approved staging project, Cloud Run service revision or authorized invoker token has been supplied. Offline mocked HTTP tests can establish the script's request/response and production-rejection behavior, not the existence or IAM correctness of cloud staging. The existing live production data and deployment remain untouched.
 
 Check the latest GitHub Actions run for the offline preflight test result before marking it passed. Real browser/Auth, infrastructure IAM review, Cloud Logging, data parity against anonymized samples and rollback drills remain separate owner-approved tasks.
+
+## Phase 11 — private Supabase staging adapter (2026-10-17)
+
+Starting/latest fetched GitHub main was `b9e25782835e953c779457ceff0c0aa5e35d6c7f`. Its [Actions run 38842367837](https://github.com/fatima5958/Dream-Store/actions/runs/38842367837) was independently read through GitHub: code-quality, public-browser-smoke and production-container all completed successfully. The Phase 11 candidate adds an official Supabase Storage SDK implementation under the existing Firebase Auth/named Firestore/cloud identity guards; no production configuration, frontend source, V1 startup/Dockerfile, live data, gateway or payment flag changed.
+
+### Local candidate evidence
+
+| Check | Actual result |
+| --- | --- |
+| Frozen Bun lockfile install | Passed; no lockfile changes on frozen install |
+| TypeScript `npm run lint` | Passed |
+| V2 unit/repository/API `npm run test:v2` | **103 passed**, including 16 new SDK/config/API cases and a Firebase create-conflict regression |
+| Offline private preflight tests | **4 passed** |
+| Frontend/V1 contract tests | **51 passed** |
+| V1 server runtime/security regressions | **26 passed** |
+| Firebase Auth + named Firestore + Storage emulator | **8 passed**; includes real local Auth/Firestore with official Supabase SDK against a controlled HTTP double |
+| Firestore/Storage rules emulator | **10 passed**; unauthorized-write assertions preserved; expected permission-denied/evaluation diagnostics emitted |
+| Production Vite build | Passed; existing large-chunk warning remains |
+| Local Playwright browser suite | **Blocked: 9 initialization failures** because Chromium is absent. An installation attempt returned corrupt/truncated browser ZIP files; no browser flow was executed locally |
+| Local production/V2 container checks | **Not run: Docker unavailable**; baseline CI passed those checks, new-candidate CI is verified after push |
+| Real private-cloud preflight | **Blocked before networking**, missing approved runtime project/origin/invoker configuration |
+| Real Supabase cloud read/write/private-policy checks | **Not run**, no independently verified project URL/ref/credential configuration available to the runtime |
+| Real Firebase staging/OAuth/Buyer/Seller/Admin journeys and cloud rollback | **Not run**, no approved deployed private staging service/runtime access |
+
+Local non-browser suites total **202 passing tests**. These validate synthetic state and actual local emulator security boundaries; they do not prove cloud IAM/RLS/OAuth/deployment. The initial new-suite attempt caught two harness assumptions (a logical `public` cover namespace mistaken for the provider public endpoint, and a profile expected outside its documented `profile` JSON field); both were corrected to the actual contracts without changing authorization expectations. TypeScript caught an incorrect SDK constructor option, which was fixed against the installed official SDK.
+
+The integration verifies UID ownership, token revocation/error handling, private cover serving, unsupported signatures/MIME/oversize/path traversal rejection, provider outage/Firestore compensation, provider/bucket-bound cleanup, pending-payment denial, Seller verification, correct unchanged 5% entry, paid/free delivery, forged/expired/replayed/cross-Buyer tokens, refund denial, archival semantics and repository/API recreation persistence. Supabase HTTP is a deterministic double; the Auth/named Firestore portion of the extra emulator journey is real local Firebase. Zero public Storage policies were added.
+
+Two existing issues found while wiring the adapter were fixed: cloud invoice persistence now receives the same durable Secret Manager signing secret used by fulfillment, and a rejected create-only write no longer deletes the pre-existing object during compensation (both Supabase conflict and Firebase 409/412 preconditions). Private delivery additionally checks actual bytes/signature/size/version before transactionally consuming an entitlement. No commission rate or invoice policy changed.
+
+### Owner-provided resources versus independently verified cloud evidence
+
+- Separate Firebase project `tidal-axis-511800-n1` / `1013305229350`, named `dreamstore-v2-staging` and enabled Google/Email Auth are owner-reported / prior console screenshots. No authenticated cloud API probe was performed here.
+- Dedicated service account is reported created; its exact email and least-privilege IAM were not supplied or verified.
+- Supabase Free bucket `dreamstore-v2-staging-files`, PRIVATE/zero policies/50 MB ceiling are owner-reported. No project ref/URL was provided to runtime configuration. A connected GitHub integration and dashboard `main / PRODUCTION` label do not establish storage authorization or a deployment.
+- Cloud signing/Supabase credential secrets, matching runtime identity, private service origin and authorized invoker access are unconfigured in this workspace. Real preflight refused to make requests. No cloud resource, billing, production data or production endpoint was changed/accessed for tests.
+
+**Release decision: CODE IMPLEMENTED — REAL CLOUD STAGING BLOCKED.** The storage billing dependency is removed for Supabase mode; the existing Cloud Run/Secret Manager runtime requirements remain. Render Free is a researched next staging-host candidate, not an implemented runtime/deployment. See `FREE_HOSTING_REVIEW.md` and `STORAGE_CONFIGURATION.md`. Live anonymous-access tests, private cloud Auth/Storage/Firestore journeys, cloud failure/restart/cleanup and rollback evidence remain required before a production cutover review. The new commit/CI outcome is recorded after pushing; baseline CI above must not be represented as testing Phase 11.

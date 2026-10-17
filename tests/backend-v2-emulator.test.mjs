@@ -15,6 +15,9 @@ import { createFirebaseUploadRepository } from '../server/v2/modules/uploads.ts'
 import { createFirestoreFinancialRepository } from '../server/v2/modules/finance-repository.ts';
 import { createFirestoreAdminManagementRepository } from '../server/v2/modules/admin-management.ts';
 import { assertIsolatedV2Environment } from '../server/v2/config/staging.ts';
+import { createSupabaseStorageBucket } from '../server/v2/storage/supabase.ts';
+import { createCoverReader } from '../server/v2/storage/covers.ts';
+import { supabaseConfig, syntheticSecret, syntheticSupabase } from './fixtures/supabase-storage.mjs';
 
 let app, db, auth, bucket, server, base, profiles, stores;
 const tokens = {}, identities = {};
@@ -49,7 +52,7 @@ before(async () => {
   // Only the explicitly guarded demo project is reset. Never production data.
   const reset = await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/emulator/v1/projects/${projectId}/databases/${config.firestoreDatabaseId}/documents`, { method: 'DELETE' });
   assert.equal(reset.ok, true);
-  for (const name of ['seller','other','buyer','buyer2','legacyBuyer','admin','claim99','claim100','claim101']) {
+  for (const name of ['seller','other','buyer','buyer2','legacyBuyer','admin','claim99','claim100','claim101','supaseller','supabuyer','supaother']) {
     const uid = 'v2-' + name;
     await auth.deleteUser(uid).catch(error => { if (error.code !== 'auth/user-not-found') throw error; });
     identities[name] = await auth.createUser({ uid, email: name+'@example.test', emailVerified: true, password:'Emulator-only-123!' });
@@ -319,4 +322,70 @@ test('real emulator Admin claims and invalid tokens remain server-authorized', a
   await new Promise(resolve=>setTimeout(resolve,1100));
   await auth.revokeRefreshTokens(identity.uid);
   assert.equal((await request('/api/users/profile','other')).status,401);
+});
+
+test('real Auth/named Firestore + official Supabase SDK HTTP double: ownership, free delivery and restart persistence', async () => {
+  // Firebase services here are actual local emulators. Only Supabase HTTP is a
+  // controlled double; this does not claim live Supabase or cloud IAM validation.
+  const http = syntheticSupabase();
+  const signingSecret = 'phase11-emulator-signing-secret-0123456789';
+  const privateBucket = createSupabaseStorageBucket(supabaseConfig, syntheticSecret, http.fetcher);
+  const storeId = 'phase11-supabase-store', productId = 'phase11-supabase-book';
+  await db.collection('stores').doc(storeId).set({ ownerId: identities.supaseller.uid,
+    storeSlug: 'phase11-supabase-store', storeName: 'Synthetic Stage', status: 'Active', plan: 'Free' });
+  const campaignRef = db.collection('creator_launch_campaigns').doc('first-100-creators');
+  const initialCount = (await campaignRef.get()).get('claimedCount');
+  let instance;
+  async function restart() {
+    if (instance) await new Promise(resolve => instance.close(resolve));
+    const deps = { auth: createFirebaseVerifier(auth), profiles: createFirestoreProfileRepository(db),
+      creators: createCreatorCampaignRepository(db), products: createFirestoreProductRepository(db, privateBucket),
+      uploads: createFirebaseUploadRepository(db, privateBucket), covers: createCoverReader(privateBucket),
+      finance: createFirestoreFinancialRepository(db, privateBucket, signingSecret),
+      readiness: { async check() { await privateBucket.checkReady(); return true; } },
+      allowWrites: true, allowUnsignedEmulatorTokens: true, paidCheckoutEnabled: false,
+      adminUid: identities.admin.uid, downloadTokenSecret: signingSecret };
+    instance = await new Promise(resolve => { const s = createV2App(deps).listen(0, '127.0.0.1', () => resolve(s)); });
+  }
+  async function call(path, name, body, binary = false, headers = {}) {
+    const response = await fetch('http://127.0.0.1:' + instance.address().port + path, {
+      method: body === undefined ? 'GET' : 'POST', headers: {
+        ...(name ? { Authorization: 'Bearer ' + tokens[name] } : {}),
+        ...(body === undefined ? {} : { 'Content-Type': binary ? 'application/octet-stream' : 'application/json' }), ...headers,
+      }, ...(body === undefined ? {} : { body: binary ? body : JSON.stringify(body) }),
+    });
+    return { status: response.status, body: await response.json() };
+  }
+  await restart();
+  try {
+    for (const [name, role] of [['supaseller','seller'],['supabuyer','buyer'],['supaother','seller']]) {
+      assert.equal((await call('/api/users/profile', name, { role, displayName: 'Synthetic ' + name })).status, 200);
+    }
+    const draft = { id: productId, storeId, title: 'Synthetic Original', category: 'Ebooks', isFree: true,
+      published: false, priceUsd: 0, pricePkr: 0, image: '' };
+    assert.equal((await call('/api/products', 'supaseller', draft)).status, 200);
+    const binary = Buffer.from('%PDF-1.7\nPrivate synthetic file\n%%EOF');
+    const headers = { 'X-Product-ID': productId, 'X-Store-ID': storeId, 'X-File-Name': 'book.pdf', 'X-File-Type': 'application/pdf' };
+    for (const [name, status] of [[null,401],['supabuyer',403],['supaother',403]]) {
+      assert.equal((await call('/api/uploads/product', name, binary, true, headers)).status,status);
+    }
+    assert.equal(http.objects.size,0);
+    assert.equal((await call('/api/uploads/product','supaseller',binary,true,headers)).status,200);
+    const saved = await db.collection('products').doc(productId).collection('deliverables').doc('main').get();
+    assert.equal(saved.get('storageProvider'),'supabase'); assert.equal(saved.get('storageBucket'),supabaseConfig.bucket);
+    assert.equal((await call('/api/products','supaseller',{...draft,published:true,fileName:'book.pdf'})).status,200);
+    const publicProducts=await call('/api/products?storeId='+storeId);
+    assert.equal(publicProducts.status,200);assert.doesNotMatch(JSON.stringify(publicProducts.body),/storageBucket|storageProvider|storage:\/\//);
+    const free=await call('/api/checkout/validate-and-prepare','supabuyer',{storeId,currency:'PKR',paymentMethod:'free_instant',items:[{id:productId,quantity:1}],idempotencyKey:'phase11-emulator-free-idem'});
+    assert.equal(free.status,201);
+    const download={orderNumber:free.body.orderNumber,productId,downloadToken:free.body.downloadToken};
+    assert.equal((await call('/api/delivery/verify-download','supaother',download)).status,403);
+    await restart();
+    const restored=await call('/api/users/profile','supaseller');assert.equal(restored.body.profile.storeId,storeId);
+    const delivered=await call('/api/delivery/verify-download','supabuyer',download);
+    assert.equal(delivered.status,200);assert.equal(delivered.body.fileDataUrl,'data:application/pdf;base64,'+binary.toString('base64'));
+    assert.equal((await db.collection('ledger').doc(free.body.orderNumber).get()).get('downloadCount'),1);
+    assert.equal((await call('/api/delivery/verify-download','supabuyer',download)).status,403);
+    assert.equal((await campaignRef.get()).get('claimedCount'),initialCount,'storage/provider operations never consume creator spots');
+  } finally { if(instance) await new Promise(resolve=>instance.close(resolve)); }
 });
