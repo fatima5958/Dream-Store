@@ -737,7 +737,9 @@ export default function App() {
             payoneerConfigured: Boolean(data.payoneerConfigured),
             payoneerMode: data.payoneerMode === 'live_api' ? 'live_api' : 'manual_settlement',
             emailConfigured: Boolean(data.emailConfigured),
-            platformCommissionBps: Number(data.platformCommissionBps) || 500,
+            platformCommissionBps: typeof data.platformCommissionBps === 'number' &&
+              Number.isInteger(data.platformCommissionBps) && data.platformCommissionBps >= 0 &&
+              data.platformCommissionBps <= 5000 ? data.platformCommissionBps : 500,
           });
         }
       })
@@ -1312,7 +1314,7 @@ export default function App() {
       const commissionBreakdown = calculateCommissionMinor(
         Number(d.totalAmount) || 0,
         curr,
-        gatewayStatus.platformCommissionBps || 500,
+        gatewayStatus.platformCommissionBps ?? 500,
         d.paymentMethod
       );
       return {

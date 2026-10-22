@@ -5,10 +5,29 @@ const store = { ownerId: 'seller-test', storeSlug: 'test-shop', storeName: 'Test
 const deliverable = { ownerId: 'seller-test', productId: 'product-test', fileDataUrl: 'storage://deliverables/seller-test/product-test/original.pdf' };
 const auditDb = new MemoryFirestore();
 auditDb.settings = () => {};
+if (scenario?.includes('commission')) auditDb.seed('platform_settings/commission', { platformCommissionBps: 750 });
+if (scenario === 'audit-corrupt-commission') auditDb.seed('platform_settings/commission', { platformCommissionBps: '750' });
+if (scenario === 'audit-paid-commission-race') {
+  const transact = auditDb.runTransaction.bind(auditDb);
+  auditDb.runTransaction = async callback => {
+    auditDb.seed('platform_settings/commission', { platformCommissionBps: 1000 });
+    return transact(callback);
+  };
+}
+if (scenario === 'audit-invalid-count') {
+  const transact = auditDb.runTransaction.bind(auditDb);
+  auditDb.runTransaction = async callback => {
+    const result = await transact(callback);
+    for (const [path, record] of auditDb.data) {
+      if (path.startsWith('ledger/')) auditDb.seed(path, { ...record, downloadCount: '0' });
+    }
+    return result;
+  };
+}
 auditDb.seed('stores/store-seller-test', { ...store, ...(scenario === 'audit-suspended' ? { status: 'Pending' } : {}) });
 auditDb.seed('products/product-test', { id: 'product-test', storeId: 'store-seller-test', ownerId: 'seller-test',
-  title: 'Original Guide', category: 'Ebooks', isFree: scenario !== 'audit-paid',
-  priceUsd: scenario === 'audit-paid' ? 10 : 0, pricePkr: scenario === 'audit-paid' ? 2780 : 0,
+  title: 'Original Guide', category: 'Ebooks', isFree: !scenario?.startsWith('audit-paid'),
+  priceUsd: scenario?.startsWith('audit-paid') ? 10 : 0, pricePkr: scenario?.startsWith('audit-paid') ? 2780 : 0,
   published: true, status: 'Available' });
 auditDb.seed('sellerSettings/seller-test', { ownerId: 'seller-test', storeId: 'store-seller-test', bankTransferInstructions: 'Synthetic receiving account for tests only' });
 auditDb.seed('products/product-test/deliverables/main', { ...deliverable, fileName: 'original.pdf', fileMimeType: 'application/pdf', storageGeneration: '1' });
@@ -92,7 +111,15 @@ export function getStorage() {
         if (scenario === 'audit-upload-race') auditDb.seed('stores/store-seller-test', { ...store, status: 'Pending' });
       },
       async getMetadata() { const object = auditObjects.get(path); if (!object) throw Error('Missing object'); return [{ ...object, size: String(object.data.length) }]; },
-      async download() { const object = auditObjects.get(path); if (!object) throw Error('Missing object'); return [Buffer.from(object.data)]; },
+      async download() {
+        const object = auditObjects.get(path); if (!object) throw Error('Missing object');
+        if (scenario === 'audit-expiry-race') {
+          for (const [key, record] of auditDb.data) {
+            if (key.startsWith('ledger/')) auditDb.seed(key, { ...record, expiresAtMs: undefined });
+          }
+        }
+        return [Buffer.from(object.data)];
+      },
       async delete() { auditObjects.delete(path); },
     }),
   }) };

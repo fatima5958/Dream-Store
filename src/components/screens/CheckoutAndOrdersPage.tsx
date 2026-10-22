@@ -194,7 +194,7 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
   const commissionPreview = calculateCommissionMinor(
     cartTotal,
     currency,
-    gatewayStatus.platformCommissionBps || 500,
+    gatewayStatus.platformCommissionBps ?? 500,
     selectedPaymentMethod
   );
 

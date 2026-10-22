@@ -342,7 +342,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
     if (o.currency === 'PKR') return sum + o.totalAmount;
     return sum + Math.round(o.totalAmount * (config.exchangeRatePkr || 278));
   }, 0);
-  const commissionRateBps = gatewayStatus.platformCommissionBps || 500;
+  const commissionRateBps = gatewayStatus.platformCommissionBps ?? 500;
   const pkrCommissionSummary = calculateCommissionMinor(
     totalRevenuePkr,
     'PKR',

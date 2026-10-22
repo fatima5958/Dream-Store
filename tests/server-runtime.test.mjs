@@ -177,6 +177,61 @@ test('readiness fails without a stable production secret even when Firebase is r
   assert.equal((await request(origin, '/api/health')).status, 200);
 });
 
+test('malformed download counters never issue a token or release an original', async t => {
+  const origin = await boot(t, 'audit-invalid-count');
+  const order = await (await request(origin, '/api/checkout/validate-and-prepare', auditCheckout, token('buyer-test'))).json();
+  const issued = await request(origin, '/api/downloads/token', { orderNumber: order.orderNumber }, token('buyer-test'));
+  assert.equal(issued.status, 403);
+  const downloaded = await request(origin, '/api/delivery/verify-download', { orderNumber: order.orderNumber,
+    productId: 'product-test', buyerId: 'buyer-test', downloadToken: order.downloadToken }, token('buyer-test'));
+  assert.equal(downloaded.status, 403);
+});
+
+test('an invalid expiry written during file retrieval cannot pass the final download transaction', async t => {
+  const origin = await boot(t, 'audit-expiry-race');
+  const order = await (await request(origin, '/api/checkout/validate-and-prepare', auditCheckout, token('buyer-test'))).json();
+  const downloaded = await request(origin, '/api/delivery/verify-download', { orderNumber: order.orderNumber,
+    productId: 'product-test', buyerId: 'buyer-test', downloadToken: order.downloadToken }, token('buyer-test'));
+  assert.equal(downloaded.status, 409);
+  assert.equal((await downloaded.json()).allowed, false);
+});
+
+test('commission settings load from durable storage and failed writes cannot report success', async t => {
+  const origin = await boot(t, 'audit-commission');
+  const status = await (await request(origin, '/api/payments/gateway-status')).json();
+  assert.equal(status.platformCommissionBps, 750);
+  const calculated = await (await request(origin, '/api/commission/calculate', { amountMajor: 100, currency: 'USD', paymentMethod: 'manual_bank' })).json();
+  assert.equal(calculated.platformCommissionMinor, 750);
+  const failed = await boot(t, 'permission-denied');
+  const response = await request(failed, '/api/admin/commission-config', { newCommissionBps: 250 }, token('seller-test', { role: 'super_admin', superAdmin: true }));
+  assert.equal(response.status, 503);
+});
+
+test('checkout snapshots a concurrently changed commission rate and retains it on an exact retry', async t => {
+  const origin = await boot(t, 'audit-paid-commission-race', 'test-only-signing-secret-with-over-32-characters', true);
+  const body = { ...auditCheckout, paymentMethod: 'manual_bank', paymentReference: 'AUDIT-RATE-TRANSFER-001' };
+  assert.equal((await (await request(origin, '/api/payments/gateway-status')).json()).platformCommissionBps, 750);
+  const response = await request(origin, '/api/checkout/validate-and-prepare', body, token('buyer-test'));
+  const order = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(order));
+  assert.equal(order.commissionBreakdown.commissionRateBps, 1000);
+  assert.equal(order.commissionBreakdown.platformCommissionMinor, 100);
+  const retry = await (await request(origin, '/api/checkout/validate-and-prepare', body, token('buyer-test'))).json();
+  assert.equal(retry.orderNumber, order.orderNumber);
+  assert.equal(retry.commissionBreakdown.commissionRateBps, 1000);
+  assert.equal(retry.commissionBreakdown.platformCommissionMinor, 100);
+});
+
+test('readiness and calculations reject corrupt commission configuration and recover after an audited repair', async t => {
+  const origin = await boot(t, 'audit-corrupt-commission');
+  assert.equal((await request(origin, '/api/ready')).status, 503);
+  assert.equal((await request(origin, '/api/health')).status, 200);
+  assert.equal((await request(origin, '/api/commission/calculate', { amountMajor: 100 })).status, 503);
+  const repaired = await request(origin, '/api/admin/commission-config', { newCommissionBps: 500 }, token('seller-test', { role: 'super_admin', superAdmin: true }));
+  assert.equal(repaired.status, 200);
+  assert.equal((await request(origin, '/api/ready')).status, 200);
+});
+
 test('permission failures cannot report saved roles, stores, or ready checkout', async t => {
   const origin = await boot(t, 'permission-denied');
   assert.equal((await request(origin, '/api/ready')).status, 503);

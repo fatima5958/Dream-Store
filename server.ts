@@ -2,6 +2,8 @@ import express from 'express';
 import { asyncRoute, apiErrorHandler, installAuthHelperProxy } from './server/http.ts';
 import { checkoutRequestHash, checkoutResponse } from './server/checkout.ts';
 import { sendBuyerOrderEmail } from './server/email.ts';
+import { commissionRateFromSnapshot, readCommissionRate, saveCommissionRate } from './server/commission-config.ts';
+import { canDownload } from './server/v2/modules/download-policy.ts';
 import { ApiError } from './server/v2/errors.ts';
 import { validateFileBytes } from './server/v2/modules/uploads.ts';
 import crypto from 'crypto';
@@ -165,7 +167,7 @@ const SUPPORTED_CURRENCIES: Record<string, number> = {
 
 // Configurable Platform Commission in Basis Points (default 500 bps = 5.00%)
 // Strictly server-authoritative — sellers can never modify this.
-let platformCommissionBps = 500;
+// The default commission is 500 bps; configured rates live in Firestore.
 const INVOICE_SALES_THRESHOLD = 5;
 const INVOICE_PAYMENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -3207,6 +3209,7 @@ async function startServer() {
           await Promise.all([
             adminFirestoreDb.collection('ledger').limit(1).get(),
             getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).getMetadata(),
+            readCommissionRate(adminFirestoreDb),
           ]);
           return true;
         })(),
@@ -3744,7 +3747,9 @@ async function startServer() {
     );
   };
 
-  app.get('/api/payments/gateway-status', asyncRoute((_req, res) => {
+  app.get('/api/payments/gateway-status', asyncRoute(async (_req, res) => {
+    // Feature flags remain available even when financial configuration is down.
+    const platformCommissionBps = await readCommissionRate(adminFirestoreDb).catch(() => null);
     const jazzcashConfigured = Boolean(
       process.env.JAZZCASH_MERCHANT_ID &&
         process.env.JAZZCASH_PASSWORD &&
@@ -5795,7 +5800,8 @@ async function startServer() {
   }));
 
   // 5. Server-Side Commission Calculator Endpoint
-  app.post('/api/commission/calculate', asyncRoute((req, res) => {
+  app.post('/api/commission/calculate', asyncRoute(async (req, res) => {
+    const platformCommissionBps = await readCommissionRate(adminFirestoreDb);
     const { amountMajor, currency = 'PKR', paymentMethod = 'jazzcash' } = req.body;
     const gross = Math.max(0, Number(amountMajor) || 0);
     const breakdown = computeServerCommissionMinor(
@@ -5825,7 +5831,7 @@ async function startServer() {
       return;
     }
 
-    platformCommissionBps = parsedBps;
+    const platformCommissionBps = await saveCommissionRate(adminFirestoreDb, parsedBps, adminUser.uid);
     res.json({
       ok: true,
       platformCommissionBps,
@@ -5866,6 +5872,7 @@ async function startServer() {
   const handleGetLedger = async (req: express.Request, res: express.Response) => {
     const user = await requireAuthenticatedUser(req, res);
     if (!user) return;
+    const platformCommissionBps = await readCommissionRate(adminFirestoreDb);
     const isSuper = isStrictSuperAdminUser(user);
     const requestedSellerId = String(req.query.sellerId || req.query.ownerId || '').trim();
     const requestedStoreId = String(req.query.storeId || '').trim();
@@ -6233,7 +6240,7 @@ async function startServer() {
       const commissionBreakdown = computeServerCommissionMinor(
         calculatedTotal,
         currency,
-        platformCommissionBps,
+        await readCommissionRate(adminFirestoreDb),
         paymentMethod
       );
 
@@ -6311,12 +6318,13 @@ async function startServer() {
           return { duplicate: true, entry: savedOrder };
         }
         if (priorOrder.exists) throw new Error('Order ID collision. Please retry checkout.');
-        const [productNow, storeNow, priorReference, legacyReferences] = await Promise.all([
+        const [productNow, storeNow, priorReference, legacyReferences, commissionConfig] = await Promise.all([
           tx.get(financialDb.collection('products').doc(primaryProductId)),
           tx.get(financialDb.collection('stores').doc(resolvedStoreId)),
           paymentReferenceRef ? tx.get(paymentReferenceRef) : Promise.resolve(null),
           paymentReferenceRef ? tx.get(financialDb.collection('ledger').where('sellerId', '==', resolvedSellerId)
             .where('paymentMethod', '==', paymentMethod)) : Promise.resolve(null),
+          tx.get(financialDb.collection('platform_settings').doc('commission')),
         ]);
         if (priorReference?.exists || legacyReferences?.docs.some(doc =>
             !['Failed', 'Refunded'].includes(doc.get('paymentStatus')) &&
@@ -6332,6 +6340,10 @@ async function startServer() {
           throw new Error('Product price or availability changed. Refresh your cart and try again.');
         }
 
+        // Snapshot the rate in the order's own transaction, including on retry.
+        Object.assign(commissionBreakdown, computeServerCommissionMinor(calculatedTotal, currency,
+          commissionRateFromSnapshot(commissionConfig), paymentMethod));
+        Object.assign(ledgerRecord, commissionBreakdown);
         const timestamp = new Date();
         tx.create(ledgerRef, ledgerRecord as unknown as Record<string, unknown>);
         tx.create(financialDb.collection('ledger_audit').doc(auditEntry.auditId), auditEntry as unknown as Record<string, unknown>);
@@ -7130,6 +7142,7 @@ async function startServer() {
   ) => {
     const adminUser = await requireSuperAdminUser(req, res);
     if (!adminUser) return;
+    const platformCommissionBps = await readCommissionRate(adminFirestoreDb);
 
     if (serverStores.size === 0) {
       await hydrateActiveStoresFromFirestore();
@@ -7948,8 +7961,7 @@ async function startServer() {
     if (!user) return;
     if (!(await ensureFinancialDatabaseReady(res))) return;
     const entry = await loadFinancialOrder(String(req.body?.orderNumber || ''));
-    if (!entry || entry.buyerId !== user.uid || entry.paymentStatus !== 'Paid' ||
-      Date.now() >= entry.expiresAtMs || entry.downloadCount >= entry.maxDownloads) {
+    if (!entry || entry.buyerId !== user.uid || !canDownload(entry)) {
       res.status(403).json({ error: 'A valid order belonging to your account is required.' });
       return;
     }
@@ -8054,6 +8066,11 @@ async function startServer() {
       return;
     }
 
+    if (!canDownload(ledgerEntry)) {
+      res.status(403).json({ allowed: false, error: 'Download access is invalid, expired, or exhausted.' });
+      return;
+    }
+
     const validSig = verifySignedDownloadToken(
       effectiveToken,
       String(orderNumber),
@@ -8135,17 +8152,14 @@ async function startServer() {
           throw new Error('Original file changed. Retry the download.');
         }
         const saved = snap.data() as LedgerEntry;
-        const count = Number(saved.downloadCount);
-        const max = Number(saved.maxDownloads);
+        const count = saved.downloadCount;
         if (
           saved.buyerId !== requestedBuyerId ||
           saved.sellerId !== ledgerEntry.sellerId ||
           saved.primaryProductId !== String(productId) ||
           saved.paymentStatus !== 'Paid' ||
           saved.downloadToken !== effectiveToken ||
-          !Number.isInteger(count) || count < 0 ||
-          !Number.isInteger(max) || max < 1 || count >= max ||
-          Date.now() > Number(saved.expiresAtMs)
+          !canDownload(saved)
         ) {
           throw new Error('Order access changed, expired, or download limit reached. Refresh and try again.');
         }

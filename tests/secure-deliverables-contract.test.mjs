@@ -50,7 +50,7 @@ test('paid product checkout must use a server-authoritative catalog', () => {
 test('download count is committed atomically and never accepted from browser state', () => {
   assert.match(server, /committedDownloadCount = await adminFirestoreDb!\.runTransaction/);
   assert.match(server, /tx\.update\(ledgerRef, \{ downloadCount: next, updatedAtIso: now\.toISOString\(\) \}\)/);
-  assert.match(server, /count >= max/);
+  assert.match(server, /!canDownload\(saved\)/);
   assert.match(server, /saved\.paymentStatus !== 'Paid'/);
   assert.match(server, /if \(\!\(await ensureFinancialDatabaseReady\(res\)\)\) return/);
 });
