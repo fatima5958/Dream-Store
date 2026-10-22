@@ -41,6 +41,10 @@ class Ref {
     return { id:this.id, ref:this, exists: value !== undefined, data: () => structuredClone(value), get: key => value?.[key] };
   }
   async get() { return this.read(this.db.data); }
+  async create(value) { assert.equal(this.db.data.has(this.path), false); await this.set(value); }
+  async set(value, options) { this.db.seed(this.path, { ...(options?.merge ? this.db.data.get(this.path) : {}), ...value }); }
+  async update(value) { assert.ok(this.db.data.has(this.path)); await this.set(value, { merge: true }); }
+  async delete() { this.db.data.delete(this.path); }
 }
 class Query {
   constructor(db,path,filters=[],count=Infinity) { Object.assign(this,{db,path,filters,count}); }

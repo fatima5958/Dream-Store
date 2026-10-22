@@ -1,5 +1,9 @@
 import express from 'express';
 import { asyncRoute, apiErrorHandler, installAuthHelperProxy } from './server/http.ts';
+import { checkoutRequestHash, checkoutResponse } from './server/checkout.ts';
+import { sendBuyerOrderEmail } from './server/email.ts';
+import { ApiError } from './server/v2/errors.ts';
+import { validateFileBytes } from './server/v2/modules/uploads.ts';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
@@ -455,12 +459,6 @@ const PRO_THEME_IDS = new Set([
 // Authoritative Server Product Catalog (Hydrated from Firestore products collection; zero hardcoded demo products)
 const serverProducts = new Map<string, ServerProductRecord>();
 
-// Protected Server Deliverable Registry (Never exposed in public store/product listings; served only via /api/delivery/verify-download)
-const serverProductDeliverables = new Map<
-  string,
-  { fileName: string; fileType: string; fileSizeLabel: string; fileDataUrl: string }
->();
-
 // Server-Authoritative Financial Ledger, Invoices, Payments & Adjustments (Synchronized to Firestore; zero local JSON files)
 const persistentLedger = new Map<string, LedgerEntry>();
 const immutableAuditLog: LedgerAuditRecord[] = [];
@@ -469,11 +467,7 @@ const commissionPayments = new Map<string, CommissionPaymentSubmission>();
 const commissionAdjustments: CommissionAdjustmentEntry[] = [];
 const billedOrderNumbers = new Map<string, string>(); // orderNumber -> invoiceId
 
-// Idempotency ledgers to prevent duplicate payment, order, or webhook processing
-const processedIdempotencyKeys = new Map<
-  string,
-  { orderNumber: string; orderId: string; timestamp: number; downloadToken: string }
->();
+// Financial checkout idempotency is persisted transactionally in Firestore.
 const processedWebhookIds = new Set<string>();
 const buyerPaidEmailNotifications = new Map<string, BuyerPaidEmailNotificationRecord>(); // orderNumber -> email record
 
@@ -1114,30 +1108,6 @@ async function hydratePublishedProductsFromFirestore(): Promise<void> {
         fileType: String(parsed.fileType || 'PDF'),
         fileSizeLabel: String(parsed.fileSizeLabel || '1.2 MB'),
       });
-      if (isFree && !serverProductDeliverables.has(prodId)) {
-        try {
-          const delivRes = await fetch(
-            `${baseUrl}/products/${encodeURIComponent(prodId)}/deliverables/main?key=${FIREBASE_API_KEY}`
-          );
-          if (delivRes.ok) {
-            const delivJson = (await delivRes.json()) as Record<string, unknown>;
-            if (delivJson?.fields) {
-              const delivParsed = parseFirestoreDocumentFields(delivJson);
-              const fileDataUrl = String(delivParsed.fileDataUrl || '');
-              if (fileDataUrl) {
-                serverProductDeliverables.set(prodId, {
-                  fileName: String(delivParsed.fileName || parsed.fileName || 'Digital-Download.pdf'),
-                  fileType: String(delivParsed.fileMimeType || parsed.fileType || 'PDF'),
-                  fileSizeLabel: String(parsed.fileSizeLabel || '1.2 MB'),
-                  fileDataUrl,
-                });
-              }
-            }
-          }
-        } catch {
-          // Ignore individual deliverable fetch errors
-        }
-      }
     }
   } catch {
     // Non-blocking startup product hydration
@@ -1525,42 +1495,12 @@ export async function triggerBuyerPaidOrderEmail(
     </div>
   `.trim();
 
-  let deliveryProvider: 'resend_api' | 'secure_outbox' = 'secure_outbox';
-  let status: 'sent' | 'failed' = 'sent';
-  let errorDetail: string | undefined;
-
   const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
-  const fromEmail = (
-    process.env.ORDER_NOTIFICATION_FROM_EMAIL || 'DreamStore Orders <orders@dreamstore.app>'
-  ).trim();
-
-  if (resendApiKey && isRealCredentialValue(resendApiKey)) {
-    deliveryProvider = 'resend_api';
-    try {
-      const emailRes = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${resendApiKey}`,
-          'Content-Type': 'application/json',
-          'Idempotency-Key': `paid-email-${entry.orderNumber}`,
-        },
-        body: JSON.stringify({
-          from: fromEmail,
-          to: [recipientEmail],
-          subject,
-          html: htmlBody,
-        }),
-      });
-      if (!emailRes.ok) {
-        // Fallback to secure outbox record while recording API status
-        const errText = await emailRes.text().catch(() => 'Resend API error');
-        errorDetail = `External provider fallback: ${errText.slice(0, 160)}`;
-      }
-    } catch (err) {
-      errorDetail =
-        err instanceof Error ? err.message.slice(0, 160) : 'Email transport fallback to secure outbox';
-    }
-  }
+  const { deliveryProvider, status, errorDetail } = await sendBuyerOrderEmail({
+    apiKey: isRealCredentialValue(resendApiKey) ? resendApiKey : '',
+    from: (process.env.ORDER_NOTIFICATION_FROM_EMAIL || 'DreamStore Orders <orders@dreamstore.app>').trim(),
+    recipient: recipientEmail, subject, html: htmlBody, orderNumber: entry.orderNumber,
+  });
 
   const notificationRecord: BuyerPaidEmailNotificationRecord = {
     emailId,
@@ -1591,10 +1531,13 @@ export async function triggerBuyerPaidOrderEmail(
   // Sync notification to Firestore admin-accessible secure outbox if Admin SDK is connected
   if (adminFirestoreDb) {
     try {
-      await adminFirestoreDb
-        .collection('order_email_notifications')
-        .doc(entry.orderNumber)
-        .set(notificationRecord, { merge: true });
+      await adminFirestoreDb.runTransaction(async tx => {
+        const orderRef = adminFirestoreDb!.collection('ledger').doc(entry.orderNumber);
+        const saved = await tx.get(orderRef);
+        if (!saved.exists || saved.get('buyerId') !== entry.buyerId || saved.get('paymentStatus') !== 'Paid') return;
+        tx.set(adminFirestoreDb!.collection('order_email_notifications').doc(entry.orderNumber), notificationRecord, { merge: true });
+        tx.update(orderRef, { buyerEmailNotification: notificationRecord });
+      });
     } catch {
       // Non-blocking Firestore outbox persistence
     }
@@ -1610,7 +1553,7 @@ export async function triggerBuyerPaidOrderEmail(
       previousStatus: 'Paid',
       newStatus: 'Paid',
       verificationMode: entry.verificationMode,
-      detail: `Secure Paid order confirmation & download email triggered to buyer "${recipientEmail}" (Email ID: ${emailId}, Sig: ${securitySignature.slice(0, 12)}).`,
+      detail: `Paid order email ${status} via ${deliveryProvider} (Email ID: ${emailId}).`,
     },
     bearerToken
   );
@@ -5469,6 +5412,8 @@ async function startServer() {
         res.status(422).json({ error: 'Invalid file, product ID, MIME type or size (maximum 5 MB).' });
         return;
       }
+      try { validateFileBytes(decodedName, contentType, data, 'product'); }
+      catch { res.status(422).json({ error: 'File content does not match its declared type.' }); return; }
       const store = await resolveOwnedStoreForUser(user.uid);
       if (!store || store.storeId !== targetStoreId) {
         res.status(403).json({ error: 'Only the verified store owner can upload original files.' });
@@ -5479,7 +5424,13 @@ async function startServer() {
         return;
       }
       // Reject another seller's existing product ID before any upload.
-      const existingProduct = await adminFirestoreDb.collection('products').doc(productId).get();
+      const [existingProduct, uploadStore] = await Promise.all([
+        adminFirestoreDb.collection('products').doc(productId).get(),
+        adminFirestoreDb.collection('stores').doc(targetStoreId).get(),
+      ]);
+      if (!uploadStore.exists || uploadStore.get('ownerId') !== user.uid || uploadStore.get('status') !== 'Active') {
+        res.status(403).json({ error: 'This store is not active or no longer belongs to your account.' }); return;
+      }
       if (existingProduct.exists && (
         existingProduct.get('ownerId') !== user.uid ||
         existingProduct.get('storeId') !== targetStoreId
@@ -5487,29 +5438,49 @@ async function startServer() {
         res.status(403).json({ error: 'Product belongs to another seller.' });
         return;
       }
+      if (existingProduct.get('deleted') === true) {
+        res.status(410).json({ error: 'This product was deleted. Create a new listing.' }); return;
+      }
       const cleanName = decodedName.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
       const objectPath = `deliverables/${user.uid}/${productId}/${crypto.randomBytes(12).toString('hex')}-${cleanName}`;
+      const object = getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).file(objectPath);
+      let objectSaved = false;
       try {
-        const object = getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).file(objectPath);
         await object.save(data, {
           resumable: false,
-          metadata: { contentType },
+          preconditionOpts: { ifGenerationMatch: 0 },
+          metadata: { contentType, cacheControl: 'private, no-store' },
           validation: 'crc32c',
         });
-        try {
-          await adminFirestoreDb.collection('products').doc(productId)
-            .collection('deliverables').doc('main').set({
+        objectSaved = true;
+        const [metadata] = await object.getMetadata();
+        if (Number(metadata.size) !== data.length || metadata.contentType !== contentType ||
+            !metadata.generation || metadata.metadata?.firebaseStorageDownloadTokens) {
+          throw new ApiError(503, 'storage/verification-failed', 'Stored original file could not be verified.');
+        }
+        const productRef = adminFirestoreDb.collection('products').doc(productId);
+        await adminFirestoreDb.runTransaction(async tx => {
+          const [latestStore, latestProduct] = await Promise.all([
+            tx.get(adminFirestoreDb!.collection('stores').doc(targetStoreId)), tx.get(productRef),
+          ]);
+          if (!latestStore.exists || latestStore.get('ownerId') !== user.uid || latestStore.get('status') !== 'Active' ||
+              latestProduct.get('deleted') === true || latestProduct.exists && (
+                latestProduct.get('ownerId') !== user.uid || latestProduct.get('storeId') !== targetStoreId)) {
+            throw new ApiError(409, 'upload/ownership-changed', 'Store or product permissions changed during upload.');
+          }
+          if (!latestProduct.exists) tx.create(productRef, { ownerId: user.uid, storeId: targetStoreId,
+            published: false, status: 'Draft', createdAt: new Date(), updatedAt: new Date() });
+          tx.set(productRef.collection('deliverables').doc('main'), {
               productId,
               ownerId: user.uid,
               fileName: decodedName,
               fileMimeType: contentType,
               fileDataUrl: `storage://${objectPath}`,
+              storageGeneration: String(metadata.generation),
+              fileSizeBytes: data.length,
               updatedAt: new Date(),
             });
-        } catch (error) {
-          await object.delete({ ignoreNotFound: true }).catch(() => {});
-          throw error;
-        }
+        });
         res.json({
           ok: true,
           fileName: decodedName,
@@ -5517,8 +5488,10 @@ async function startServer() {
           fileSizeBytes: data.length,
           fileReference: `storage://${objectPath}`,
         });
-      } catch {
-        res.status(503).json({ error: 'Secure upload failed. Try again before publishing.' });
+      } catch (error) {
+        if (objectSaved) await object.delete({ ignoreNotFound: true }).catch(() => {});
+        res.status(error instanceof ApiError ? error.status : 503)
+          .json({ error: error instanceof ApiError ? error.message : 'Secure upload failed. Try again before publishing.' });
       }
     })
   );
@@ -5675,6 +5648,8 @@ async function startServer() {
     // New uploads use private references. Updating product metadata without a
     // new upload is allowed only if the existing verified reference is present.
     const fileReference = requestedReference || storedReference;
+    let verifiedFileGeneration = '';
+    let verifiedFileBytes = 0;
     if (wantsPublished) {
       if (!fileReference.startsWith('storage://') || fileReference !== storedReference) {
         res.status(422).json({ error: 'Upload and save your original file securely before publishing.' });
@@ -5708,12 +5683,21 @@ async function startServer() {
           'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         ]);
         if (
-          bytes < 1 ||
+          !Number.isSafeInteger(bytes) || bytes < 1 ||
           bytes > 5 * 1024 * 1024 ||
           !supportedMime.has(String(metadata.contentType || ''))
         ) {
           res.status(422).json({ error: 'Original file size or type is not supported (maximum 5 MB).' });
           return;
+        }
+        if (metadata.metadata?.firebaseStorageDownloadTokens) {
+          res.status(422).json({ error: 'Original file is public. Re-upload it securely before publishing.' }); return;
+        }
+        verifiedFileGeneration = String(metadata.generation || '');
+        verifiedFileBytes = bytes;
+        if (!verifiedFileGeneration || authoritativeDeliverable?.storageGeneration &&
+            String(authoritativeDeliverable.storageGeneration) !== verifiedFileGeneration) {
+          res.status(503).json({ error: 'Original file version changed. Re-upload it before publishing.' }); return;
         }
       } catch {
         res.status(503).json({ error: 'Original file could not be verified in Firebase Storage. Try uploading again.' });
@@ -5725,41 +5709,44 @@ async function startServer() {
       // Server commit is the public publish gate; the browser initially saves a
       // draft and must not expose unverified files to buyers.
       const productDocRef = adminFirestoreDb.collection('products').doc(record.id);
-      const existingSnap = await productDocRef.get();
-      if (existingSnap.exists) {
-        if (existingSnap.get('deleted') === true) {
-          res.status(410).json({ error: 'This product was removed and cannot be republished. Create a new listing.' });
-          return;
+      await adminFirestoreDb.runTransaction(async tx => {
+        const [existingSnap, latestStore, latestFile] = await Promise.all([
+          tx.get(productDocRef), tx.get(adminFirestoreDb!.collection('stores').doc(record.storeId)),
+          tx.get(authoritativeDeliverableRef),
+        ]);
+        if (!latestStore.exists || latestStore.get('ownerId') !== effectiveOwnerId || latestStore.get('status') !== 'Active') {
+          throw new ApiError(403, 'product/store-unavailable', 'Store ownership or status changed. Product was not saved.');
         }
-        const savedOwner = String(existingSnap.get('ownerId') || '');
-        const savedStore = String(existingSnap.get('storeId') || '');
-        if (savedOwner !== effectiveOwnerId || savedStore !== record.storeId) {
-          res.status(403).json({ error: 'Existing product belongs to another owner or store.' });
-          return;
+        if (existingSnap.exists) {
+          if (existingSnap.get('deleted') === true) {
+            throw new ApiError(410, 'product/deleted', 'This product was removed and cannot be republished. Create a new listing.');
+          }
+          const savedOwner = String(existingSnap.get('ownerId') || '');
+          const savedStore = String(existingSnap.get('storeId') || '');
+          if (savedOwner !== effectiveOwnerId || savedStore !== record.storeId) {
+            throw new ApiError(403, 'product/owner-forbidden', 'Existing product belongs to another owner or store.');
+          }
         }
-      }
-      const now = new Date();
-      await productDocRef.set({
-        ...record,
-        deleted: false,
-        createdAt: existingSnap.exists ? existingSnap.get('createdAt') || now : now,
-        updatedAt: now,
-      }, { merge: true });
-    } catch {
-      res.status(503).json({ error: 'Could not save product to Firebase. Product was not published.' });
+        if (existingSnap.get('pendingUpload')) throw new ApiError(409, 'upload/in-progress', 'Wait for the original file upload to finish.');
+        if (wantsPublished && (!latestFile.exists || latestFile.get('fileDataUrl') !== fileReference ||
+            latestFile.get('ownerId') !== effectiveOwnerId || latestFile.get('productId') !== record.id ||
+            latestFile.get('storageGeneration') && String(latestFile.get('storageGeneration')) !== verifiedFileGeneration)) {
+          throw new ApiError(409, 'product/file-changed', 'Original file changed during publishing. Retry.');
+        }
+        const now = new Date();
+        tx.set(productDocRef, {
+          ...record,
+          deleted: false,
+          createdAt: existingSnap.exists ? existingSnap.get('createdAt') || now : now,
+          updatedAt: now,
+        }, { merge: true });
+        if (wantsPublished) tx.update(authoritativeDeliverableRef, { storageGeneration: verifiedFileGeneration, fileSizeBytes: verifiedFileBytes });
+      });
+    } catch (error) {
+      res.status(error instanceof ApiError ? error.status : 503).json({ error: error instanceof ApiError ? error.message : 'Could not save product to Firebase. Product was not published.' });
       return;
     }
     serverProducts.set(record.id, record);
-    if (wantsPublished) {
-      serverProductDeliverables.set(record.id, {
-        fileName: record.fileName,
-        fileType: record.fileType,
-        fileSizeLabel: record.fileSizeLabel || '',
-        fileDataUrl: fileReference,
-      });
-    } else {
-      serverProductDeliverables.delete(record.id);
-    }
     res.json({ ok: true, product: record });
   };
 
@@ -5800,7 +5787,6 @@ async function startServer() {
         updatedAt: new Date(),
       });
       serverProducts.delete(productId);
-      serverProductDeliverables.delete(productId);
       res.json({ ok: true, deletedId: productId, archived: true });
     } catch (err) {
       console.error('Product archive failed:', err);
@@ -6060,18 +6046,8 @@ async function startServer() {
       }
 
       const scopedIdempotencyKey = `${verifiedBuyer.uid}:${String(idempotencyKey)}`;
-      if (processedIdempotencyKeys.has(scopedIdempotencyKey)) {
-        const existing = processedIdempotencyKeys.get(scopedIdempotencyKey)!;
-        res.status(409).json({
-          duplicate: true,
-          error: `Duplicate checkout & ledger submission blocked (Order ${existing.orderNumber} already created).`,
-          orderNumber: existing.orderNumber,
-          orderId: existing.orderId,
-        });
-        return;
-      }
 
-      if (!(currency in SUPPORTED_CURRENCIES)) {
+      if (!Object.hasOwn(SUPPORTED_CURRENCIES, currency)) {
         res.status(400).json({
           error: `Unsupported currency "${currency}". Supported: ${Object.keys(SUPPORTED_CURRENCIES).join(', ')}`,
         });
@@ -6167,8 +6143,8 @@ async function startServer() {
         return;
       }
 
-      const orderNumber = `DS-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 899)}`;
-      const orderId = `order-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`;
+      const orderNumber = `DS-${Date.now().toString().slice(-6)}-${crypto.randomUUID().slice(0, 12).toUpperCase()}`;
+      const orderId = `order-${crypto.randomUUID()}`;
       const expiresAtMs = Date.now() + 7 * 24 * 60 * 60 * 1000;
       const primaryProductId = items[0].id;
 
@@ -6247,25 +6223,6 @@ async function startServer() {
           return;
         }
 
-        // Prevent duplicate transaction references for the same receiving account / seller payment method
-        for (const existingEntry of persistentLedger.values()) {
-          if (
-            existingEntry.sellerId === resolvedSellerId &&
-            existingEntry.paymentMethod === paymentMethod &&
-            existingEntry.paymentStatus !== 'Failed' &&
-            existingEntry.paymentStatus !== 'Refunded' &&
-            String(existingEntry.paymentReference || '').trim().toUpperCase() === normalizedRef
-          ) {
-            res.status(409).json({
-              duplicate: true,
-              duplicateReference: true,
-              error: `Duplicate transaction reference rejected: Reference "${paymentReference}" has already been submitted for this seller's ${paymentMethod.toUpperCase()} receiving account (Order ${existingEntry.orderNumber}).`,
-              orderNumber: existingEntry.orderNumber,
-            });
-            return;
-          }
-        }
-
         initialPaymentStatus = 'Pending';
         verificationMode = 'Unverified';
         commissionStatus = 'outstanding';
@@ -6322,24 +6279,50 @@ async function startServer() {
         updatedAtIso: new Date().toISOString(),
       };
 
-      // Commit the financial order, buyer order and idempotency key atomically.
+      const auditEntry: LedgerAuditRecord = {
+        auditId: `aud-${crypto.randomUUID()}`, createdAtIso: new Date().toISOString(),
+        orderNumber, orderId, sellerId: resolvedSellerId, actorUid: buyerId,
+        action: 'ORDER_CREATED', previousStatus: 'None', newStatus: initialPaymentStatus, verificationMode,
+        detail: calculatedTotal === 0
+          ? `Free digital order created (${currency} 0.00). Instant download token issued.`
+          : `Paid order created (${currency} ${calculatedTotal}) via ${paymentMethod}. Download locked until Seller statement verification.`,
+      };
+      const requestHash = checkoutRequestHash(ledgerRecord);
+      // Commit the financial order, buyer order, payment reference and idempotency key atomically.
       // Never return a successful checkout based solely on in-memory state.
       const financialDb = adminFirestoreDb!;
       const ledgerRef = financialDb.collection('ledger').doc(orderNumber);
       const buyerOrderRef = financialDb.collection('orders').doc(orderId);
       const idempotencyDocId = crypto.createHash('sha256').update(scopedIdempotencyKey).digest('hex');
       const idempotencyRef = financialDb.collection('checkout_idempotency').doc(idempotencyDocId);
+      const referenceId = calculatedTotal > 0 ? crypto.createHash('sha256')
+        .update(`${resolvedSellerId}:${paymentMethod}:${ledgerRecord.paymentReference.trim().toUpperCase()}`).digest('hex') : '';
+      const paymentReferenceRef = referenceId ? financialDb.collection('payment_reference_claims').doc(referenceId) : null;
       const committed = await financialDb.runTransaction(async (tx) => {
         const [priorKey, priorOrder] = await Promise.all([tx.get(idempotencyRef), tx.get(ledgerRef)]);
         if (priorKey.exists) {
           const prior = priorKey.data() || {};
-          return { duplicate: true, orderNumber: String(prior.orderNumber || ''), orderId: String(prior.orderId || '') };
+          const saved = await tx.get(financialDb.collection('ledger').doc(String(prior.orderNumber || '')));
+          if (!saved.exists) throw new ApiError(503, 'checkout/order-unavailable', 'The existing checkout is temporarily unavailable.');
+          const savedOrder = saved.data() as LedgerEntry;
+          if (savedOrder.buyerId !== buyerId || (prior.requestHash || checkoutRequestHash(savedOrder)) !== requestHash) {
+            throw new ApiError(409, 'checkout/idempotency-conflict', 'This checkout key was used for different purchase details. Start a new checkout.');
+          }
+          return { duplicate: true, entry: savedOrder };
         }
         if (priorOrder.exists) throw new Error('Order ID collision. Please retry checkout.');
-        const [productNow, storeNow] = await Promise.all([
+        const [productNow, storeNow, priorReference, legacyReferences] = await Promise.all([
           tx.get(financialDb.collection('products').doc(primaryProductId)),
           tx.get(financialDb.collection('stores').doc(resolvedStoreId)),
+          paymentReferenceRef ? tx.get(paymentReferenceRef) : Promise.resolve(null),
+          paymentReferenceRef ? tx.get(financialDb.collection('ledger').where('sellerId', '==', resolvedSellerId)
+            .where('paymentMethod', '==', paymentMethod)) : Promise.resolve(null),
         ]);
+        if (priorReference?.exists || legacyReferences?.docs.some(doc =>
+            !['Failed', 'Refunded'].includes(doc.get('paymentStatus')) &&
+            String(doc.get('paymentReference') || '').trim().toUpperCase() === ledgerRecord.paymentReference.trim().toUpperCase())) {
+          throw new ApiError(409, 'checkout/duplicate-payment-reference', 'This payment reference was already submitted for this Seller and payment method.');
+        }
         if (!productNow.exists || !storeNow.exists || storeNow.get('status') !== 'Active' ||
           storeNow.get('ownerId') !== resolvedSellerId || productNow.get('deleted') === true ||
           productNow.get('published') !== true || productNow.get('status') !== 'Available' ||
@@ -6351,6 +6334,7 @@ async function startServer() {
 
         const timestamp = new Date();
         tx.create(ledgerRef, ledgerRecord as unknown as Record<string, unknown>);
+        tx.create(financialDb.collection('ledger_audit').doc(auditEntry.auditId), auditEntry as unknown as Record<string, unknown>);
         tx.create(buyerOrderRef, {
           orderNumber, storeId: resolvedStoreId, sellerId: resolvedSellerId, buyerId,
           primaryProductId, customerName: ledgerRecord.customerName,
@@ -6363,37 +6347,20 @@ async function startServer() {
           maxDownloads: 5, expiresAtMs,
           createdAt: timestamp, updatedAt: timestamp,
         });
-        tx.create(idempotencyRef, { buyerId, orderNumber, orderId, createdAtIso: timestamp.toISOString() });
-        return { duplicate: false, orderNumber, orderId };
+        tx.create(idempotencyRef, { buyerId, orderNumber, orderId, requestHash, createdAtIso: timestamp.toISOString() });
+        if (paymentReferenceRef) tx.create(paymentReferenceRef, { sellerId: resolvedSellerId,
+          paymentMethod, orderNumber, createdAtIso: timestamp.toISOString() });
+        return { duplicate: false, entry: ledgerRecord };
       });
       if (committed.duplicate) {
-        res.status(409).json({
-          duplicate: true,
-          orderNumber: committed.orderNumber,
-          orderId: committed.orderId,
-          error: 'Duplicate checkout blocked: This request was already submitted.',
-        });
+        persistentLedger.set(committed.entry.orderNumber, committed.entry);
+        res.json({ ...checkoutResponse(committed.entry), duplicate: true });
         return;
       }
       persistentLedger.set(orderNumber, ledgerRecord);
-      processedIdempotencyKeys.set(scopedIdempotencyKey, {
-        orderNumber, orderId, timestamp: Date.now(), downloadToken: clientDownloadToken,
-      });
+      immutableAuditLog.unshift(auditEntry);
 
-      const auditEntry = appendAuditEntry({
-        orderNumber,
-        orderId,
-        sellerId: resolvedSellerId,
-        actorUid: buyerId,
-        action: 'ORDER_CREATED',
-        previousStatus: 'None',
-        newStatus: initialPaymentStatus,
-        verificationMode,
-        detail:
-          calculatedTotal === 0
-            ? `Free digital order created (${currency} 0.00). Instant download token issued.`
-            : `Paid order created (${currency} ${calculatedTotal}) via ${paymentMethod}. Reference submitted. Download locked until seller statement verification.`,
-      });
+
 
       let emailNotification: BuyerPaidEmailNotificationRecord | null = null;
       if (initialPaymentStatus === 'Paid') {
@@ -6416,6 +6383,7 @@ async function startServer() {
         verificationMode,
         commissionStatus,
         downloadToken: clientDownloadToken,
+        downloadCount: 0,
         expiresAtMs,
         maxDownloads: 5,
         commissionBreakdown,
@@ -6425,8 +6393,9 @@ async function startServer() {
         emailNotification,
       });
     } catch (err) {
-      res.status(500).json({
-        error: err instanceof Error ? err.message : 'Server checkout validation failed.',
+      res.status(err instanceof ApiError ? err.status : 503).json({
+        error: err instanceof ApiError ? err.message : 'Checkout could not be confirmed. Retry with the same checkout details.',
+        ...(err instanceof ApiError ? { code: err.code } : {}),
       });
     }
   }));
@@ -8101,118 +8070,53 @@ async function startServer() {
       return;
     }
 
-    let protectedDeliverable = serverProductDeliverables.get(String(productId));
-    // Buyers cannot fetch private deliverable metadata directly. Only the backend
-    // reads the original file pointer after verifying this order/payment token.
-    if (!protectedDeliverable && adminFirestoreDb) {
-      try {
-        const privateSnap = await adminFirestoreDb.collection('products')
-          .doc(String(productId)).collection('deliverables').doc('main').get();
-        if (privateSnap.exists) {
-          const privateRecord = privateSnap.data() || {};
-          if (
-            String(privateRecord.ownerId || '') === ledgerEntry.sellerId &&
-            String(privateRecord.productId || '') === String(productId) &&
-            typeof privateRecord.fileDataUrl === 'string'
-          ) {
-            protectedDeliverable = {
-              fileName: String(privateRecord.fileName || 'Digital-Download').slice(0, 255),
-              fileType: String(privateRecord.fileMimeType || 'application/octet-stream').slice(0, 120),
-              fileSizeLabel: '',
-              fileDataUrl: privateRecord.fileDataUrl,
-            };
-            serverProductDeliverables.set(String(productId), protectedDeliverable);
-          }
-        }
-      } catch {
-        // Fail closed if authoritative metadata cannot be found.
+    // Re-read the committed pointer on every request. Another instance may
+    // have replaced/deleted it since this process last handled the product.
+    const deliverableRef = adminFirestoreDb!.collection('products').doc(String(productId))
+      .collection('deliverables').doc('main');
+    let privateRecord: Record<string, any>;
+    try {
+      const snap = await deliverableRef.get();
+      if (!snap.exists || snap.get('ownerId') !== ledgerEntry.sellerId || snap.get('productId') !== String(productId)) {
+        res.status(404).json({ allowed: false, error: 'Original product file is unavailable. No sample file was substituted or download counted.' }); return;
       }
+      privateRecord = snap.data() || {};
+    } catch {
+      res.status(503).json({ allowed: false, error: 'Original file could not be verified. Retry later.' }); return;
     }
-    if (!protectedDeliverable && FIREBASE_PROJECT_ID && FIREBASE_API_KEY && productId) {
-      try {
-        const delivUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/${encodeURIComponent(
-          FIRESTORE_DATABASE_ID
-        )}/documents/products/${encodeURIComponent(String(productId))}/deliverables/main?key=${FIREBASE_API_KEY}`;
-        const delivHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (verifiedUser?.rawToken) {
-          delivHeaders.Authorization = `Bearer ${verifiedUser.rawToken}`;
-        }
-        const delivRes = await fetch(delivUrl, { method: 'GET', headers: delivHeaders });
-        if (delivRes.ok) {
-          const delivJson = (await delivRes.json()) as Record<string, unknown>;
-          if (delivJson?.fields) {
-            const delivParsed = parseFirestoreDocumentFields(delivJson);
-            const prodRecord = serverProducts.get(String(productId));
-            const fileDataUrl = String(delivParsed.fileDataUrl || '');
-            if (fileDataUrl) {
-              protectedDeliverable = {
-                fileName: String(
-                  delivParsed.fileName || prodRecord?.fileName || 'Digital-Download.pdf'
-                ),
-                fileType: String(delivParsed.fileMimeType || prodRecord?.fileType || 'PDF'),
-                fileSizeLabel: String(prodRecord?.fileSizeLabel || '1.2 MB'),
-                fileDataUrl,
-              };
-              serverProductDeliverables.set(String(productId), protectedDeliverable);
-            }
-          }
-        }
-      } catch {
-        // Ignore fallback deliverable fetch error
-      }
+    const fileReference = String(privateRecord.fileDataUrl || '');
+    const objectPath = fileReference.startsWith('storage://') ? fileReference.slice('storage://'.length) : '';
+    const allowedPrefix = `deliverables/${ledgerEntry.sellerId}/${String(productId)}/`;
+    if (!FIREBASE_STORAGE_BUCKET || !objectPath.startsWith(allowedPrefix) ||
+        !/^[A-Za-z0-9._-]{1,180}$/.test(objectPath.slice(allowedPrefix.length))) {
+      res.status(403).json({ allowed: false, error: 'Private original file reference is not authorized.' }); return;
     }
-
-    if (protectedDeliverable?.fileDataUrl?.startsWith('storage://')) {
-      const objectPath = protectedDeliverable.fileDataUrl.slice('storage://'.length);
-      const allowedPrefix = `deliverables/${ledgerEntry.sellerId}/${String(productId)}/`;
-      const safeObject = objectPath.startsWith(allowedPrefix) &&
-        /^[A-Za-z0-9._/-]+$/.test(objectPath) &&
-        objectPath.slice(allowedPrefix.length).length > 0 &&
-        !objectPath.slice(allowedPrefix.length).includes('/');
-      if (!safeObject || !FIREBASE_STORAGE_BUCKET || !adminFirestoreDb) {
-        res.status(403).json({ allowed: false, error: 'Private file reference is not authorized.' });
-        return;
+    let protectedDeliverable: { fileName: string; fileType: string; fileSizeLabel: string; fileDataUrl: string };
+    let storageGeneration: string;
+    try {
+      const object = getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).file(objectPath);
+      const [metadata] = await object.getMetadata();
+      if (metadata.metadata?.firebaseStorageDownloadTokens) {
+        res.status(403).json({ allowed: false, error: 'The stored original is not private. Ask the Seller to re-upload it securely.' }); return;
       }
-      try {
-        // Firebase Admin never exposes a public download URL or cross-seller file.
-        const object = getAdminStorage().bucket(FIREBASE_STORAGE_BUCKET).file(objectPath);
-        const [metadata] = await object.getMetadata();
-        const contentSize = Number(metadata.size || 0);
-        const allowedMime = new Set([
-          'application/pdf', 'application/zip', 'application/epub+zip',
-          'text/plain', 'application/msword',
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        ]);
-        const contentType = String(metadata.contentType || '');
-        if (contentSize < 1 || contentSize > 5 * 1024 * 1024 || !allowedMime.has(contentType)) {
-          res.status(422).json({ allowed: false, error: 'Stored original file has invalid size or type.' });
-          return;
-        }
-        const [bytes] = await object.download();
-        if (bytes.length !== contentSize) {
-          res.status(503).json({ allowed: false, error: 'Original file integrity check failed.' });
-          return;
-        }
-        protectedDeliverable = {
-          ...protectedDeliverable,
-          fileType: contentType,
-          fileDataUrl: `data:${contentType};base64,${bytes.toString('base64')}`,
-        };
-      } catch {
-        res.status(503).json({
-          allowed: false,
-          error: 'Original file could not be retrieved from secure storage. Try again later.',
-        });
-        return;
+      const contentSize = Number(metadata.size);
+      const contentType = String(metadata.contentType || '');
+      storageGeneration = String(metadata.generation || '');
+      if (!Number.isSafeInteger(contentSize) || contentSize < 1 || contentSize > 5 * 1024 * 1024 ||
+          !storageGeneration || privateRecord.storageGeneration && String(privateRecord.storageGeneration) !== storageGeneration) {
+        res.status(503).json({ allowed: false, error: 'Original file integrity check failed.' }); return;
       }
-    }
-
-    if (!protectedDeliverable?.fileDataUrl || !protectedDeliverable.fileDataUrl.startsWith('data:')) {
-      res.status(404).json({
-        allowed: false,
-        error: 'Original product file is unavailable. No sample file was substituted or download counted.',
-      });
-      return;
+      const [bytes] = await object.download({ validation: 'crc32c' });
+      validateFileBytes(String(privateRecord.fileName || ''), contentType, bytes, 'product');
+      const [after] = await object.getMetadata();
+      if (bytes.length !== contentSize || String(after.generation) !== storageGeneration ||
+          after.metadata?.firebaseStorageDownloadTokens) {
+        res.status(503).json({ allowed: false, error: 'Original file changed during retrieval. Retry later.' }); return;
+      }
+      protectedDeliverable = { fileName: String(privateRecord.fileName).slice(0, 255), fileType: contentType,
+        fileSizeLabel: '', fileDataUrl: `data:${contentType};base64,${bytes.toString('base64')}` };
+    } catch {
+      res.status(503).json({ allowed: false, error: 'Original file could not be retrieved from secure storage. Retry later.' }); return;
     }
 
     // The download limit is financial-access state. Commit the counter with a
@@ -8223,8 +8127,13 @@ async function startServer() {
       const ledgerRef = adminFirestoreDb!.collection('ledger').doc(ledgerEntry.orderNumber);
       const orderRef = adminFirestoreDb!.collection('orders').doc(ledgerEntry.orderId);
       committedDownloadCount = await adminFirestoreDb!.runTransaction(async (tx) => {
-        const snap = await tx.get(ledgerRef);
+        const [snap, latestFile] = await Promise.all([tx.get(ledgerRef), tx.get(deliverableRef)]);
         if (!snap.exists) throw new Error('Order is not present in the verified ledger.');
+        if (!latestFile.exists || latestFile.get('fileDataUrl') !== fileReference ||
+            latestFile.get('ownerId') !== ledgerEntry.sellerId || latestFile.get('productId') !== String(productId) ||
+            latestFile.get('storageGeneration') && String(latestFile.get('storageGeneration')) !== storageGeneration) {
+          throw new Error('Original file changed. Retry the download.');
+        }
         const saved = snap.data() as LedgerEntry;
         const count = Number(saved.downloadCount);
         const max = Number(saved.maxDownloads);

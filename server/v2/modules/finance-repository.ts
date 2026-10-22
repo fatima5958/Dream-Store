@@ -5,6 +5,7 @@ import type { FinancialRepository } from '../contracts.ts';
 import { ApiError } from '../errors.ts';
 import { commissionBreakdown, commissionEntry } from './commissions.ts';
 import { validateFileBytes } from './uploads.ts';
+import { canDownload } from './download-policy.ts';
 
 const COMMISSION_INVOICE_THRESHOLD = 5;
 const COMMISSION_INVOICE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -621,9 +622,8 @@ export function createFirestoreFinancialRepository(
         const snap = await tx.get(orderRef);
         if (!snap.exists) throw new ApiError(404, 'downloads/order-not-found', 'Order not found.');
         const order = snap.data() || {};
-        if (order.buyerId !== buyerUid || order.primaryProductId !== productId || order.paymentStatus !== 'Paid' ||
-            order.commissionStatus === 'reversed' || Number(order.expiresAtMs) <= Date.now() ||
-            Number(order.downloadCount || 0) >= Number(order.maxDownloads || 5) || order.downloadTokenId !== tokenId) {
+        if (order.buyerId !== buyerUid || order.primaryProductId !== productId ||
+            !canDownload(order) || order.downloadTokenId !== tokenId) {
           throw new ApiError(403, 'downloads/not-authorized', 'Order is unpaid, revoked, expired, exhausted or does not match this Buyer.');
         }
         const deliverableRef = db.collection('products').doc(productId).collection('deliverables').doc('main');

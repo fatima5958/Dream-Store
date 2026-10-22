@@ -5,6 +5,7 @@ import { ApiError } from '../errors.ts';
 import { authenticatedPrincipal } from './auth.ts';
 import { configuredMethods } from './payment-settings.ts';
 import { commissionBreakdown } from './commissions.ts';
+import { canDownload } from './download-policy.ts';
 
 const exchange: Record<string, number> = { USD: 1, PKR: 278, INR: 84, GBP: .78, EUR: .92, AED: 3.67, SAR: 3.75, CAD: 1.38, AUD: 1.52 };
 const minor = (value: number) => Math.round(value * 100);
@@ -55,13 +56,17 @@ export function registerCheckoutRoutes(app: Express, deps: V2Dependencies) {
       commissionStatus: isFree ? 'not_applicable' : 'outstanding', payoutStatus: isFree ? 'Not Applicable (Free)' : 'Pending Payment Verification',
       downloadCount: 0, maxDownloads: 5, expiresAtMs, createdAtIso: new Date().toISOString(), updatedAtIso: new Date().toISOString(),
       idempotencyKey: key, downloadTokenId: randomUUID(), paymentAudit: [{ action: 'ORDER_CREATED', actorUid: buyer.uid, atIso: new Date().toISOString() }] };
+    // Refuse missing signing configuration before any financial write.
+    createDownloadToken(order, deps.downloadTokenSecret || '');
     const committed = await deps.finance!.createOrder(order);
-    const token = createDownloadToken(committed.order, deps.downloadTokenSecret || '');
-    res.status(committed.duplicate ? 200 : 201).json({ orderId: committed.order.orderId, orderNumber: committed.order.orderNumber,
-      storeId: committed.order.storeId, sellerId: committed.order.sellerId, calculatedSubtotal: amount, calculatedTotal: amount,
-      currency, initialPaymentStatus: committed.order.paymentStatus, verificationMode: committed.order.verificationMode,
-      commissionStatus: committed.order.commissionStatus, downloadToken: isFree ? token : 'LOCKED-PENDING-VERIFICATION',
-      expiresAtMs: committed.order.expiresAtMs, maxDownloads: 5, commissionBreakdown: commission, payoutStatus: committed.order.payoutStatus,
+    const saved = committed.order;
+    const token = canDownload(saved) ? createDownloadToken(saved, deps.downloadTokenSecret || '') : 'LOCKED-PENDING-VERIFICATION';
+    const savedCommission = commissionBreakdown(saved.grossAmountMinor, saved.currency, saved.paymentMethod);
+    res.status(committed.duplicate ? 200 : 201).json({ orderId: saved.orderId, orderNumber: saved.orderNumber,
+      storeId: saved.storeId, sellerId: saved.sellerId, calculatedSubtotal: saved.subtotal, calculatedTotal: saved.totalAmount,
+      currency: saved.currency, initialPaymentStatus: saved.paymentStatus, verificationMode: saved.verificationMode,
+      commissionStatus: saved.commissionStatus, downloadToken: token, downloadCount: saved.downloadCount,
+      expiresAtMs: saved.expiresAtMs, maxDownloads: saved.maxDownloads, commissionBreakdown: savedCommission, payoutStatus: saved.payoutStatus,
       gatewayNotice: isFree ? 'Free digital product verified. Instant download unlocked.' : 'Order recorded pending Seller payment verification. A transaction reference is not proof of payment.',
       ...(committed.duplicate ? { duplicate: true } : {}) });
   })().catch(next));

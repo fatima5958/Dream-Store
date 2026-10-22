@@ -35,6 +35,8 @@ jobs:
         run: bun run lint
       - name: Server auth and failure-path regression tests
         run: npm run test:server
+      - name: Browser checkout and download protocol regressions
+        run: npm run test:client
       - name: Backend V2 staging authentication, profiles and release guards
         run: npm run test:v2
       - name: Offline private cloud staging preflight regression tests

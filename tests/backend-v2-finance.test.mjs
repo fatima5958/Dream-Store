@@ -105,6 +105,35 @@ test('concurrent seller verification creates one commission and refund revokes i
   assert.equal(f.db.data.get('commission_adjustments/DS-1-order:refund').amountMinor, -13900);
 });
 
+test('waiving a Seller commission never revokes a paid Buyer original-file entitlement', async () => {
+  const f = financeFixture();
+  const path = 'deliverables/seller/book/private.pdf';
+  const bytes = Buffer.from('%PDF-1.7\nPaid Buyer original\n%%EOF');
+  await f.bucket.file(path).save(bytes, { preconditionOpts: { ifGenerationMatch: 0 }, metadata: { contentType: 'application/pdf' } });
+  f.db.seed('products/book/deliverables/main', { ownerId: 'seller', productId: 'book', fileName: 'private.pdf',
+    fileMimeType: 'application/pdf', fileDataUrl: 'storage://' + path });
+  f.db.seed('ledger/DS-1-order', orderInput({ paymentStatus: 'Paid', commissionStatus: 'reversed' }));
+  const used = await f.repo.consumeDownload('DS-1-order', 'buyer', 'book', 'token-first');
+  assert.equal(used.fileDataUrl, 'data:application/pdf;base64,' + bytes.toString('base64'));
+  assert.equal(used.order.downloadCount, 1);
+  f.db.seed('ledger/DS-1-order', { ...used.order, paymentStatus: 'Refunded' });
+  await assert.rejects(f.repo.consumeDownload('DS-1-order', 'buyer', 'book', used.order.downloadTokenId), error => error.status === 403);
+});
+
+test('corrupt download limits and expiry fail closed without consuming or serving a file', async () => {
+  const f = financeFixture();
+  const path = 'deliverables/seller/book/private.pdf';
+  await f.bucket.file(path).save(Buffer.from('%PDF-1.7\nprivate\n%%EOF'), { preconditionOpts: { ifGenerationMatch: 0 }, metadata: { contentType: 'application/pdf' } });
+  f.db.seed('products/book/deliverables/main', { ownerId: 'seller', productId: 'book', fileName: 'private.pdf',
+    fileMimeType: 'application/pdf', fileDataUrl: 'storage://' + path });
+  for (const patch of [{ expiresAtMs: 'not-a-date' }, { downloadCount: -1 }, { downloadCount: 0.5 },
+    { maxDownloads: 'bad' }, { maxDownloads: 0 }, { expiresAtMs: undefined }]) {
+    f.db.seed('ledger/DS-1-order', orderInput({ paymentStatus: 'Paid', ...patch }));
+    await assert.rejects(f.repo.consumeDownload('DS-1-order', 'buyer', 'book', 'token-first'),
+      error => error.status === 403, JSON.stringify(patch));
+  }
+});
+
 test('commission invoices issue after five verified eligible sales and survive repeat requests', async () => {
   const f = financeFixture();
   for (let i = 1; i <= 5; i++) {

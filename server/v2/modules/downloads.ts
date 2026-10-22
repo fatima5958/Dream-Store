@@ -3,6 +3,7 @@ import type { Express } from 'express';
 import type { V2Dependencies } from '../contracts.ts';
 import { ApiError } from '../errors.ts';
 import { authenticatedPrincipal } from './auth.ts';
+import { canDownload } from './download-policy.ts';
 
 function decodeToken(token: unknown, secret: string) {
   if (typeof token !== 'string' || token.length > 4096 || secret.length < 32) return null;
@@ -22,7 +23,7 @@ export function registerDownloadRoutes(app: Express, deps: V2Dependencies) {
   app.post('/api/downloads/token', (req, res, next) => (async () => {
     const principal = await authenticatedPrincipal(req, deps);
     const order = await deps.finance!.order(String(req.body?.orderNumber || ''));
-    if (!order || order.buyerId !== principal.uid || order.paymentStatus !== 'Paid' || order.commissionStatus === 'reversed' || Date.now() >= order.expiresAtMs || Number(order.downloadCount) >= Number(order.maxDownloads)) throw new ApiError(403, 'downloads/not-authorized', 'A valid paid order belonging to this Buyer is required.');
+    if (!order || order.buyerId !== principal.uid || !canDownload(order)) throw new ApiError(403, 'downloads/not-authorized', 'A valid paid order belonging to this Buyer is required.');
     res.json({ ok: true, downloadToken: (await import('./checkout.ts')).createDownloadToken(order, deps.downloadTokenSecret || ''), expiresAtMs: order.expiresAtMs });
   })().catch(next));
   app.post('/api/delivery/verify-download', (req, res, next) => (async () => {

@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import { checkoutAttempt, applyDownloadReceipt, mergeOrderSnapshot } from './lib/checkout';
 import {
   Edit3,
   Layers,
@@ -755,6 +756,11 @@ export default function App() {
       const isStale = () => runId !== authRunSeq;
       setCurrentUser(user);
       setAuthReady(true);
+      // Privileges from the previous account must disappear before any awaits.
+      setIsSuperAdminVerified(false);
+      setUserProfile(null);
+      setRoleOnboardingOpen(false);
+      setAuthVerificationIssue(false);
       // Clear any previous session's orders & audit logs immediately to prevent cross-account leakage
       setOrders([]);
       setAuditLogs([]);
@@ -1186,7 +1192,8 @@ export default function App() {
 
   // 3. Real-time Firestore listeners once authenticated
   useEffect(() => {
-    if (!authReady || !currentUser || !hasFirebaseSdkSession()) return;
+    if (!authReady || !currentUser || !hasFirebaseSdkSession() ||
+        userProfile?.uid !== currentUser.uid || !userProfile.onboardingCompleted) return;
 
     const userStoreId = userProfile?.storeId || `store-${currentUser.uid.slice(0, 20)}`;
     const isBuyerOnly = userProfile?.role === 'buyer';
@@ -1350,10 +1357,10 @@ export default function App() {
           byOrderNum.set(existing.orderNumber, existing);
         }
         for (const inc of incomingOrders) {
-          byOrderNum.set(inc.orderNumber, {
+          byOrderNum.set(inc.orderNumber, mergeOrderSnapshot(byOrderNum.get(inc.orderNumber), {
             ...(byOrderNum.get(inc.orderNumber) || {}),
             ...inc,
-          });
+          }));
         }
         return Array.from(byOrderNum.values());
       });
@@ -1525,7 +1532,7 @@ export default function App() {
       unsubSettings();
       unsubAudit();
     };
-  }, [authReady, currentUser, userProfile?.role, userProfile?.storeId]);
+  }, [authReady, currentUser, userProfile?.role, userProfile?.storeId, isSuperAdminVerified]);
 
   // 3A. URL Manipulation & Role Access Guard: Enforce verified backend role permissions on direct URLs and screen state
   useEffect(() => {
@@ -1635,15 +1642,19 @@ export default function App() {
     const effectiveUid = currentUser?.uid || null;
     if (!effectiveUid) return;
     let active = true;
+    const controller = new AbortController();
 
     const syncExpressOrders = async () => {
       try {
         const authHeaders = await getAuthHeaders();
+        if (!active) return;
         const res = await fetch('/api/orders/list', {
           headers: authHeaders,
+          signal: controller.signal,
         });
         if (!res.ok || !active) return;
         const data = await res.json();
+        if (!active) return;
         if (Array.isArray(data.orders) && data.orders.length > 0) {
           setOrders((prev) => {
             const byOrderNumber = new Map<string, OrderItem>();
@@ -1671,7 +1682,7 @@ export default function App() {
                   ? 'Free ($0.00)'
                   : formatMinorToMajor(Math.round(totalMajor * 100), curr);
               const existing = byOrderNumber.get(sOrd.orderNumber);
-              byOrderNumber.set(sOrd.orderNumber, {
+              byOrderNumber.set(sOrd.orderNumber, mergeOrderSnapshot(existing, {
                 ...(existing || {}),
                 ...sOrd,
                 id: existing?.id || sOrd.id,
@@ -1682,7 +1693,7 @@ export default function App() {
                 amount: formattedAmount,
                 date: existing?.date || 'Just now',
                 status: sOrd.paymentStatus === 'Paid' ? 'Completed' : 'Processing',
-              });
+              }));
             }
             return Array.from(byOrderNumber.values());
           });
@@ -1711,6 +1722,7 @@ export default function App() {
     const timer = window.setInterval(syncExpressOrders, 3500);
     return () => {
       active = false;
+      controller.abort();
       window.clearInterval(timer);
     };
   }, [activeScreen, activeStoreId, currentUser, isSuperAdminVerified]);
@@ -2425,9 +2437,11 @@ export default function App() {
       throw new Error('Seller or store is unavailable. Refresh the product page.');
     }
     const serverBuyerId = rawBuyerUid;
-    const cartSig = resolvedCart.map((c) => `${c.product.id}:${c.quantity}`).join('|');
-    const refSig = (params.paymentReference || 'free').trim();
-    const idempotencyKey = `idem-${serverBuyerId}-${config.storeId}-${cartSig}-${refSig}`;
+    const attempt = await checkoutAttempt({ buyerId: serverBuyerId, storeId: config.storeId,
+      productId: primaryProduct.id, quantity: 1, currency: params.currency,
+      paymentMethod: params.paymentMethod, paymentReference: params.paymentReference,
+      customerName: params.customerName, customerEmail: params.customerEmail });
+    const idempotencyKey = attempt.key;
     const authHeaders = await getAuthHeaders();
     const response = await fetch('/api/checkout/validate-and-prepare', {
       method: 'POST',
@@ -2509,7 +2523,7 @@ export default function App() {
       paymentStatus: data.initialPaymentStatus,
       paymentReference: params.paymentReference,
       downloadToken: data.downloadToken,
-      downloadCount: 0,
+      downloadCount: Number(data.downloadCount) || 0,
       maxDownloads: data.maxDownloads,
       expiresAtMs: data.expiresAtMs,
       date: 'Just now',
@@ -2521,7 +2535,8 @@ export default function App() {
       ...(data.emailNotification ? { buyerEmailNotification: data.emailNotification } : {}),
     };
 
-    setOrders((prev) => [createdItem, ...prev]);
+    setOrders((prev) => [createdItem, ...prev.filter(order => order.id !== createdItem.id)]);
+    attempt.complete();
     setCart([]);
     return createdItem;
   };
@@ -2732,7 +2747,8 @@ export default function App() {
     const nextDownloadCount = Number(verifyData.downloadCount) || order.downloadCount + 1;
     setOrders((prev) =>
       prev.map((o) =>
-        o.id === order.id ? { ...o, downloadCount: nextDownloadCount } : o
+        o.id === order.id ? applyDownloadReceipt(o, { downloadCount: nextDownloadCount,
+          nextDownloadToken: verifyData.nextDownloadToken }) : o
       )
     );
 
