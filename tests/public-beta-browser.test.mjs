@@ -156,3 +156,18 @@ test('Restored account gets actionable retry when hosted frontend cannot reach J
     assert.equal(await page.getByTestId('role-nav-seller').count(), 0);
   } finally { await page.close(); }
 });
+
+
+test('Mobile authentication fields keep icons separate from placeholder and password toggle', async () => {
+  const page = await visit('/', { width: 375, height: 812 });
+  try {
+    await page.getByTestId('hero-primary-cta').click();
+    await page.getByTestId('candyland-auth-modal').waitFor({ state: 'visible', timeout: 10000 });
+    for (const field of ['auth-name-input', 'auth-email-input', 'auth-password-input']) {
+      const padding = await page.getByTestId(field).evaluate(el => parseFloat(getComputedStyle(el).paddingLeft));
+      assert.ok(padding >= 40, `${field} must reserve at least 40px for its leading icon; got ${padding}`);
+    }
+    const trailing = await page.getByTestId('auth-password-input').evaluate(el => parseFloat(getComputedStyle(el).paddingRight));
+    assert.ok(trailing >= 40, `Password must reserve space for visibility toggle; got ${trailing}`);
+  } finally { await page.close(); }
+});
