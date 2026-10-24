@@ -170,6 +170,15 @@
   transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
+/* The unlayered .candy-input padding shorthand overrides Tailwind pl-* utilities.
+   Use more-specific gutters for icon-bearing auth fields on narrow screens. */
+.candy-input.auth-field-leading-icon {
+  padding-left: 2.75rem;
+}
+.candy-input.auth-field-trailing-icon {
+  padding-right: 2.75rem;
+}
+
 .candy-input::placeholder {
   color: #9A7B72;
   font-weight: 500;
