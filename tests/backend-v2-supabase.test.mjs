@@ -13,6 +13,7 @@ import { createFirestoreFinancialRepository } from '../server/v2/modules/finance
 import { createFirebaseVerifier } from '../server/v2/modules/auth.ts';
 import { createDownloadToken } from '../server/v2/modules/checkout.ts';
 import { createV2App } from '../server/v2/app.ts';
+import { checkoutAttempt, applyDownloadReceipt } from '../src/lib/checkout.ts';
 import { MemoryFirestore } from './fixtures/v2-repositories.mjs';
 import { cloudSupabaseEnv, supabaseConfig, syntheticSecret, syntheticSupabase } from './fixtures/supabase-storage.mjs';
 
@@ -296,6 +297,44 @@ test('unpublished products block new checkout; free product follows existing aut
     const download=await request('/api/delivery/verify-download','buyer',{orderNumber:free.body.orderNumber,productId:'book',downloadToken:free.body.downloadToken});
     assert.equal(download.status,200); assert.equal(download.body.allowed,true);
   });
+});
+
+test('missing signing secret rejects checkout before any order is committed', async () => {
+  const f = fixture();
+  await f.products.save(seller, product); await f.upload();
+  await f.products.save(seller, { ...product, published: true, isFree: true, fileName: 'book.pdf' });
+  f.deps.downloadTokenSecret = '';
+  await withApi(f, async request => {
+    const result = await request('/api/checkout/validate-and-prepare', 'buyer', { storeId: 'store-seller',
+      currency: 'USD', paymentMethod: 'free_instant', items: [{ id: 'book', quantity: 1 }], idempotencyKey: 'missing-signing-secret' });
+    assert.equal(result.status, 503);
+    assert.equal([...f.db.data.keys()].filter(key => /^(ledger|orders|checkout_idempotency)\//.test(key)).length, 0);
+  });
+});
+
+test('the browser checkout/download protocol supports retries and multiple authorized downloads', async () => {
+  const f = fixture(); await f.products.save(seller, product); await f.upload();
+  await f.products.save(seller, { ...product, published: true, isFree: true, fileName: 'book.pdf' });
+  const attempt = await checkoutAttempt({ buyerId: 'buyer', storeId: 'store-seller', productId: 'book', quantity: 1,
+    currency: 'USD', paymentMethod: 'free_instant', paymentReference: '', customerName: 'Buyer', customerEmail: 'buyer@example.test' });
+  await withApi(f, async request => {
+    const checkout = { storeId: 'store-seller', currency: 'USD', paymentMethod: 'free_instant',
+      items: [{ id: 'book', quantity: 1 }], idempotencyKey: attempt.key };
+    const created = await request('/api/checkout/validate-and-prepare', 'buyer', checkout);
+    assert.equal(created.status, 201, created.text);
+    let order = { ...created.body, downloadCount: 0 };
+    for (let count = 1; count <= 2; count++) {
+      const downloaded = await request('/api/delivery/verify-download', 'buyer', { orderNumber: order.orderNumber,
+        productId: 'book', downloadToken: order.downloadToken });
+      assert.equal(downloaded.status, 200, downloaded.text);
+      order = applyDownloadReceipt(order, downloaded.body);
+      assert.equal(order.downloadCount, count);
+      const retry = await request('/api/checkout/validate-and-prepare', 'buyer', checkout);
+      assert.equal(retry.status, 200); assert.equal(retry.body.downloadToken, order.downloadToken);
+      assert.equal(retry.body.downloadCount, count);
+    }
+  });
+  attempt.complete();
 });
 
 test('storage failures, corrupt bytes and mismatched versions never consume Buyer download entitlement', async()=>{

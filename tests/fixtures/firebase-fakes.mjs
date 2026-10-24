@@ -1,7 +1,41 @@
+import { MemoryFirestore } from './v2-repositories.mjs';
 const scenario = process.env.DREAMSTORE_TEST_SCENARIO;
 const permissionError = () => Object.assign(new Error('PERMISSION_DENIED fixture'), { code: 7 });
 const store = { ownerId: 'seller-test', storeSlug: 'test-shop', storeName: 'Test Shop', status: 'Active', plan: 'Free', currency: 'USD' };
 const deliverable = { ownerId: 'seller-test', productId: 'product-test', fileDataUrl: 'storage://deliverables/seller-test/product-test/original.pdf' };
+const auditDb = new MemoryFirestore();
+auditDb.settings = () => {};
+if (scenario?.includes('commission')) auditDb.seed('platform_settings/commission', { platformCommissionBps: 750 });
+if (scenario === 'audit-corrupt-commission') auditDb.seed('platform_settings/commission', { platformCommissionBps: '750' });
+if (scenario === 'audit-paid-commission-race') {
+  const transact = auditDb.runTransaction.bind(auditDb);
+  auditDb.runTransaction = async callback => {
+    auditDb.seed('platform_settings/commission', { platformCommissionBps: 1000 });
+    return transact(callback);
+  };
+}
+if (scenario === 'audit-invalid-count') {
+  const transact = auditDb.runTransaction.bind(auditDb);
+  auditDb.runTransaction = async callback => {
+    const result = await transact(callback);
+    for (const [path, record] of auditDb.data) {
+      if (path.startsWith('ledger/')) auditDb.seed(path, { ...record, downloadCount: '0' });
+    }
+    return result;
+  };
+}
+auditDb.seed('stores/store-seller-test', { ...store, ...(scenario === 'audit-suspended' ? { status: 'Pending' } : {}) });
+auditDb.seed('products/product-test', { id: 'product-test', storeId: 'store-seller-test', ownerId: 'seller-test',
+  title: 'Original Guide', category: 'Ebooks', isFree: !scenario?.startsWith('audit-paid'),
+  priceUsd: scenario?.startsWith('audit-paid') ? 10 : 0, pricePkr: scenario?.startsWith('audit-paid') ? 2780 : 0,
+  published: true, status: 'Available' });
+auditDb.seed('sellerSettings/seller-test', { ownerId: 'seller-test', storeId: 'store-seller-test', bankTransferInstructions: 'Synthetic receiving account for tests only' });
+auditDb.seed('products/product-test/deliverables/main', { ...deliverable, fileName: 'original.pdf', fileMimeType: 'application/pdf', storageGeneration: '1' });
+const auditObjects = new Map([['deliverables/seller-test/product-test/original.pdf', {
+  data: Buffer.from('%PDF-1.7\nOriginal audit file\n%%EOF'), contentType: 'application/pdf', generation: '1',
+  ...(scenario === 'audit-public-file' ? { metadata: { firebaseStorageDownloadTokens: 'public-test-token' } } : {}),
+}]]);
+let auditGeneration = 1;
 
 const founderState = new Map([
   ['stores/store-seller-test', store],
@@ -47,6 +81,7 @@ function ref(path, filters = []) {
   };
 }
 export function getFirestore() {
+  if (scenario?.startsWith('audit-')) return auditDb;
   return {
     settings() {}, collection: name => ref(name),
     async runTransaction(callback) {
@@ -67,11 +102,32 @@ export function getFirestore() {
   };
 }
 export function getStorage() {
+  if (scenario?.startsWith('audit-')) return { bucket: () => ({
+    async getMetadata() { return [{}]; },
+    file: path => ({
+      async save(data, options) {
+        if (options.preconditionOpts?.ifGenerationMatch === 0 && auditObjects.has(path)) throw Object.assign(new Error('Exists'), { code: 412 });
+        auditObjects.set(path, { data: Buffer.from(data), contentType: options.metadata.contentType, generation: String(++auditGeneration) });
+        if (scenario === 'audit-upload-race') auditDb.seed('stores/store-seller-test', { ...store, status: 'Pending' });
+      },
+      async getMetadata() { const object = auditObjects.get(path); if (!object) throw Error('Missing object'); return [{ ...object, size: String(object.data.length) }]; },
+      async download() {
+        const object = auditObjects.get(path); if (!object) throw Error('Missing object');
+        if (scenario === 'audit-expiry-race') {
+          for (const [key, record] of auditDb.data) {
+            if (key.startsWith('ledger/')) auditDb.seed(key, { ...record, expiresAtMs: undefined });
+          }
+        }
+        return [Buffer.from(object.data)];
+      },
+      async delete() { auditObjects.delete(path); },
+    }),
+  }) };
   return { bucket: () => ({
     async getMetadata() { return [{}]; },
     file: () => ({ async getMetadata() {
       if (scenario === 'storage-missing') throw Object.assign(new Error('No such object'), { code: 404 });
-      return [{ size: '100', contentType: 'application/pdf' }];
+      return [{ size: '100', contentType: 'application/pdf', generation: '1' }];
     } }),
   }) };
 }

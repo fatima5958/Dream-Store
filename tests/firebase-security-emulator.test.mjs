@@ -122,6 +122,20 @@ test('Firestore deliverable records are never exposed directly to buyers, even w
   }
 });
 
+test('Commission configuration and audits can only be written through the verified server', async () => {
+  await env.withSecurityRulesDisabled(async ctx => {
+    await setDoc(doc(ctx.firestore(), 'platform_settings', 'commission'), { platformCommissionBps: 750 });
+  });
+  const contexts = [env.unauthenticatedContext(), user('seller-one'), user('other-buyer'),
+    env.authenticatedContext('admin', { email_verified: true, role: 'super_admin', superAdmin: true })];
+  for (const ctx of contexts) {
+    const config = doc(ctx.firestore(), 'platform_settings', 'commission');
+    await assertFails(getDoc(config));
+    await assertFails(setDoc(config, { platformCommissionBps: 0 }));
+    await assertFails(setDoc(doc(ctx.firestore(), 'platform_settings', 'commission', 'audit', 'forged'), { actorUid: 'admin' }));
+  }
+});
+
 test('No browser Firebase client can create or change a financial ledger document', async () => {
   const fake = {
     orderId: 'order-one',

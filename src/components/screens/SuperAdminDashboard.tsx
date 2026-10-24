@@ -161,7 +161,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const [totalCheckoutViews, setTotalCheckoutViews] = useState<number>(0);
   const [editingStore, setEditingStore] = useState<AdminStoreRecord | null>(null);
   const [platformSettings, setPlatformSettings] = useState<AdminPlatformSettings>({
-    platformCommissionBps: gatewayStatus.platformCommissionBps || 500,
+    platformCommissionBps: gatewayStatus.platformCommissionBps ?? 500,
     maintenanceMode: false,
     allowNewSellerRegistrations: true,
     updatedAtIso: new Date().toISOString(),
@@ -467,13 +467,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           newCommissionBps: platformSettings.platformCommissionBps,
         }),
       });
-      if (res.ok) {
-        showToast('Platform commission & security settings saved');
-      } else {
-        showToast('Platform settings updated locally');
-      }
-    } catch {
-      showToast('Failed to save platform settings');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok !== true) throw new Error(data.error || 'Commission rate was not saved. Please retry.');
+      setPlatformSettings(current => ({ ...current, platformCommissionBps: data.platformCommissionBps }));
+      showToast('Platform commission rate saved');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to save commission rate', {
+        title: 'Settings Save Failed', variant: 'error',
+      });
     }
   };
 

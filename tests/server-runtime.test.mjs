@@ -12,12 +12,13 @@ function token(sub = 'seller-test', claims = {}) {
     iss: `https://securetoken.google.com/${config.projectId}`, exp: Math.floor(Date.now() / 1000) + 600,
     auth_time: Math.floor(Date.now() / 1000), ...claims })}.test-signature`;
 }
-async function boot(t, scenario = 'healthy', secret = 'test-only-signing-secret-with-over-32-characters') {
+async function boot(t, scenario = 'healthy', secret = 'test-only-signing-secret-with-over-32-characters', paid = false) {
   const child = spawn(process.execPath, ['--import', './tests/fixtures/register-firebase.mjs', 'scripts/start.mjs'], {
     cwd: root, env: { ...process.env, NODE_ENV: 'development', PORT: '0',
       SERVER_SIGNING_SECRET: secret, DOWNLOAD_SIGNING_SECRET: '', TOKEN_SIGNING_SECRET: '',
       DREAMSTORE_TEST_SCENARIO: scenario, SUPER_ADMIN_UID: 'seller-test',
-      DREAMSTORE_PAID_CHECKOUT_ENABLED: 'false', DREAMSTORE_LEGACY_EMAIL_AUTH_ENABLED: 'true' },
+      RESEND_API_KEY: '', GEMINI_API_KEY: '',
+      DREAMSTORE_PAID_CHECKOUT_ENABLED: paid ? 'true' : 'false', DREAMSTORE_LEGACY_EMAIL_AUTH_ENABLED: 'true' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -44,6 +45,76 @@ async function request(origin, path, body, authToken) {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
+
+const auditCheckout = { idempotencyKey: 'audit-free-checkout', storeId: 'store-seller-test', buyerId: 'buyer-test',
+  customerName: 'Audit Buyer', customerEmail: 'seller@example.test', currency: 'USD', paymentMethod: 'free_instant',
+  items: [{ id: 'product-test', quantity: 1 }] };
+function uploadOriginal(origin, data) {
+  return fetch(origin + '/api/uploads/product', { method: 'POST', headers: { authorization: 'Bearer ' + token(),
+    'content-type': 'application/octet-stream', 'x-product-id': 'product-test', 'x-store-id': 'store-seller-test',
+    'x-file-name': 'original.pdf', 'x-file-type': 'application/pdf' }, body: data });
+}
+test('checkout retries recover the committed order and reject a changed purchase intent', async t => {
+  const origin = await boot(t, 'audit-checkout');
+  assert.equal((await request(origin, '/api/checkout/validate-and-prepare', { ...auditCheckout, currency: 'toString' }, token('buyer-test'))).status, 400);
+  const responses = await Promise.all([request(origin, '/api/checkout/validate-and-prepare', auditCheckout, token('buyer-test')),
+    request(origin, '/api/checkout/validate-and-prepare', auditCheckout, token('buyer-test'))]);
+  const bodies = await Promise.all(responses.map(response => response.json()));
+  assert.deepEqual(responses.map(response => response.status), [200, 200], JSON.stringify(bodies));
+  assert.equal(bodies[0].orderNumber, bodies[1].orderNumber);
+  assert.equal(bodies[0].downloadToken, bodies[1].downloadToken);
+  assert.equal(bodies.find(body => !body.duplicate).emailNotification.status, 'skipped');
+  const email = await request(origin, '/api/orders/' + bodies[0].orderNumber + '/email-notification', undefined, token('buyer-test'));
+  assert.equal((await email.json()).emailSent, false, 'an unconfigured provider must not claim delivery');
+  assert.equal((await request(origin, '/api/checkout/validate-and-prepare', { ...auditCheckout, customerName: 'Different intent' }, token('buyer-test'))).status, 409);
+  const orders = await request(origin, '/api/orders/list', undefined, token('buyer-test'));
+  assert.equal((await orders.json()).orders.length, 1);
+});
+
+test('concurrent paid references create one pending order and retry the winner safely', async t => {
+  const origin = await boot(t, 'audit-paid', 'test-only-signing-secret-with-over-32-characters', true);
+  const body = { ...auditCheckout, paymentMethod: 'manual_bank', paymentReference: 'AUDIT-TRANSFER-100' };
+  const inputs = [body, { ...body, buyerId: 'second-buyer', idempotencyKey: 'different-audit-key' }];
+  const responses = await Promise.all(inputs.map(input => request(origin, '/api/checkout/validate-and-prepare', input, token(input.buyerId))));
+  const results = await Promise.all(responses.map(response => response.json()));
+  assert.deepEqual(responses.map(response => response.status).sort(), [200, 409], JSON.stringify(results));
+  const winnerIndex = responses.findIndex(response => response.status === 200);
+  const retry = await request(origin, '/api/checkout/validate-and-prepare', inputs[winnerIndex], token(inputs[winnerIndex].buyerId));
+  assert.equal(retry.status, 200, JSON.stringify(await retry.clone().json()));
+  assert.equal((await retry.json()).orderNumber, results[winnerIndex].orderNumber);
+});
+
+test('uploads reject suspended stores and invalid file signatures', async t => {
+  const suspended = await boot(t, 'audit-suspended');
+  assert.equal((await uploadOriginal(suspended, Buffer.from('%PDF-1.7\nvalid\n%%EOF'))).status, 403);
+  const healthy = await boot(t, 'audit-checkout');
+  assert.equal((await uploadOriginal(healthy, Buffer.from('This is not a PDF'))).status, 422);
+});
+
+test('Buyer downloads use the latest committed original rather than a process cache', async t => {
+  const origin = await boot(t, 'audit-checkout');
+  const checkoutResponse = await request(origin, '/api/checkout/validate-and-prepare', auditCheckout, token('buyer-test'));
+  const order = await checkoutResponse.json(); assert.equal(checkoutResponse.status, 200, JSON.stringify(order));
+  const body = { orderNumber: order.orderNumber, productId: 'product-test', buyerId: 'buyer-test', downloadToken: order.downloadToken };
+  const first = await request(origin, '/api/delivery/verify-download', body, token('buyer-test'));
+  assert.equal(first.status, 200, JSON.stringify(await first.json()));
+  const replacement = Buffer.from('%PDF-1.7\nSeller replaced the original\n%%EOF');
+  const uploaded = await uploadOriginal(origin, replacement);
+  assert.equal(uploaded.status, 200, JSON.stringify(await uploaded.json()));
+  const second = await request(origin, '/api/delivery/verify-download', body, token('buyer-test'));
+  const delivered = await second.json(); assert.equal(second.status, 200, JSON.stringify(delivered));
+  assert.equal(delivered.fileDataUrl, 'data:application/pdf;base64,' + replacement.toString('base64'));
+});
+
+test('public-token originals are not served and upload races do not publish an unauthorized file', async t => {
+  const publicOrigin = await boot(t, 'audit-public-file');
+  const order = await (await request(publicOrigin, '/api/checkout/validate-and-prepare', auditCheckout, token('buyer-test'))).json();
+  const download = await request(publicOrigin, '/api/delivery/verify-download', { orderNumber: order.orderNumber,
+    productId: 'product-test', buyerId: 'buyer-test', downloadToken: order.downloadToken }, token('buyer-test'));
+  assert.equal(download.status, 403);
+  const raced = await boot(t, 'audit-upload-race');
+  assert.equal((await uploadOriginal(raced, Buffer.from('%PDF-1.7\nraced upload\n%%EOF'))).status, 409);
+});
 
 test('production entrypoint honors PORT, disables temporary auth, and does not expose diagnostics', async t => {
   const origin = await boot(t);
@@ -104,6 +175,61 @@ test('readiness fails without a stable production secret even when Firebase is r
   const origin = await boot(t, 'healthy', '');
   assert.equal((await request(origin, '/api/ready')).status, 503);
   assert.equal((await request(origin, '/api/health')).status, 200);
+});
+
+test('malformed download counters never issue a token or release an original', async t => {
+  const origin = await boot(t, 'audit-invalid-count');
+  const order = await (await request(origin, '/api/checkout/validate-and-prepare', auditCheckout, token('buyer-test'))).json();
+  const issued = await request(origin, '/api/downloads/token', { orderNumber: order.orderNumber }, token('buyer-test'));
+  assert.equal(issued.status, 403);
+  const downloaded = await request(origin, '/api/delivery/verify-download', { orderNumber: order.orderNumber,
+    productId: 'product-test', buyerId: 'buyer-test', downloadToken: order.downloadToken }, token('buyer-test'));
+  assert.equal(downloaded.status, 403);
+});
+
+test('an invalid expiry written during file retrieval cannot pass the final download transaction', async t => {
+  const origin = await boot(t, 'audit-expiry-race');
+  const order = await (await request(origin, '/api/checkout/validate-and-prepare', auditCheckout, token('buyer-test'))).json();
+  const downloaded = await request(origin, '/api/delivery/verify-download', { orderNumber: order.orderNumber,
+    productId: 'product-test', buyerId: 'buyer-test', downloadToken: order.downloadToken }, token('buyer-test'));
+  assert.equal(downloaded.status, 409);
+  assert.equal((await downloaded.json()).allowed, false);
+});
+
+test('commission settings load from durable storage and failed writes cannot report success', async t => {
+  const origin = await boot(t, 'audit-commission');
+  const status = await (await request(origin, '/api/payments/gateway-status')).json();
+  assert.equal(status.platformCommissionBps, 750);
+  const calculated = await (await request(origin, '/api/commission/calculate', { amountMajor: 100, currency: 'USD', paymentMethod: 'manual_bank' })).json();
+  assert.equal(calculated.platformCommissionMinor, 750);
+  const failed = await boot(t, 'permission-denied');
+  const response = await request(failed, '/api/admin/commission-config', { newCommissionBps: 250 }, token('seller-test', { role: 'super_admin', superAdmin: true }));
+  assert.equal(response.status, 503);
+});
+
+test('checkout snapshots a concurrently changed commission rate and retains it on an exact retry', async t => {
+  const origin = await boot(t, 'audit-paid-commission-race', 'test-only-signing-secret-with-over-32-characters', true);
+  const body = { ...auditCheckout, paymentMethod: 'manual_bank', paymentReference: 'AUDIT-RATE-TRANSFER-001' };
+  assert.equal((await (await request(origin, '/api/payments/gateway-status')).json()).platformCommissionBps, 750);
+  const response = await request(origin, '/api/checkout/validate-and-prepare', body, token('buyer-test'));
+  const order = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(order));
+  assert.equal(order.commissionBreakdown.commissionRateBps, 1000);
+  assert.equal(order.commissionBreakdown.platformCommissionMinor, 100);
+  const retry = await (await request(origin, '/api/checkout/validate-and-prepare', body, token('buyer-test'))).json();
+  assert.equal(retry.orderNumber, order.orderNumber);
+  assert.equal(retry.commissionBreakdown.commissionRateBps, 1000);
+  assert.equal(retry.commissionBreakdown.platformCommissionMinor, 100);
+});
+
+test('readiness and calculations reject corrupt commission configuration and recover after an audited repair', async t => {
+  const origin = await boot(t, 'audit-corrupt-commission');
+  assert.equal((await request(origin, '/api/ready')).status, 503);
+  assert.equal((await request(origin, '/api/health')).status, 200);
+  assert.equal((await request(origin, '/api/commission/calculate', { amountMajor: 100 })).status, 503);
+  const repaired = await request(origin, '/api/admin/commission-config', { newCommissionBps: 500 }, token('seller-test', { role: 'super_admin', superAdmin: true }));
+  assert.equal(repaired.status, 200);
+  assert.equal((await request(origin, '/api/ready')).status, 200);
 });
 
 test('permission failures cannot report saved roles, stores, or ready checkout', async t => {
