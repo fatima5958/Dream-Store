@@ -17,7 +17,7 @@ const account = JSON.stringify({
 });
 const env = () => ({
   DREAMSTORE_V2_STAGING: '1', DREAMSTORE_V2_MODE: 'render-staging',
-  RENDER: 'true', RENDER_SERVICE_NAME: 'DreamStore-V2-Staging', RENDER_SERVICE_TYPE: 'web',
+  RENDER: 'true', RENDER_SERVICE_ID: 'srv-db9h1prbc2fs73dop2k0', RENDER_SERVICE_NAME: 'DreamStore-V2-Staging', RENDER_SERVICE_TYPE: 'web',
   DREAMSTORE_V2_RENDER_ORIGIN: origin, DREAMSTORE_V2_RENDER_ALLOWED_ORIGINS: origin,
   DREAMSTORE_V2_RENDER_PROJECT_ID: 'tidal-axis-511800-n1',
   DREAMSTORE_V2_RENDER_ALLOWED_PROJECT_IDS: 'tidal-axis-511800-n1',
@@ -46,6 +46,7 @@ test('Render refuses production, cloud identity spoofing, public storage and mis
     e => { e.DREAMSTORE_V2_STAGING = '0'; },
     e => { e.DREAMSTORE_V2_MODE = 'cloud-staging'; },
     e => { e.RENDER_SERVICE_NAME = 'other'; },
+    e => { e.RENDER_SERVICE_ID = 'srv-other'; },
     e => { e.DREAMSTORE_V2_RENDER_PROJECT_ID = 'dulcet-trees-qk6n5'; },
     e => { e.DREAMSTORE_V2_RENDER_PROJECT_NUMBER = '582009353900'; },
     e => { e.DREAMSTORE_V2_RENDER_DATABASE_ID = '(default)'; },
