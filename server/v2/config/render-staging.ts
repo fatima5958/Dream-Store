@@ -19,10 +19,22 @@ function listed(env: Record<string, string | undefined>, key: string, expected: 
   return String(env[key] || '').split(',').map(s => s.trim()).filter(Boolean).includes(expected);
 }
 export function parseRenderStagingConfig(env: Record<string, string | undefined>, serviceAccountFile: string) {
-  if (env.DREAMSTORE_V2_MODE !== 'render-staging' || env.DREAMSTORE_V2_STAGING !== '1' ||
-      env.RENDER !== 'true' || env.RENDER_SERVICE_NAME !== RENDER_NAME ||
-      env.RENDER_SERVICE_TYPE !== 'web' || env.DREAMSTORE_V2_RENDER_ORIGIN !== ORIGIN ||
-      !listed(env, 'DREAMSTORE_V2_RENDER_ALLOWED_ORIGINS', ORIGIN)) {
+  // Log *names of failed checks only*, never actual environment values or credentials.
+  // Keeps staging fail-closed while making Render runtime/origin mismatches diagnosable.
+  const mismatchedRuntimeFields = [
+    ['DREAMSTORE_V2_MODE', env.DREAMSTORE_V2_MODE === 'render-staging'],
+    ['DREAMSTORE_V2_STAGING', env.DREAMSTORE_V2_STAGING === '1'],
+    ['RENDER', env.RENDER === 'true'],
+    ['RENDER_SERVICE_NAME', env.RENDER_SERVICE_NAME === RENDER_NAME],
+    ['RENDER_SERVICE_TYPE', env.RENDER_SERVICE_TYPE === 'web'],
+    ['DREAMSTORE_V2_RENDER_ORIGIN', env.DREAMSTORE_V2_RENDER_ORIGIN === ORIGIN],
+    ['DREAMSTORE_V2_RENDER_ALLOWED_ORIGINS', listed(env, 'DREAMSTORE_V2_RENDER_ALLOWED_ORIGINS', ORIGIN)],
+  ] as const;
+  const failedRuntimeKeys = mismatchedRuntimeFields.filter(([, valid]) => !valid).map(([key]) => key);
+  if (failedRuntimeKeys.length) {
+    if (env.RENDER === 'true' && env.DREAMSTORE_V2_MODE === 'render-staging') {
+      console.error('Render V2 runtime identity check failed for keys: ' + failedRuntimeKeys.join(', '));
+    }
     throw new Error('Render V2 staging requires the exact approved runtime and service origin.');
   }
   if (env.DREAMSTORE_V2_RENDER_PROJECT_ID !== PROJECT ||
