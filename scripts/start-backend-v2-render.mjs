@@ -36,8 +36,10 @@ if (process.env.DREAMSTORE_V2_STAGING !== '1' || process.env.DREAMSTORE_V2_MODE 
       'Render staging requires distinct strong tester and signing secrets.',
       'Invalid staging admin UID.',
     ]);
+    const runtimeKey = /^Render V2 staging runtime mismatch: ([A-Z0-9_]+)$/.exec(message);
     const missingKey = /^Render staging missing required configuration: ([A-Z0-9_]+)$/.exec(message);
     const reason = safeConfigErrors.has(message) ? message
+      : runtimeKey ? 'Runtime identity mismatch: ' + runtimeKey[1]
       : missingKey ? 'Missing required config key: ' + missingKey[1]
       : error && typeof error === 'object' && error.code === 'ENOENT' ? 'Required startup file not found.'
       : 'Unclassified failure; see dependency readiness category.';
