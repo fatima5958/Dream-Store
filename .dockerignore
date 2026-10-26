@@ -17,6 +17,8 @@ tests
 *.pfx
 *service-account*.json
 *credentials*.json
+# Never bake Render-mounted Firebase staging secret into a Docker image.
+dreamstore-v2-staging-firebase.json
 .server-signing-secret*
 .persistent*
 *.accounts.json
