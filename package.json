@@ -19,7 +19,8 @@
     "test:v2:unit": "node --experimental-strip-types --test tests/backend-auth-unit.test.mjs tests/backend-v2-repositories.test.mjs tests/backend-v2-finance.test.mjs",
     "test:v2:emulator": "node --import tsx --test tests/backend-v2-emulator.test.mjs",
     "cleanup:v2:uploads": "node scripts/cleanup-v2-uploads.mjs",
-    "test:v2:private-preflight": "node --test tests/backend-v2-private-staging-preflight.test.mjs",
+    "test:v2:private-preflight": "node --test tests/backend-v2-private-staging-preflight.test.mjs tests/v2-render-integration-preflight.test.mjs",
+    "preflight:v2:render": "node scripts/v2-render-integration-preflight.mjs",
     "preflight:v2:cloud": "node scripts/v2-private-staging-preflight.mjs"
   },
   "dependencies": {
