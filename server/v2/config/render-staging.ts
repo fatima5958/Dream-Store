@@ -24,13 +24,18 @@ export function parseRenderStagingConfig(env: Record<string, string | undefined>
     ['DREAMSTORE_V2_MODE', 'render-staging'],
     ['DREAMSTORE_V2_STAGING', '1'],
     ['RENDER', 'true'],
-    ['RENDER_SERVICE_NAME', RENDER_NAME],
+    // Render may expose the configured service name in slug/lowercase form.
+    // Require the exact known service ID separately; never trust a name alone.
+    ['RENDER_SERVICE_ID', 'srv-db9h1prbc2fs73dop2k0'],
     ['RENDER_SERVICE_TYPE', 'web'],
     ['DREAMSTORE_V2_RENDER_ORIGIN', ORIGIN],
   ] as const) {
     if (env[key] !== expected) {
       throw new Error('Render V2 staging runtime mismatch: ' + key);
     }
+  }
+  if (![RENDER_NAME, 'dreamstore-v2-staging'].includes(env.RENDER_SERVICE_NAME || '')) {
+    throw new Error('Render V2 staging runtime mismatch: RENDER_SERVICE_NAME');
   }
   if (!listed(env, 'DREAMSTORE_V2_RENDER_ALLOWED_ORIGINS', ORIGIN)) {
     throw new Error('Render V2 staging runtime mismatch: DREAMSTORE_V2_RENDER_ALLOWED_ORIGINS');
