@@ -19,11 +19,21 @@ function listed(env: Record<string, string | undefined>, key: string, expected: 
   return String(env[key] || '').split(',').map(s => s.trim()).filter(Boolean).includes(expected);
 }
 export function parseRenderStagingConfig(env: Record<string, string | undefined>, serviceAccountFile: string) {
-  if (env.DREAMSTORE_V2_MODE !== 'render-staging' || env.DREAMSTORE_V2_STAGING !== '1' ||
-      env.RENDER !== 'true' || env.RENDER_SERVICE_NAME !== RENDER_NAME ||
-      env.RENDER_SERVICE_TYPE !== 'web' || env.DREAMSTORE_V2_RENDER_ORIGIN !== ORIGIN ||
-      !listed(env, 'DREAMSTORE_V2_RENDER_ALLOWED_ORIGINS', ORIGIN)) {
-    throw new Error('Render V2 staging requires the exact approved runtime and service origin.');
+  // Fail closed, but name only the mismatched setting (never its value or a secret).
+  for (const [key, expected] of [
+    ['DREAMSTORE_V2_MODE', 'render-staging'],
+    ['DREAMSTORE_V2_STAGING', '1'],
+    ['RENDER', 'true'],
+    ['RENDER_SERVICE_NAME', RENDER_NAME],
+    ['RENDER_SERVICE_TYPE', 'web'],
+    ['DREAMSTORE_V2_RENDER_ORIGIN', ORIGIN],
+  ] as const) {
+    if (env[key] !== expected) {
+      throw new Error('Render V2 staging runtime mismatch: ' + key);
+    }
+  }
+  if (!listed(env, 'DREAMSTORE_V2_RENDER_ALLOWED_ORIGINS', ORIGIN)) {
+    throw new Error('Render V2 staging runtime mismatch: DREAMSTORE_V2_RENDER_ALLOWED_ORIGINS');
   }
   if (env.DREAMSTORE_V2_RENDER_PROJECT_ID !== PROJECT ||
       env.DREAMSTORE_V2_RENDER_PROJECT_NUMBER !== PROJECT_NUMBER ||
