@@ -140,6 +140,21 @@ test('role onboarding refreshes Firebase ID token and securely recovers from a r
   assert.match(server, /const user = await extractVerifiedCaller\(req\)/);
 });
 
+test('seller onboarding preserves a valid Firebase login instead of restarting signup', () => {
+  const start = app.indexOf('  const handleCompleteRoleOnboarding = async');
+  const end = app.indexOf('  const persistStoreEverywhere = async', start);
+  const flow = app.slice(start, end > start ? end : start + 9500);
+  assert.match(flow, /if \(!currentUser\) \{\s*\/\/ Auth state can briefly lag/);
+  assert.match(flow, /if \(hasFirebaseSdkSession\(\)\) \{\s*throw new Error\('Your account is signed in/);
+  assert.match(flow, /getAuthHeaders\(\{\}, \{ forceRefresh: true, requireAuth: true \}\)/);
+  assert.match(flow, /authHeaders = await getAuthHeaders\(\{\}, \{ requireAuth: true \}\)/);
+  assert.match(flow, /setAuthVerificationIssue\(true\)/);
+  assert.match(flow, /if \(res\.status === 403 && data\?\.code === 'auth\/email-not-verified' && hasFirebaseSdkSession\(\)\)/);
+  assert.match(flow, /setPendingEmailVerification\(auth\.currentUser\?\.email/);
+  assert.match(flow, /if \(res\.status === 401\) \{\s*if \(hasFirebaseSdkSession\(\)\)/);
+  assert.match(flow, /Your account has not been signed out/);
+});
+
 test('auth restoration never promotes a locally cached role when backend identity is unverified', () => {
   const start = app.indexOf('// 2. Listen to Firebase & Email Authentication state');
   const end = app.indexOf('// 3.', start);
