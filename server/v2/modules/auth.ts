@@ -11,13 +11,15 @@ const INVALID_USER_TOKEN_CODES = new Set([
   'auth/user-disabled',
 ]);
 
-export function createFirebaseVerifier(auth: Pick<Auth, 'verifyIdToken'>): AuthVerifier {
+export function createFirebaseVerifier(auth: Pick<Auth, 'verifyIdToken'>, options: { checkRevoked?: boolean } = {}): AuthVerifier {
   return {
     async verifyBearer(token) {
       try {
-        // No local JWT decode is considered proof of identity. Every token
-        // must pass Firebase Admin signature AND revocation validation.
-        const claims = await auth.verifyIdToken(token, true);
+        // Only the Firebase Admin signature verifier proves identity. The normal
+        // configuration also checks revocation. The limited public beta uses
+        // signature verification only because it has no production Firebase
+        // service-account permissions to query revoked user sessions.
+        const claims = await auth.verifyIdToken(token, options.checkRevoked !== false);
         if (typeof claims.uid !== 'string' || !claims.uid || claims.uid.length > 128 ||
             /[\s/\x00-\x1f\x7f]/.test(claims.uid)) {
           throw new ApiError(401, 'auth/session-invalid', 'Please sign in again.');
