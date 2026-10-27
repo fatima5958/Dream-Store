@@ -19,14 +19,20 @@ if (process.env.DREAMSTORE_V2_STAGING !== '1' || process.env.DREAMSTORE_V2_MODE 
     startupPhase = 'http-setup';
     const app = express();
     app.disable('x-powered-by');
-    app.use(createRenderTesterGate(gate));
-    // Preview bundles the existing frontend until staging's Firebase web-app
-    // credentials are configured. Backend data and writes remain staging-only.
+    // Existing Render staging resources can serve the first public beta without
+    // any new service or Firebase private key. Keep tester protection as the
+    // default until this explicit launch switch is enabled.
+    const publicBeta = process.env.DREAMSTORE_V2_RENDER_PUBLIC_BETA === 'true';
+    if (!publicBeta) app.use(createRenderTesterGate(gate));
+    // The browser uses the existing DreamStore Firebase Auth app. All backend
+    // data and private file writes remain on the isolated staging resources.
     const clientIdentity = JSON.parse(fs.readFileSync('firebase-applet-config.json', 'utf8'));
     app.use(createV2WebApp(deps, path.resolve('dist'), clientIdentity));
     const port = Number(process.env.PORT || '10000');
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
-    app.listen(port, '0.0.0.0', () => console.log('DreamStore V2 guarded Render staging listening.'));
+    app.listen(port, '0.0.0.0', () => console.log(publicBeta
+      ? 'DreamStore V2 public beta Render server listening.'
+      : 'DreamStore V2 guarded Render staging listening.'));
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
     // The following are fixed strings from our own configuration guards, not vendor error bodies.
