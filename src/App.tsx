@@ -62,7 +62,7 @@ import {
   onAuthStateChanged,
   subscribeAuthState,
   hasFirebaseSdkSession,
-  IS_V2_STAGING,
+  USE_V2_API,
   googleProvider,
   handleFirestoreError,
   OperationType,
@@ -213,24 +213,24 @@ export default function App() {
 
   // Demo storefronts are only for local preview, not published visitor listings.
   const [storeConfigs, setStoreConfigs] = useState<Record<string, StoreConfig>>(
-    (IS_V2_STAGING ? {} : (import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}))
+    (USE_V2_API ? {} : (import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}))
   );
   const storeConfigsRef = useRef<Record<string, StoreConfig>>(
-    (IS_V2_STAGING ? {} : (import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}))
+    (USE_V2_API ? {} : (import.meta.env.DEV ? INITIAL_STORE_CONFIGS : {}))
   );
   useEffect(() => {
     storeConfigsRef.current = storeConfigs;
   }, [storeConfigs]);
 
   const [activeStoreId, setActiveStoreId] = useState<string>(() =>
-    (IS_V2_STAGING ? '' : (import.meta.env.DEV ? INITIAL_STORE_CONFIG.storeId : ''))
+    (USE_V2_API ? '' : (import.meta.env.DEV ? INITIAL_STORE_CONFIG.storeId : ''))
   );
   const activeStoreIdRef = useRef<string>(activeStoreId);
   useEffect(() => {
     activeStoreIdRef.current = activeStoreId;
   }, [activeStoreId]);
 
-  const config = storeConfigs[activeStoreId] || ((IS_V2_STAGING ? NEUTRAL_PUBLIC_STORE_CONFIG : (import.meta.env.DEV ? INITIAL_STORE_CONFIG : NEUTRAL_PUBLIC_STORE_CONFIG)));
+  const config = storeConfigs[activeStoreId] || ((USE_V2_API ? NEUTRAL_PUBLIC_STORE_CONFIG : (import.meta.env.DEV ? INITIAL_STORE_CONFIG : NEUTRAL_PUBLIC_STORE_CONFIG)));
   const setConfig = (
     updater: StoreConfig | ((prev: StoreConfig) => StoreConfig),
     explicitStoreId?: string
@@ -248,7 +248,7 @@ export default function App() {
       return updatedMap;
     });
   };
-  const [products, setProducts] = useState<Product[]>((IS_V2_STAGING ? [] : (import.meta.env.DEV ? INITIAL_PRODUCTS : [])));
+  const [products, setProducts] = useState<Product[]>((USE_V2_API ? [] : (import.meta.env.DEV ? INITIAL_PRODUCTS : [])));
   const [selectedProductId, setSelectedProductId] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -355,14 +355,14 @@ export default function App() {
   });
 
   const [platformStores, setPlatformStores] = useState<PlatformStore[]>(
-    (IS_V2_STAGING ? [] : (import.meta.env.DEV ? INITIAL_PLATFORM_STORES : []))
+    (USE_V2_API ? [] : (import.meta.env.DEV ? INITIAL_PLATFORM_STORES : []))
   );
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
   const [dockMinimized, setDockMinimized] = useState<boolean>(true);
   const [cartToast, setCartToast] = useState<string | null>(null);
   const cartToastTimerRef = useRef<number | null>(null);
   const isDevControlsEnabled =
-    import.meta.env.DEV && !IS_V2_STAGING &&
+    import.meta.env.DEV && !USE_V2_API &&
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('dev') === 'true';
 
@@ -481,8 +481,8 @@ export default function App() {
   const loadStoreFromBackendOrFirestore = async (
     cleanSlug: string
   ): Promise<StoreConfig | null> => {
-    // 1. Check Firestore stores collection first
-    try {
+    // V2 uses its backend even for public catalog reads.
+    if (!USE_V2_API) try {
       const qStore = query(
         collection(db, 'stores'),
         where('storeSlug', '==', cleanSlug),
@@ -831,7 +831,7 @@ export default function App() {
         let hasExistingStoreDoc = false;
         let existingStoreData: Record<string, any> | null = null;
 
-        if (hasFirebaseSdkSession()) {
+        if (!USE_V2_API && hasFirebaseSdkSession()) {
           try {
             const storeSnap = await getDoc(doc(db, 'stores', userStoreId));
             if (storeSnap.exists()) {
@@ -957,7 +957,17 @@ export default function App() {
                   /^[A-Za-z0-9_-]{1,128}$/.test(profData.profile.storeId)) {
                 userStoreId = profData.profile.storeId;
                 freshDefault.storeId = userStoreId;
-                if (hasFirebaseSdkSession()) {
+                if (USE_V2_API) {
+                  const ownedResponse = await fetch('/api/account/store', {
+                    headers: await getAuthHeaders({}, { requireAuth: true }), cache: 'no-store',
+                    signal: AbortSignal.timeout(15000),
+                  });
+                  if (!ownedResponse.ok) throw new Error('Could not load your verified Seller store.');
+                  const owned = await ownedResponse.json();
+                  if (isStale()) return;
+                  hasExistingStoreDoc = Boolean(owned.store);
+                  existingStoreData = owned.store || null;
+                } else if (hasFirebaseSdkSession()) {
                   const ownedSnap = await getDoc(doc(db, 'stores', userStoreId));
                   if (isStale()) return;
                   hasExistingStoreDoc = ownedSnap.exists();
@@ -1194,7 +1204,7 @@ export default function App() {
 
   // 3. Real-time Firestore listeners once authenticated
   useEffect(() => {
-    if (!authReady || !currentUser || !hasFirebaseSdkSession() ||
+    if (USE_V2_API || !authReady || !currentUser || !hasFirebaseSdkSession() ||
         userProfile?.uid !== currentUser.uid || !userProfile.onboardingCompleted) return;
 
     const userStoreId = userProfile?.storeId || `store-${currentUser.uid.slice(0, 20)}`;
@@ -1536,6 +1546,61 @@ export default function App() {
     };
   }, [authReady, currentUser, userProfile?.role, userProfile?.storeId, isSuperAdminVerified]);
 
+  // V2 has one backend writer. Refresh the verified Seller snapshot instead
+  // of subscribing to or rewriting Firestore from the browser.
+  useEffect(() => {
+    if (!USE_V2_API || !authReady || !currentUser || userProfile?.uid !== currentUser.uid ||
+        userProfile.role !== 'seller' || !userProfile.onboardingCompleted) return;
+    let active = true;
+    let loading = false;
+    const controller = new AbortController();
+    const sync = async () => {
+      if (loading || !active || document.hidden) return;
+      loading = true;
+      try {
+        const response = await fetch('/api/account/store', {
+          headers: await getAuthHeaders({}, { requireAuth: true }), cache: 'no-store', signal: controller.signal,
+        });
+        if (!response.ok || !active) return;
+        const data = await response.json();
+        if (!active || !data.store || data.store.ownerId !== currentUser.uid) return;
+        const storeId = String(data.store.storeId);
+        setStoreConfigs(prev => {
+          const next = { ...prev, [storeId]: {
+            ...(prev[storeId] || NEUTRAL_PUBLIC_STORE_CONFIG), ...data.store,
+            heroImage: resolveStoreAssetUrl(data.store.heroImage),
+            logoUrl: resolveStoreAssetUrl(data.store.logoUrl),
+            ownerAvatar: resolveStoreAssetUrl(data.store.ownerAvatar),
+          } };
+          storeConfigsRef.current = next;
+          return next;
+        });
+        if (Array.isArray(data.products)) {
+          const loaded: Product[] = data.products.map((p: Product) => ({
+            ...p, price: p.priceUsd, image: resolveStoreAssetUrl(p.image),
+            gallery: [resolveStoreAssetUrl(p.image)].filter(Boolean),
+            whatsIncluded: p.fileName ? [`Original file: ${p.fileName} (${p.fileSizeLabel || 'size unknown'})`] : [],
+            details: [{ label: 'Format', value: p.fileType }, { label: 'File Size', value: p.fileSizeLabel }],
+            features: [],
+          }));
+          setProducts(prev => [...loaded, ...prev.filter(p => p.ownerId !== currentUser.uid)]);
+          setSelectedProductId(prev => loaded.some(p => p.id === prev) ? prev : loaded[0]?.id || '');
+        }
+        if (data.settings) setSellerPaymentSettings(data.settings, storeId);
+      } catch { /* Retain the last verified snapshot during a transient outage. */ }
+      finally { loading = false; }
+    };
+    void sync();
+    const timer = window.setInterval(sync, 15000);
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', sync);
+    };
+  }, [authReady, currentUser, userProfile?.uid, userProfile?.role, userProfile?.storeId, userProfile?.onboardingCompleted]);
+
   // 3A. URL Manipulation & Role Access Guard: Enforce verified backend role permissions on direct URLs and screen state
   useEffect(() => {
     if (!authReady) return;
@@ -1851,7 +1916,7 @@ export default function App() {
       throw new Error(data.error || 'Unable to save your role right now. Please try again.');
     }
 
-    if (!IS_V2_STAGING && hasFirebaseSdkSession() && currentUser.emailVerified !== false) {
+    if (!USE_V2_API && hasFirebaseSdkSession() && currentUser.emailVerified !== false) {
       try {
         const userRef = doc(db, 'users', currentUser.uid);
         const existingSnap = await getDoc(userRef);
@@ -2097,7 +2162,7 @@ export default function App() {
 
     // Firebase accounts stage the draft in Firestore. Authenticated server-email
     // accounts stage private file metadata through /api/uploads/product.
-    if (hasFirebaseSdkSession() && !IS_V2_STAGING) {
+    if (hasFirebaseSdkSession() && !USE_V2_API) {
       try {
         await setDoc(doc(db, 'products', newProduct.id), {
           storeId: config.storeId,
@@ -2176,7 +2241,7 @@ export default function App() {
 
     // Store the replacement private file reference before the server verifies
     // the object and publishes a new version of this listing.
-    if (!IS_V2_STAGING && hasFirebaseSdkSession() &&
+    if (!USE_V2_API && hasFirebaseSdkSession() &&
         merged.fileDataUrl?.startsWith('storage://') &&
         merged.fileDataUrl !== target.fileDataUrl) {
       try {
@@ -2314,7 +2379,7 @@ export default function App() {
           // Ignore network error if offline
         }
 
-        if (!hasFirebaseSdkSession()) return;
+        if (USE_V2_API || !hasFirebaseSdkSession()) return;
         const firestorePayload = {
           ownerId: currentUser.uid,
           email: (currentUser.email || isolatedSettings.email || 'seller@email.com').slice(

@@ -167,6 +167,25 @@ export function createV2App(deps: V2Dependencies) {
     res.json({ stores: await deps.stores.listPublic() });
   }));
 
+  // Seller dashboard hydration goes through the same verified ownership
+  // boundary as mutations; no browser Firestore access or private file data.
+  app.get('/api/account/store', jsonRoute(async (req, res) => {
+    const principal = await authenticatedPrincipal(req, deps);
+    const profile = await deps.profiles.find(principal);
+    if (!principal.emailVerified || !profile?.onboardingCompleted || profile.role !== 'seller') {
+      throw new ApiError(403, 'store/seller-required', 'A verified Seller account is required.');
+    }
+    if (!deps.stores || !deps.products) throw new ApiError(501, 'backend/v2-not-implemented', 'Seller dashboard unavailable.');
+    const store = await deps.stores.find(profile.storeId || canonicalStoreId(principal.uid));
+    if (!store) { res.json({ store: null, products: [], settings: null }); return; }
+    if (store.ownerId !== principal.uid) throw new ApiError(403, 'store/owner-forbidden', 'Store ownership could not be verified.');
+    const [products, settings] = await Promise.all([
+      deps.products.list(store.storeId, principal),
+      deps.finance?.paymentSettings(principal.uid) ?? null,
+    ]);
+    res.json({ store: publicStoreProjection(store.storeId, store), products, settings });
+  }));
+
   // Public slug checks do not authorize mutation. A token, when supplied, is
   // verified before an "excludeStoreId" may refer to an owned store.
   app.get('/api/stores/check-slug', jsonRoute(async (req, res) => {

@@ -1,0 +1,21 @@
+# Separate same-origin V2 candidate. Selecting this image is an explicit cutover.
+FROM oven/bun:1.4.3 AS build
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY . .
+RUN bun run lint && bun run build:v2
+
+FROM node:24-bookworm-slim
+WORKDIR /app
+ENV NODE_ENV=production PORT=10000 DREAMSTORE_PAID_CHECKOUT_ENABLED=false
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/scripts/start-backend-v2-production.mjs ./scripts/start-backend-v2-production.mjs
+COPY --from=build /app/server/v2 ./server/v2
+COPY --from=build /app/firebase-applet-config.json ./firebase-applet-config.json
+COPY --from=build /app/dist ./dist
+RUN chown -R node:node /app
+USER node
+EXPOSE 10000
+CMD ["node", "scripts/start-backend-v2-production.mjs"]

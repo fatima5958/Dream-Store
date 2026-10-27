@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Opt-in API entrypoint only. The existing V1 and staging commands stay intact.
+// Opt-in same-origin frontend + V2. V1 and staging commands stay intact.
 if (process.env.NODE_ENV !== 'production' || process.env.DREAMSTORE_V2_MODE !== 'production' ||
     process.env.DREAMSTORE_V2_PRODUCTION_ENABLED !== 'true' || process.env.DREAMSTORE_V2_STAGING === '1') {
   console.error('DreamStore V2 production requires explicit production configuration.');
@@ -8,12 +8,17 @@ if (process.env.NODE_ENV !== 'production' || process.env.DREAMSTORE_V2_MODE !== 
   try {
     await import('tsx/esm/api').then(({ register }) => register());
     const { createLiveProductionV2Dependencies } = await import('../server/v2/config/firebase.ts');
-    const { createV2App } = await import('../server/v2/app.ts');
+    const { createV2WebApp, validateV2WebBuild } = await import('../server/v2/web.ts');
+    const { default: fs } = await import('node:fs');
+    const { default: path } = await import('node:path');
+    const identity = JSON.parse(fs.readFileSync('firebase-applet-config.json', 'utf8'));
+    const dist = path.resolve('dist');
+    validateV2WebBuild(dist, identity);
     const port = Number(process.env.PORT || 8080);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid port.');
     const dependencies = await createLiveProductionV2Dependencies();
-    const server = createV2App(dependencies).listen(port, '0.0.0.0', () => {
-      console.log('DreamStore V2 production API listening.');
+    const server = createV2WebApp(dependencies, dist, identity).listen(port, '0.0.0.0', () => {
+      console.log('DreamStore V2 production web application listening.');
     });
     let stopping = false;
     const stop = () => {

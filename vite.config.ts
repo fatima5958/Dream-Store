@@ -3,11 +3,22 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {defineConfig, loadEnv} from 'vite';
+import firebaseConfig from './firebase-applet-config.json';
+import { selectFrontendBackend } from './src/lib/backend-mode';
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_');
+  const backend = selectFrontendBackend({ ...env, PROD: command === 'build', DEV: command === 'serve' });
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), {
+      name: 'dreamstore-backend-build-identity',
+      generateBundle() {
+        this.emitFile({ type: 'asset', fileName: 'dreamstore-build.json', source: JSON.stringify({
+          backend: backend.productionV2 ? 'v2' : 'v1', projectId: firebaseConfig.projectId,
+          databaseId: firebaseConfig.firestoreDatabaseId,
+        }) });
+      },
+    }],
     resolve: {
       alias: {
         '@': path.dirname(fileURLToPath(import.meta.url)),

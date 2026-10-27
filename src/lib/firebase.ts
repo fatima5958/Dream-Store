@@ -34,6 +34,7 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { selectFrontendBackend } from './backend-mode';
 
 export const REQUIRED_AUTHORIZED_DOMAINS = [
   'dreamstore.app',
@@ -78,13 +79,19 @@ function resolveEffectiveAuthDomain(): string {
 }
 
 export const IS_V2_STAGING = import.meta.env.DEV && import.meta.env.VITE_DREAMSTORE_V2_STAGING === '1';
+const backendMode = selectFrontendBackend(import.meta.env);
+export const IS_V2_PRODUCTION = backendMode.productionV2;
+export const USE_V2_API = backendMode.apiOnly;
 const stagingProjectId = String(import.meta.env.VITE_DREAMSTORE_V2_PROJECT_ID || '');
 if (import.meta.env.VITE_DREAMSTORE_V2_STAGING === '1' &&
     (!IS_V2_STAGING || !/^demo-[a-z0-9-]+$/.test(stagingProjectId) ||
      !['localhost', '127.0.0.1'].includes(window.location.hostname))) {
   throw new Error('V2 frontend requires localhost development and a demo-* Firebase project.');
 }
-const effectiveAuthDomain = IS_V2_STAGING ? 'localhost' : resolveEffectiveAuthDomain();
+// The V2 web server does not proxy Firebase's /__/auth helper. Use the real
+// Firebase hosted handler instead of pointing redirects at a SPA fallback.
+const effectiveAuthDomain = IS_V2_STAGING ? 'localhost'
+  : IS_V2_PRODUCTION ? firebaseConfig.authDomain : resolveEffectiveAuthDomain();
 
 const app = initializeApp({
   ...firebaseConfig,
@@ -171,7 +178,7 @@ const authStateSubscribers = new Set<(user: FirebaseUser | null) => void>();
 let currentServerEmailSession: StoredServerEmailSession | null = null;
 
 function loadStoredEmailSession(): StoredServerEmailSession | null {
-  if (IS_V2_STAGING || typeof window === 'undefined') return null;
+  if (USE_V2_API || typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(EMAIL_SESSION_STORAGE_KEY);
     if (!raw) return null;
@@ -507,6 +514,7 @@ export function handleFirestoreError(
 
 // Validate connection to Firestore on boot
 async function testConnection() {
+  if (USE_V2_API) return; // V2's named Firestore is accessed only by its backend.
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {

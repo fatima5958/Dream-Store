@@ -1,4 +1,4 @@
-import { IS_V2_STAGING } from '../../lib/firebase';
+import { USE_V2_API } from '../../lib/firebase';
 import React, { useState, useMemo } from 'react';
 import {
   Store,
@@ -589,7 +589,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
     try {
       let privateReference = '';
       const sdkUid = auth.currentUser?.uid;
-      if (!IS_V2_STAGING && sdkUid === currentUserUid && auth.currentUser?.emailVerified) {
+      if (!USE_V2_API && sdkUid === currentUserUid && auth.currentUser?.emailVerified) {
         const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
         const objectPath = `deliverables/${sdkUid}/${productId}/${Date.now()}-${safeName}`;
         const task = uploadBytesResumable(storageRef(storage, objectPath), file, { contentType });
