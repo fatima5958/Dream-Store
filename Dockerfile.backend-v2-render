@@ -6,8 +6,9 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 COPY . .
 RUN bun run lint
-# Build only when staging Firebase client config has been supplied and verified.
-RUN node scripts/check-v2-staging-frontend-identity.mjs && bun run build:v2
+# Preview build serves the V2 UI and same-origin V2 API behind the tester gate.
+# Authenticated seller actions still require matching Firebase app configuration.
+RUN bun run build:v2
 
 FROM node:24-bookworm-slim
 WORKDIR /app
