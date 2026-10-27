@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { parseRenderStagingConfig } from './render-staging.ts';
+import { parseProductionV2Configuration } from './production.ts';
 import { createSupabaseStorageBucket } from '../storage/supabase.ts';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
@@ -249,5 +250,63 @@ export async function createRenderStagingV2Dependencies(): Promise<{
       origin: config.origin, signingSecret: config.runtime.signingSecret,
       testerPassword: config.runtime.testerPassword,
     },
+  };
+}
+
+/** Independent production bootstrap. It cannot reuse staging credentials,
+ * emulator tokens, or staging resources. Nothing selects this factory by default.
+ */
+export async function createLiveProductionV2Dependencies(): Promise<V2Dependencies> {
+  const config = parseProductionV2Configuration(process.env, readConfig(),
+    fs.readFileSync('/etc/secrets/dreamstore-v2-production-firebase.json', 'utf8'));
+  // A fresh named app prevents an earlier initialization from supplying a
+  // different credential while retaining the same project ID.
+  if (getApps().some(app => app.name === 'dreamstore-v2-production')) {
+    throw new Error('Production V2 dependencies are already initialized.');
+  }
+  const app = initializeApp({ projectId: config.projectId, credential: cert(config.serviceAccount) }, 'dreamstore-v2-production');
+  const auth = getAuth(app);
+  const db = getFirestore(app, config.databaseId);
+  db.settings({ preferRest: true, ignoreUndefinedProperties: true });
+  const selected = config.storage.provider === 'supabase'
+    ? createSupabaseStorageBucket(config.storage, config.storage.secretKey)
+    : getStorage(app).bucket(config.storage.bucket);
+  const storageReady = async () => {
+    if ('checkReady' in selected) return selected.checkReady();
+    const [metadata] = await selected.getMetadata();
+    // Private download bytes must not also be accessible through public GCS
+    // IAM/ACLs. Require enforced public-access prevention and uniform IAM.
+    if (metadata.iamConfiguration?.publicAccessPrevention !== 'enforced' ||
+        metadata.iamConfiguration?.uniformBucketLevelAccess?.enabled !== true) {
+      throw new Error('Production Storage requires enforced private access.');
+    }
+  };
+  let lastCheck: { at: number; ready: boolean } | undefined;
+  const readiness: ReadinessService = { async check() {
+    if (lastCheck && Date.now() - lastCheck.at < 10000) return lastCheck.ready;
+    try {
+      await Promise.all([auth.listUsers(1), db.collection('ledger').limit(1).get(), storageReady()]);
+      lastCheck = { at: Date.now(), ready: true };
+    } catch (error) {
+      console.warn('[DreamStore V2 Ready] production dependency failed', { code: safeBackendCategory(error) });
+      lastCheck = { at: Date.now(), ready: false };
+    }
+    return lastCheck.ready;
+  } };
+  if (!await readiness.check()) throw new Error('Production V2 dependencies unavailable.');
+  const management = createFirestoreAdminManagementRepository(db);
+  return {
+    auth: createFirebaseVerifier(auth),
+    profiles: createFirestoreProfileRepository(db),
+    creators: createCreatorCampaignRepository(db),
+    stores: createFirestoreStoreRepository(db),
+    products: createFirestoreProductRepository(db, selected),
+    finance: createFirestoreFinancialRepository(db, selected, config.signingSecret),
+    management, subscriptions: management,
+    uploads: createFirebaseUploadRepository(db, selected), covers: createCoverReader(selected),
+    cleanupUploads: () => cleanupExpiredUploads(db, selected), readiness,
+    adminUid: config.adminUid, allowUnsignedEmulatorTokens: false,
+    allowWrites: process.env.DREAMSTORE_V2_PRODUCTION_WRITES_ENABLED === 'true',
+    paidCheckoutEnabled: false, downloadTokenSecret: config.signingSecret,
   };
 }
