@@ -206,6 +206,18 @@ export async function createRenderStagingV2Dependencies(): Promise<{
     projectId: config.projectId, credential: cert(config.serviceAccount),
   }, 'dreamstore-v2-render-staging');
   const auth = getAuth(app);
+  // The existing V2 frontend already signs in against the original DreamStore
+  // Firebase project. Public beta may verify its signed ID tokens without any
+  // production private key while keeping all data and storage in staging.
+  const publicBeta = process.env.DREAMSTORE_V2_RENDER_PUBLIC_BETA === 'true';
+  const identityAppName = 'dreamstore-v2-render-public-beta-identity';
+  const existingIdentityApp = getApps().find(candidate => candidate.name === identityAppName);
+  if (publicBeta && existingIdentityApp && existingIdentityApp.options.projectId !== production.projectId) {
+    throw new Error('Public beta Firebase login identity mismatch.');
+  }
+  const identityAuth = publicBeta ? getAuth(existingIdentityApp || initializeApp({
+    projectId: production.projectId,
+  }, identityAppName)) : null;
   const db = getFirestore(app, config.databaseId);
   db.settings({ preferRest: true, ignoreUndefinedProperties: true });
   const bucket = createSupabaseStorageBucket(config.supabase, config.runtime.supabaseSecretKey);
@@ -228,7 +240,12 @@ export async function createRenderStagingV2Dependencies(): Promise<{
   if (!await readiness.check()) throw new Error('Render staging dependencies unavailable.');
   return {
     deps: {
-      auth: createFirebaseVerifier(auth),
+      // Firebase validates the original frontend's signed ID token against its
+      // project ID. Revocation checks need a separate production Admin grant;
+      // this preview uses short-lived token validation, with payments off.
+      auth: publicBeta && identityAuth
+        ? createFirebaseVerifier(identityAuth, { checkRevoked: false })
+        : createFirebaseVerifier(auth),
       profiles: createFirestoreProfileRepository(db),
       creators: createCreatorCampaignRepository(db),
       stores: createFirestoreStoreRepository(db),
