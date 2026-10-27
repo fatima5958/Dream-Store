@@ -1868,8 +1868,20 @@ export default function App() {
     };
 
     if (!currentUser) {
+      // Auth state can briefly lag behind the Firebase SDK after sign-up.
+      // Never sign out a valid SDK identity because React has not restored it yet.
+      if (hasFirebaseSdkSession()) {
+        throw new Error('Your account is signed in. Please try selecting your role again.');
+      }
       await requireNewSignIn();
       throw new Error('Please sign in again to select Buyer or Seller.');
+    }
+    if (hasFirebaseSdkSession() && auth.currentUser?.emailVerified === false) {
+      // Email/password signup authenticates before Firebase verifies the email.
+      // Preserve that session and take the user to verification, not sign-in.
+      setRoleOnboardingOpen(false);
+      setPendingEmailVerification(auth.currentUser.email || 'your inbox');
+      throw new Error('Verify your email using the link in your inbox before starting your store.');
     }
     // Strictly allow only 'buyer' or 'seller' — never allow Super Admin self-assignment
     const safeRole: OnboardingUserRole = payload.role === 'seller' ? 'seller' : 'buyer';
@@ -1879,12 +1891,24 @@ export default function App() {
 
     let authHeaders: Record<string, string>;
     try {
-      // A just-restored or recently signed-up Firebase identity must use a
-      // fresh, cryptographically valid ID token before saving its role.
+      // Prefer a fresh signed Firebase token for new-role mutations.
       authHeaders = await getAuthHeaders({}, { forceRefresh: true, requireAuth: true });
     } catch {
-      await requireNewSignIn();
-      throw new Error('Your login needs refreshing. Please sign in again to continue.');
+      if (hasFirebaseSdkSession()) {
+        // A Firebase refresh can fail transiently due to mobile connectivity.
+        // Only a still-valid signed cached token may be retried; the backend
+        // independently verifies the token and never trusts browser role claims.
+        try {
+          authHeaders = await getAuthHeaders({}, { requireAuth: true });
+        } catch {
+          setAuthVerificationIssue(true);
+          setBlockedAccessNotice('Your Firebase account is still signed in, but its token could not be refreshed. Check your connection and retry seller setup.');
+          throw new Error('Your account is still signed in. Please retry setup after checking your connection.');
+        }
+      } else {
+        await requireNewSignIn();
+        throw new Error('Your login session expired. Please sign in again to continue.');
+      }
     }
     const res = await fetch('/api/users/profile', {
       method: 'POST',
@@ -1909,6 +1933,11 @@ export default function App() {
       throw new Error('Your login session expired. Please sign in again to finish setup.');
     }
     if (!res.ok) {
+      if (res.status === 403 && data?.code === 'auth/email-not-verified' && hasFirebaseSdkSession()) {
+        setRoleOnboardingOpen(false);
+        setPendingEmailVerification(auth.currentUser?.email || currentUser.email || 'your inbox');
+        throw new Error('Verify your email using the link in your inbox before starting your store.');
+      }
       if (data?.code === 'auth/backend-unavailable') {
         setAuthVerificationIssue(true);
         setBlockedAccessNotice('DreamStore Firebase server verification is temporarily unavailable. Your account is still signed in; retry when the server is restored.');
