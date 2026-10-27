@@ -430,7 +430,7 @@ test('embedded AI Studio preview does not retry a failed popup as a redirect', (
   assert.match(modal, /auth-embedded-preview-guidance/);
   assert.match(modal, /Open DreamStore in New Tab/);
   assert.match(modal, /!insidePreview/);
-  assert.match(modal, /DreamStore Backend Not Verified/);
+  assert.match(modal, /DreamStore Backend Not Ready/);
 });
 test('OAuth readiness never self-authorizes the visitor hostname', () => {
   const diagnostics = server.slice(server.indexOf("app.get('/api/auth/oauth-diagnostics'"),
