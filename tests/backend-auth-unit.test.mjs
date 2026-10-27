@@ -17,6 +17,17 @@ test('token verifier checks revocation and maps Firebase session failures', asyn
   }
 });
 
+test('public beta verifies signed Firebase tokens without production Admin revocation access', async () => {
+  const verifier = createFirebaseVerifier({ async verifyIdToken(token, checkRevoked) {
+    assert.equal(token, 'signed-token');
+    assert.equal(checkRevoked, false);
+    return { uid: 'new-user', email: 'user@example.test', email_verified: true };
+  } }, { checkRevoked: false });
+  const user = await verifier.verifyBearer('signed-token');
+  assert.equal(user.uid, 'new-user');
+  assert.equal(user.emailVerified, true);
+});
+
 test('IAM or network outages return 503 without converting them into sign-out', async () => {
   for (const code of ['auth/insufficient-permission', 'ECONNRESET']) {
     const verifier = createFirebaseVerifier({ async verifyIdToken() { throw Object.assign(new Error('secret'), { code }); } });
