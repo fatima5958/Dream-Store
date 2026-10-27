@@ -257,8 +257,15 @@ export async function createRenderStagingV2Dependencies(): Promise<{
  * emulator tokens, or staging resources. Nothing selects this factory by default.
  */
 export async function createLiveProductionV2Dependencies(): Promise<V2Dependencies> {
-  const config = parseProductionV2Configuration(process.env, readConfig(),
-    fs.readFileSync('/etc/secrets/dreamstore-v2-production-firebase.json', 'utf8'));
+  // Render can supply the production service account as a protected environment
+  // variable. Never commit it to the image or fall back to staging credentials.
+  const secretPath = '/etc/secrets/dreamstore-v2-production-firebase.json';
+  const inlineCredential = String(process.env.DREAMSTORE_V2_PRODUCTION_FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  if (inlineCredential && fs.existsSync(secretPath)) {
+    throw new Error('Production refuses conflicting Firebase credential sources.');
+  }
+  const credential = inlineCredential || fs.readFileSync(secretPath, 'utf8');
+  const config = parseProductionV2Configuration(process.env, readConfig(), credential);
   // A fresh named app prevents an earlier initialization from supplying a
   // different credential while retaining the same project ID.
   if (getApps().some(app => app.name === 'dreamstore-v2-production')) {
