@@ -9,7 +9,9 @@ if (process.env.DREAMSTORE_V2_STAGING !== '1' || process.env.DREAMSTORE_V2_MODE 
   try {
     await import('tsx/esm/api').then(({ register }) => register());
     const { createRenderStagingV2Dependencies } = await import('../server/v2/config/firebase.ts');
-    const { createV2App } = await import('../server/v2/app.ts');
+    const { createV2WebApp } = await import('../server/v2/web.ts');
+    const { default: path } = await import('node:path');
+    const { default: fs } = await import('node:fs');
     const { createRenderTesterGate } = await import('../server/v2/modules/render-tester-gate.ts');
     const { default: express } = await import('express');
     startupPhase = 'staging-dependency-validation';
@@ -18,7 +20,10 @@ if (process.env.DREAMSTORE_V2_STAGING !== '1' || process.env.DREAMSTORE_V2_MODE 
     const app = express();
     app.disable('x-powered-by');
     app.use(createRenderTesterGate(gate));
-    app.use(createV2App(deps));
+    // Preview bundles the existing frontend until staging's Firebase web-app
+    // credentials are configured. Backend data and writes remain staging-only.
+    const clientIdentity = JSON.parse(fs.readFileSync('firebase-applet-config.json', 'utf8'));
+    app.use(createV2WebApp(deps, path.resolve('dist'), clientIdentity));
     const port = Number(process.env.PORT || '10000');
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
     app.listen(port, '0.0.0.0', () => console.log('DreamStore V2 guarded Render staging listening.'));

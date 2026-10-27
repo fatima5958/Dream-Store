@@ -6,6 +6,9 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 COPY . .
 RUN bun run lint
+# Preview build serves the V2 UI and same-origin V2 API behind the tester gate.
+# Authenticated seller actions still require matching Firebase app configuration.
+RUN bun run build:v2
 
 FROM node:24-bookworm-slim
 WORKDIR /app
@@ -14,6 +17,7 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/scripts/start-backend-v2-render.mjs ./scripts/start-backend-v2-render.mjs
 COPY --from=build /app/server/v2 ./server/v2
+COPY --from=build /app/dist ./dist
 COPY --from=build /app/firebase-applet-config.json ./firebase-applet-config.json
 RUN chown -R node:node /app
 USER node

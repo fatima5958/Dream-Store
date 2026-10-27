@@ -50,7 +50,7 @@ export function createRenderTesterGate(config: { origin: string; testerPassword:
         const base = String(Date.now() + TWO_HOURS) + '.' + randomBytes(16).toString('hex');
         res.set('Set-Cookie', COOKIE + '=' + base + '.' + digest(base) +
           '; Path=/; Max-Age=7200; HttpOnly; Secure; SameSite=Strict');
-        res.redirect(303, '/api/health');
+        res.redirect(303, '/');
       });
       return;
     }
@@ -60,6 +60,10 @@ export function createRenderTesterGate(config: { origin: string; testerPassword:
       res.set('Set-Cookie', COOKIE + '=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict');
       res.status(204).end(); return;
     }
+    // The login page is locked down, but authenticated testers need the SPA assets
+    // and Firebase network requests. This remains behind the signed tester cookie.
+    res.set('Content-Security-Policy',
+      "default-src 'self' https: data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'");
     next();
   };
 }
