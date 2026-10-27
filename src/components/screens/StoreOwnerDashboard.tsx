@@ -1,4 +1,5 @@
 import { USE_V2_API } from '../../lib/firebase';
+import { prepareStoreImage } from '../../lib/store-image';
 import React, { useState, useMemo } from 'react';
 import {
   Store,
@@ -534,21 +535,20 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
     setShowProductModal(true);
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setImageUploadStatus('Uploading cover image...');
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setProdImage(reader.result);
-        setImageUploadStatus(`Cover ready: ${file.name}`);
-      }
-    };
-    reader.onerror = () => {
-      setImageUploadStatus('Could not read cover image file. Please try another PNG or JPG.');
-    };
-    reader.readAsDataURL(file);
+    setImageUploadStatus('Preparing cover image...');
+    setProductFormError(null);
+    try {
+      const image = await prepareStoreImage(file);
+      setProdImage(image);
+      setImageUploadStatus(`Cover ready: ${file.name}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Cover image could not be prepared.';
+      setImageUploadStatus(message);
+      setProductFormError(message);
+    }
   };
 
   const handleDigitalFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -608,7 +608,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
       } else {
         // Server-email accounts do not have a Firebase browser SDK session.
         // Upload the original bytes through a verified seller-only backend route.
-        const headers = await getAuthHeaders();
+        const headers = await getAuthHeaders({}, { requireAuth: true });
         const upload = await fetch('/api/uploads/product', {
           method: 'POST',
           headers: {
@@ -623,7 +623,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
         });
         const result = await upload.json().catch(() => ({}));
         if (!upload.ok || !String(result.fileReference || '').startsWith('storage://')) {
-          throw new Error(result.error || 'The original file could not be uploaded.');
+          throw new Error(String(result.error || `Upload server returned HTTP ${upload.status}.`));
         }
         privateReference = result.fileReference;
       }
@@ -635,13 +635,14 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
       setProdFileSize(sizeLabel);
       setProdFileDataUrl(privateReference);
       setFileUploadStatus(`Original file securely uploaded: ${file.name} (${sizeLabel})`);
-    } catch {
+    } catch (err) {
       setProdFileDataUrl('');
       setProdFileName('');
       setProdFileType('');
       setProdFileSize('');
-      setProductFormError('Upload failed. Your product has not been published. Check Firebase Storage access.');
-      setFileUploadStatus('Secure file upload failed. Please try again.');
+      const detail = err instanceof Error && err.message ? err.message.slice(0, 240) : 'Unknown upload error.';
+      setProductFormError(`Upload failed: ${detail} Your product has not been published.`);
+      setFileUploadStatus(`Upload failed: ${detail}`);
     } finally {
       setIsUploadingDigitalFile(false);
     }
@@ -2543,30 +2544,28 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
             config.customAccentColor
           );
 
-          const handleLogoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+          const handleLogoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
             const file = e.target.files?.[0];
             if (!file) return;
-            const reader = new FileReader();
-            reader.onload = () => {
-              if (typeof reader.result === 'string') {
-                onUpdateConfig({ logoUrl: reader.result });
-                showToast('Store logo uploaded & saved');
-              }
-            };
-            reader.readAsDataURL(file);
+            try {
+              const image = await prepareStoreImage(file);
+              onUpdateConfig({ logoUrl: image });
+              showToast('Store logo prepared for saving');
+            } catch (err) {
+              showToast(err instanceof Error ? err.message : 'Store logo could not be prepared.');
+            }
           };
 
-          const handleBannerFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+          const handleBannerFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
             const file = e.target.files?.[0];
             if (!file) return;
-            const reader = new FileReader();
-            reader.onload = () => {
-              if (typeof reader.result === 'string') {
-                onUpdateConfig({ heroImage: reader.result });
-                showToast('Store cover banner uploaded & saved');
-              }
-            };
-            reader.readAsDataURL(file);
+            try {
+              const image = await prepareStoreImage(file);
+              onUpdateConfig({ heroImage: image });
+              showToast('Cover banner prepared for saving');
+            } catch (err) {
+              showToast(err instanceof Error ? err.message : 'Cover banner could not be prepared.');
+            }
           };
 
           return (
