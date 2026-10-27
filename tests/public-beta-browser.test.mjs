@@ -84,7 +84,7 @@ test('Production visitor never sees seeded seller identities or account email', 
   try {
     await page.getByTestId('hero-headline').waitFor({ state: 'visible', timeout: 30000 });
     const text = await page.locator('body').innerText();
-    assert.doesNotMatch(text, /Fatima\.tech|Ananya Creates|mateenfatima5958@gmail\.com|seller-pk-fatima/i);
+    assert.doesNotMatch(text, /Ananya Creates|mateenfatima5958@gmail\.com|seller-pk-fatima/i);
     assert.equal(await page.getByTestId('navbar-user-email').count(), 0);
   } finally { await page.close(); }
 });

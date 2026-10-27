@@ -37,14 +37,29 @@ export const MobileDesignsView: React.FC<MobileDesignsViewProps> = ({
   onAddToCart,
   canManageStore = false,
 }) => {
-  const featuredProduct = products[0] || {
+  const featuredProduct: Product = products[0] || {
     id: 'p1',
     title: 'The 30-Day Life Reset Guide',
     category: 'Ebooks',
-    pricePkr: 1999,
-    priceUsd: 7,
+    subtitle: 'Reset your habits and daily routine',
     description: 'A step-by-step guide to resetting your habits, mindset, and daily routine.',
+    whatsIncluded: ['PDF Guide (65 Pages)', 'Daily Reflection Prompts'],
+    details: [
+      { label: 'Format', value: 'PDF Guide' },
+      { label: 'Delivery', value: 'Instant Digital Download' },
+    ],
+    price: 7,
+    priceUsd: 7,
+    pricePkr: 1999,
+    isFree: false,
+    published: true,
+    status: 'Available',
     image: '',
+    gallery: [],
+    features: [],
+    fileName: '30-day-reset-guide.pdf',
+    fileType: 'application/pdf',
+    fileSizeLabel: '4.2 MB',
   };
   const rate = config.exchangeRatePkr || 278;
 

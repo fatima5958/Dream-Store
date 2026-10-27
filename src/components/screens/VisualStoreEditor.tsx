@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { prepareStoreImage } from '../../lib/store-image';
 import {
   Layout,
   Plus,
@@ -163,30 +164,28 @@ export const VisualStoreEditor: React.FC<VisualStoreEditorProps> = ({
     triggerToast('Cover banner updated');
   };
 
-  const handleLogoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onUpdateConfig({ logoUrl: reader.result });
-        triggerToast('Store logo uploaded & saved');
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const image = await prepareStoreImage(file);
+      onUpdateConfig({ logoUrl: image, ownerAvatar: image });
+      triggerToast('Store logo uploaded & saved');
+    } catch (err) {
+      triggerToast(err instanceof Error ? err.message : 'Logo could not be prepared.');
+    }
   };
 
-  const handleHeroFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleHeroFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onUpdateConfig({ heroImage: reader.result });
-        triggerToast('Cover banner uploaded & saved');
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const image = await prepareStoreImage(file);
+      onUpdateConfig({ heroImage: image });
+      triggerToast('Cover banner uploaded & saved');
+    } catch (err) {
+      triggerToast(err instanceof Error ? err.message : 'Cover banner could not be prepared.');
+    }
   };
 
   const handleAddSection = () => {

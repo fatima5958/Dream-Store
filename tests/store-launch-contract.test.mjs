@@ -9,6 +9,7 @@ const firebase = read('src/lib/firebase.ts');
 const authModal = read('src/components/CandylandAuthModal.tsx');
 const onboarding = read('src/components/RoleOnboardingModal.tsx');
 const server = read('server.ts');
+const visualEditor = read('src/components/screens/VisualStoreEditor.tsx');
 
 test('seller store is created only after an acknowledged server save', () => {
   const start = app.indexOf('  const persistStoreEverywhere = async');
@@ -35,6 +36,8 @@ test('cover uploads are bounded before JSON save and original-file errors are sh
   assert.match(converter, /toDataURL\('image\/jpeg'/);
   assert.match(wizard, /await prepareStoreImage\(file\)/);
   assert.match(owner, /await prepareStoreImage\(file\)/);
+  assert.match(visualEditor, /await prepareStoreImage\(file\)/);
+  assert.doesNotMatch(visualEditor, /reader\.readAsDataURL\(file\)/);
   assert.doesNotMatch(wizard, /reader\.readAsDataURL\(file\)/);
   assert.doesNotMatch(owner.slice(owner.indexOf('const handleImageUpload'), owner.indexOf('const handleDigitalFileUpload')), /reader\.readAsDataURL\(file\)/);
   assert.match(owner, /Upload failed: \$\{detail\}/);

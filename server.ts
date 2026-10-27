@@ -3847,7 +3847,11 @@ async function startServer() {
   // Never allows overwriting SUPER_ADMIN_UID with an arbitrary targetUid.
   app.post('/api/admin/bootstrap-super-admin', asyncRoute(async (req, res) => {
     const user = await extractVerifiedCaller(req);
-    if (!user || user.uid !== SUPER_ADMIN_UID || !user.emailVerified ||
+    if (!user) {
+      res.status(401).json({ error: 'Unauthorized: A cryptographically verified Firebase Authentication Bearer ID token is required.' });
+      return;
+    }
+    if (user.uid !== SUPER_ADMIN_UID || !user.emailVerified ||
       !user.authTime || Date.now() / 1000 - user.authTime > 900) {
       res.status(403).json({ error: 'A recent verified administrator sign-in is required.' });
       return;

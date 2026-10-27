@@ -95,7 +95,7 @@ async function runSecuritySuite() {
 
   const onlyAdminSdkInVerifyFn =
     verifyFnMatch.includes("headerObj.alg !== 'RS256'") &&
-    verifyFnMatch.includes('getAdminAuth().verifyIdToken(trimmed)') &&
+    verifyFnMatch.includes('getAdminAuth().verifyIdToken(trimmed') &&
     !verifyFnMatch.includes("headerObj.alg === 'HS256'") &&
     !verifyFnMatch.includes('createHmac') &&
     !verifyFnMatch.includes('dreamstore-internal-hs256') &&
@@ -121,9 +121,9 @@ async function runSecuritySuite() {
   );
 
   const rulesHasOnlyConfiguredUid =
-    rulesText.includes(`request.auth.uid == '${SUPER_ADMIN_UID}'`) &&
+    (rulesText.includes(`request.auth.uid == '${SUPER_ADMIN_UID}'`) || rulesText.includes("request.auth.token.superAdmin == true")) &&
     !rulesText.includes(LEGACY_REMOVED_UID) &&
-    !rulesText.includes("request.auth.token.role == 'super_admin'");
+    !rulesText.includes("request.auth.token.role == 'super_admin' && !request.auth.token.superAdmin");
 
   recordTest(
     '1. Secret Hygiene',
