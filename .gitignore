@@ -16,3 +16,5 @@ coverage/
 *auth-accounts*
 *.auth.json
 .persistent-*
+
+package-lock.json
