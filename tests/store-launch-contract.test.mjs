@@ -28,6 +28,19 @@ test('seller store is created only after an acknowledged server save', () => {
   assert.doesNotMatch(editor, /await setDoc\(/);
 });
 
+test('cover uploads are bounded before JSON save and original-file errors are shown', () => {
+  const owner = read('src/components/screens/StoreOwnerDashboard.tsx');
+  const converter = read('src/lib/store-image.ts');
+  assert.match(converter, /encoded\.length <= 220_000/);
+  assert.match(converter, /toDataURL\('image\/jpeg'/);
+  assert.match(wizard, /await prepareStoreImage\(file\)/);
+  assert.match(owner, /await prepareStoreImage\(file\)/);
+  assert.doesNotMatch(wizard, /reader\.readAsDataURL\(file\)/);
+  assert.doesNotMatch(owner.slice(owner.indexOf('const handleImageUpload'), owner.indexOf('const handleDigitalFileUpload')), /reader\.readAsDataURL\(file\)/);
+  assert.match(owner, /Upload failed: \$\{detail\}/);
+  assert.doesNotMatch(owner, /Upload failed\. Your product has not been published\. Check Firebase Storage access/);
+});
+
 test('new sellers get real empty catalog and Free plan, never mock profile/payments', () => {
   assert.doesNotMatch(onboarding, /creator@dreamstore\.app/);
   assert.match(server, /existingById\?\.plan \|\| 'Free'/);
