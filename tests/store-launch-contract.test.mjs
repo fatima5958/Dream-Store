@@ -6,6 +6,7 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 const app = read('src/App.tsx');
 const wizard = read('src/components/screens/StoreSetupWizard.tsx');
 const firebase = read('src/lib/firebase.ts');
+const authModal = read('src/components/CandylandAuthModal.tsx');
 const onboarding = read('src/components/RoleOnboardingModal.tsx');
 const server = read('server.ts');
 
@@ -43,6 +44,14 @@ test('wizard has one clear creation flow and surfaces all backend errors', () =>
   assert.match(wizard, /5\. Review Your Store/);
   assert.match(wizard, /Bio Link Preview/);
   assert.doesNotMatch(wizard, /Bio Link Claimed|Store Ready to Publish/);
+});
+
+test('V2 signup remains enabled on a deployed public beta, with backend readiness checked', () => {
+  assert.doesNotMatch(authModal, /renderStagingPreview|Preview Only — Sign-In Is Not Ready/);
+  assert.match(authModal, /USE_V2_API\s*\? '\/api\/ready'/);
+  assert.match(authModal, /if \(status\.status !== 'ready'\)/);
+  assert.match(authModal, /await signUpWithEmailAccount\(trimmedEmail, password, trimmedName\)/);
+  assert.match(firebase, /createUserWithEmailAndPassword\(auth, email, password\)/);
 });
 
 test('Firebase email signup requests verification, without hardcoded identity', () => {
@@ -421,7 +430,7 @@ test('embedded AI Studio preview does not retry a failed popup as a redirect', (
   assert.match(modal, /auth-embedded-preview-guidance/);
   assert.match(modal, /Open DreamStore in New Tab/);
   assert.match(modal, /!insidePreview/);
-  assert.match(modal, /DreamStore Backend Not Verified/);
+  assert.match(modal, /DreamStore Backend Not Ready/);
 });
 test('OAuth readiness never self-authorizes the visitor hostname', () => {
   const diagnostics = server.slice(server.indexOf("app.get('/api/auth/oauth-diagnostics'"),
