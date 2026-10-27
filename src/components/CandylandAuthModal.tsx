@@ -23,6 +23,7 @@ import {
   FIREBASE_PROJECT_ID,
   FIREBASE_AUTH_DOMAIN,
   FIREBASE_API_KEY,
+  USE_V2_API,
   isPreviewIframeEnvironment,
 } from '../lib/firebase';
 import { ClayIcon, CandySparkleStar } from './ui/DreamUI';
@@ -186,9 +187,6 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
   const currentHostname =
     typeof window !== 'undefined' ? window.location.hostname : 'localhost';
   const insidePreview = isPreviewIframeEnvironment();
-  // This publicly reachable Render V1 shell still embeds production Firebase config.
-  // Until a separate staging identity/backend is provisioned, never offer sign-in here.
-  const renderStagingPreview = currentHostname === 'dreamstore-v2-staging.onrender.com';
   const publishedDreamStoreUrl = 'https://dreamstore.ai.studio/';
 
   useEffect(() => {
@@ -206,26 +204,25 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
   // or stores. Surface missing server/Firebase setup instead of silent fetches.
   useEffect(() => {
     if (!isOpen || isPreviewIframeEnvironment()) return;
-    if (renderStagingPreview) {
-      setNotice({
-        title: 'Preview Only — Sign-In Is Not Ready',
-        message: 'This test website is not connected to an isolated staging Firebase backend yet. Please do not create real accounts here.',
-      });
-      return;
-    }
     let mounted = true;
     const checkSetup = async () => {
       try {
-        const response = await fetch(
-          `/api/auth/oauth-diagnostics?hostname=${encodeURIComponent(currentHostname)}`,
-          { cache: 'no-store', signal: AbortSignal.timeout(8000) }
-        );
+        const endpoint = USE_V2_API
+          ? '/api/ready'
+          : `/api/auth/oauth-diagnostics?hostname=${encodeURIComponent(currentHostname)}`;
+        const response = await fetch(endpoint, {
+          cache: 'no-store', signal: AbortSignal.timeout(8000),
+        });
         if (!response.headers.get('content-type')?.includes('application/json')) {
           throw new Error('Backend returned a webpage, not the auth API.');
         }
-        if (!response.ok) throw new Error('Auth diagnostics unavailable.');
+        if (!response.ok) throw new Error('DreamStore backend unavailable.');
         const status = await response.json();
         if (!mounted) return;
+        if (USE_V2_API) {
+          if (status.status !== 'ready') throw new Error('DreamStore V2 backend not ready.');
+          return;
+        }
         if (status.identityToolkitReachable === true && status.isHostnameAuthorized === false) {
           setNotice({
             title: 'This Domain Is Not Authorized for Sign-In',
@@ -235,15 +232,15 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
       } catch {
         if (mounted) {
           setNotice((existing) => existing || {
-            title: 'DreamStore Backend Not Verified',
-            message: 'This preview may not have the Node server required for creator accounts. Open the published website and confirm /api/ready before inviting creators.',
+            title: 'DreamStore Backend Not Ready',
+            message: 'DreamStore cannot reach its account server right now. Please retry shortly or contact the store operator.',
           });
         }
       }
     };
     void checkSetup();
     return () => { mounted = false; };
-  }, [isOpen, currentHostname, renderStagingPreview]);
+  }, [isOpen, currentHostname]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -264,7 +261,7 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
   };
 
   const handleContinueWithGoogle = async () => {
-    if (renderStagingPreview || isLoadingGoogle || isLoadingRedirect || isLoadingEmail) return;
+    if (isLoadingGoogle || isLoadingRedirect || isLoadingEmail) return;
     setNotice(null);
     setSuccessBanner(null);
 
@@ -303,7 +300,7 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
   };
 
   const handleGoogleRedirectFallback = async () => {
-    if (renderStagingPreview || isLoadingRedirect || isLoadingGoogle || isLoadingEmail) return;
+    if (isLoadingRedirect || isLoadingGoogle || isLoadingEmail) return;
     setNotice(null);
     if (insidePreview) {
       setNotice(getFriendlyAuthNotice({ code: 'auth/embedded-preview' }, mode));
@@ -330,7 +327,7 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (renderStagingPreview || isLoadingEmail || isLoadingGoogle || isLoadingRedirect) return;
+    if (isLoadingEmail || isLoadingGoogle || isLoadingRedirect) return;
     setNotice(null);
     setSuccessBanner(null);
 
@@ -387,7 +384,6 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
   };
 
   const handlePasswordReset = async () => {
-    if (renderStagingPreview) return;
     const trimmedEmail = email.trim();
     setNotice(null);
     setSuccessBanner(null);
@@ -576,7 +572,7 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
                   <button
                     type="button"
                     data-testid="auth-continue-with-google-btn"
-                    disabled={renderStagingPreview || isLoadingGoogle || isLoadingRedirect || isLoadingEmail}
+                    disabled={isLoadingGoogle || isLoadingRedirect || isLoadingEmail}
                     onClick={handleContinueWithGoogle}
                     className="w-full min-h-[48px] sm:min-h-[50px] px-5 py-2.5 sm:py-3 rounded-2xl candy-btn-white text-sm sm:text-[15px] font-extrabold text-[#50352F] flex items-center justify-center gap-3 cursor-pointer disabled:opacity-60"
                   >
@@ -655,7 +651,7 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
                             type="button"
                             data-testid="auth-google-redirect-fallback-btn"
                             onClick={handleGoogleRedirectFallback}
-                            disabled={renderStagingPreview || isLoadingRedirect}
+                            disabled={isLoadingRedirect}
                             className="px-3 py-1.5 rounded-xl candy-btn-white text-xs font-extrabold text-[#50352F] inline-flex items-center gap-1.5 cursor-pointer"
                           >
                             <span>Use Redirect Sign-In</span>
@@ -754,7 +750,7 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
                         <button
                           type="button"
                           data-testid="auth-forgot-password-btn"
-                          disabled={renderStagingPreview}
+                          disabled={isLoadingEmail}
                           onClick={handlePasswordReset}
                           className="text-[11px] font-bold text-[#D66795] hover:underline cursor-pointer"
                         >
@@ -798,7 +794,7 @@ export const CandylandAuthModal: React.FC<CandylandAuthModalProps> = ({
                   <button
                     type="submit"
                     data-testid="auth-submit-email-btn"
-                    disabled={renderStagingPreview || isLoadingEmail || isLoadingGoogle || isLoadingRedirect}
+                    disabled={isLoadingEmail || isLoadingGoogle || isLoadingRedirect}
                     className={`w-full min-h-[46px] sm:min-h-[48px] px-5 py-2.5 sm:py-3 rounded-2xl text-sm sm:text-[15px] font-extrabold text-[#50352F] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 ${
                       mode === 'signin' ? 'candy-btn-pink' : 'candy-btn-butter'
                     }`}
