@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getAuthHeaders } from '../../lib/firebase';
+import { prepareStoreImage } from '../../lib/store-image';
 import {
   Store,
   Folder,
@@ -443,28 +444,28 @@ export const StoreSetupWizard: React.FC<StoreSetupWizardProps> = ({
     setCurrentStep(targetStep);
   };
 
-  const handleBannerUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onUpdateConfig({ heroImage: reader.result });
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const image = await prepareStoreImage(file);
+      onUpdateConfig({ heroImage: image });
+      setValidationError(null);
+    } catch (err) {
+      setValidationError(err instanceof Error ? err.message : 'Cover image could not be prepared.');
+    }
   };
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onUpdateConfig({ logoUrl: reader.result, ownerAvatar: reader.result });
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const image = await prepareStoreImage(file);
+      onUpdateConfig({ logoUrl: image, ownerAvatar: image });
+      setValidationError(null);
+    } catch (err) {
+      setValidationError(err instanceof Error ? err.message : 'Logo could not be prepared.');
+    }
   };
 
   const shareableBioUrl = buildPublicStoreUrl(slugTrimmed || 'your-store');
