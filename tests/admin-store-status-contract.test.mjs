@@ -17,3 +17,10 @@ test('dashboard sends the selected state and overview differentiates pending fro
   assert.match(server, /st\.status === 'Suspended' \? 'suspended' : 'pending_review'/);
   assert.match(server, /saved\.status === 'Suspended' \? 'suspended' : 'pending_review'/);
 });
+
+test('admin payment approval requires statement confirmation and durable callback', () => {
+  assert.match(dashboard, /Have you independently verified CLEARED funds/);
+  assert.match(dashboard, /Secure admin order verification is unavailable/);
+  assert.match(dashboard, /Payment Verification Failed/);
+  assert.match(dashboard, /Order Update Failed/);
+});
