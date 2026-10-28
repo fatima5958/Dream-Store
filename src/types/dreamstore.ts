@@ -975,7 +975,6 @@ export const INDIA_STORE_CONFIG: StoreConfig = {
 
 export const INITIAL_STORE_CONFIGS: Record<string, StoreConfig> = {
   'store-fatima-tech': INITIAL_STORE_CONFIG,
-  'store-in-ananya': INDIA_STORE_CONFIG,
 };
 
 export const INITIAL_PRODUCTS: Product[] = [

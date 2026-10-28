@@ -398,7 +398,7 @@ export const StoreOwnerDashboard: React.FC<StoreOwnerDashboardProps> = ({
   const [commPayError, setCommPayError] = useState<string | null>(null);
   const [publishSparkleBanner, setPublishSparkleBanner] = useState<string | null>(null);
 
-  const effectiveSellerId = currentUserUid || config.ownerId || 'seller-pk-fatima';
+  const effectiveSellerId = currentUserUid || config.ownerId || '';
 
   const fetchCommissionStatus = React.useCallback(async () => {
     if (!currentUserUid) return;

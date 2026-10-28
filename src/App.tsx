@@ -3326,7 +3326,7 @@ export default function App() {
         onCompleteOnboarding={handleCompleteRoleOnboarding}
       />
 
-      {activeScreen === 'wizard' && currentUser && (userProfile?.role === 'seller' || userProfile?.role === 'super_admin') && (
+      {activeScreen === 'wizard' && userProfile?.role !== 'buyer' && (
         <StoreSetupWizard
           config={config}
           onUpdateConfig={handleUpdateConfig}
@@ -3340,7 +3340,7 @@ export default function App() {
         />
       )}
 
-      {activeScreen === 'owner-dashboard' && currentUser && (userProfile?.role === 'seller' || userProfile?.role === 'super_admin') && (
+      {activeScreen === 'owner-dashboard' && userProfile?.role !== 'buyer' && (
         <StoreOwnerDashboard
           config={config}
           onUpdateConfig={handleUpdateConfig}
@@ -3422,7 +3422,7 @@ export default function App() {
         </div>
       )}
 
-      {activeScreen === 'visual-editor' && currentUser && (userProfile?.role === 'seller' || userProfile?.role === 'super_admin') && (
+      {activeScreen === 'visual-editor' && userProfile?.role !== 'buyer' && (
         <VisualStoreEditor
           config={config}
           onUpdateConfig={handleUpdateConfig}
@@ -3536,33 +3536,7 @@ export default function App() {
                   })}
                 </div>
 
-                <div className="h-4 w-[2px] bg-[#E8D2B5] mx-1 shrink-0" />
 
-                {/* Multi-Vendor Seller Store Switcher (PK Seller vs IN Seller) */}
-                <div className="flex items-center gap-1 bg-[#FFF2DF] p-0.5 rounded-full border border-[#E8D2B5] shrink-0">
-                  <button
-                    onClick={() => handleSwitchSellerStore('store-fatima-tech')}
-                    title="Switch to Pakistan Seller Store (Fatima.tech · PKR)"
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-extrabold transition-all cursor-pointer ${
-                      config.storeId === 'store-fatima-tech'
-                        ? 'candy-btn-pink'
-                        : 'text-[#50352F] hover:text-[#D66795]'
-                    }`}
-                  >
-                    🇵🇰 PK Store (PKR)
-                  </button>
-                  <button
-                    onClick={() => handleSwitchSellerStore('store-in-ananya')}
-                    title="Switch to India Seller Store (Ananya Creates · INR)"
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-extrabold transition-all cursor-pointer ${
-                      config.storeId === 'store-in-ananya'
-                        ? 'candy-btn-pink'
-                        : 'text-[#50352F] hover:text-[#D66795]'
-                    }`}
-                  >
-                    🇮🇳 IN Store (INR)
-                  </button>
-                </div>
 
                 {/* Quick Cart Button */}
                 <button

@@ -687,20 +687,6 @@ export const CheckoutAndOrdersPage: React.FC<CheckoutAndOrdersPageProps> = ({
                   Sign in to keep your orders and secure download links in your account.
                 </div>
                 <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-                  {import.meta.env.DEV && (
-                    <button
-                      type="button"
-                      data-testid="enable-sandbox-buyer-btn"
-                      onClick={() => {
-                        setSandboxBuyerEnabled(true);
-                        if (!customerName) setCustomerName('Test Buyer');
-                        if (!customerEmail) setCustomerEmail('buyer@example.test');
-                      }}
-                      className="candy-btn-cream px-4 py-2.5 rounded-2xl text-xs font-extrabold cursor-pointer min-h-[42px]"
-                    >
-                      Developer Sandbox Buyer
-                    </button>
-                  )}
                   <CandyButton
                     type="button"
                     variant="pink"

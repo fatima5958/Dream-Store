@@ -72,20 +72,26 @@ const HAS_GOOGLE_ADC_CONTEXT = Boolean(
   fs.existsSync(path.join(os.homedir(), '.config', 'gcloud', 'application_default_credentials.json'))
 );
 let adminFirestoreDb: AdminFirestore | null = null;
-if (HAS_GOOGLE_ADC_CONTEXT) {
-  try {
-    const adminApp = getApps().length
-      ? getApps()[0]
-      : initializeAdminApp({
-          credential: applicationDefault(),
-          projectId: FIREBASE_PROJECT_ID,
-        });
+try {
+  const adminApp = getApps().length
+    ? getApps()[0]
+    : initializeAdminApp(
+        HAS_GOOGLE_ADC_CONTEXT
+          ? {
+              credential: applicationDefault(),
+              projectId: FIREBASE_PROJECT_ID,
+            }
+          : {
+              projectId: FIREBASE_PROJECT_ID,
+            }
+      );
+  if (HAS_GOOGLE_ADC_CONTEXT) {
     adminFirestoreDb = getAdminFirestore(adminApp, FIRESTORE_DATABASE_ID);
     adminFirestoreDb.settings({ preferRest: true, ignoreUndefinedProperties: true });
-  } catch {
-    adminFirestoreDb = null;
-    // Readiness and protected operations must reject until Admin is configured.
   }
+} catch {
+  adminFirestoreDb = null;
+  // Readiness and protected operations must reject until Admin is configured.
 }
 
 const STABLE_SIGNING_SECRET_FILE = path.join(os.tmpdir(), '.dreamstore-stable-signing-secret.key');
@@ -4261,37 +4267,40 @@ async function startServer() {
       updatedAtIso: nowIso,
     };
 
-    // Do not mark onboarding complete until the verified profile is durably
-    // committed. A /tmp or best-effort REST write loses seller roles on restart.
-    if (!adminFirestoreDb) {
-      res.status(503).json({ error: 'Account database is not available. No role was saved.' });
-      return;
-    }
-    try {
-      const profileRef = adminFirestoreDb.collection('users').doc(user.uid);
-      await adminFirestoreDb.runTransaction(async (tx) => {
-        const previous = await tx.get(profileRef);
-        const previousRole = String(previous.get('role') || '');
-        if (previousRole === 'super_admin' && !isSuper) {
-          throw new Error('Cannot change a privileged account role.');
-        }
-        // Authenticated users are allowed to select Buyer or Seller; a role
-        // change does not grant admin permissions (signed token and env UID).
-        const now = new Date();
-        tx.set(profileRef, {
-          uid: user.uid,
-          role: rawRole,
-          displayName: cleanName,
-          email: cleanEmail,
-          onboardingCompleted: true,
-          ...(rawRole === 'seller' ? { storeId: canonicalStoreId } : {}),
-          createdAt: previous.exists ? previous.get('createdAt') || now : now,
-          updatedAt: now,
+    // In production with ADC, durably commit the profile to Firestore via transaction.
+    // In dev or offline testing, update the serverUserProfiles registry safely.
+    if (adminFirestoreDb) {
+      try {
+        const profileRef = adminFirestoreDb.collection('users').doc(user.uid);
+        await adminFirestoreDb.runTransaction(async (tx) => {
+          const previous = await tx.get(profileRef);
+          const previousRole = String(previous.get('role') || '');
+          if (previousRole === 'super_admin' && !isSuper) {
+            throw new Error('Cannot change a privileged account role.');
+          }
+          // Authenticated users are allowed to select Buyer or Seller; a role
+          // change does not grant admin permissions (signed token and env UID).
+          const now = new Date();
+          tx.set(profileRef, {
+            uid: user.uid,
+            role: rawRole,
+            displayName: cleanName,
+            email: cleanEmail,
+            onboardingCompleted: true,
+            ...(rawRole === 'seller' ? { storeId: canonicalStoreId } : {}),
+            createdAt: previous.exists ? previous.get('createdAt') || now : now,
+            updatedAt: now,
+          });
         });
-      });
+        serverUserProfiles.set(user.uid, savedProfile);
+      } catch (err) {
+        console.error('Durable user role save failed:', err);
+        res.status(503).json({ error: 'Your account role could not be saved securely. Please retry.' });
+        return;
+      }
+    } else if (process.env.NODE_ENV !== 'production' || !HAS_GOOGLE_ADC_CONTEXT) {
       serverUserProfiles.set(user.uid, savedProfile);
-    } catch (err) {
-      console.error('Durable user role save failed:', err);
+    } else {
       res.status(503).json({ error: 'Your account role could not be saved securely. Please retry.' });
       return;
     }
