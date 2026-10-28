@@ -1782,19 +1782,15 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   Allow New Seller Store Registrations
                 </div>
                 <div className="ds-helper">
-                  When enabled, creators can launch new stores via the 5-step onboarding wizard.
+                  Registration controls are not yet connected to a durable server policy. New seller registrations cannot be disabled here.
                 </div>
               </div>
               <input
                 type="checkbox"
                 checked={platformSettings.allowNewSellerRegistrations}
-                onChange={(e) =>
-                  setPlatformSettings({
-                    ...platformSettings,
-                    allowNewSellerRegistrations: e.target.checked,
-                  })
-                }
-                className="w-4 h-4 accent-[#F58CB7]"
+                disabled
+                aria-label="Seller registration policy is not configurable yet"
+                className="w-4 h-4 accent-[#F58CB7] disabled:opacity-50 cursor-not-allowed"
               />
             </div>
 
