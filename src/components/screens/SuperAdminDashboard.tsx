@@ -536,8 +536,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   ) => {
     if (onAdminUpdateOrderStatus) {
       await onAdminUpdateOrderStatus(orderId, newStatus, reason);
-    } else if (onUpdateOrderStatus) {
-      await onUpdateOrderStatus(orderId, newStatus);
+    } else {
+      throw new Error('Secure admin order verification is unavailable. No order was changed.');
     }
   };
 
@@ -1535,12 +1535,19 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                       {ord.paymentStatus !== 'Paid' && (
                         <button
                           onClick={async () => {
-                            await triggerOrderUpdate(
-                              ord.id,
-                              'Paid',
-                              'Super Admin verified payment reference'
-                            );
-                            showToast(`Order #${ord.orderNumber} marked Paid & unlocked`);
+                            if (!window.confirm('Have you independently verified CLEARED funds in the seller bank or wallet statement? A screenshot or reference alone is not proof of payment.')) return;
+                            try {
+                              await triggerOrderUpdate(
+                                ord.id,
+                                'Paid',
+                                'Super Admin independently confirmed cleared payment'
+                              );
+                              showToast(`Order #${ord.orderNumber} marked Paid & unlocked`);
+                            } catch (error) {
+                              showToast(error instanceof Error ? error.message : 'Order verification failed.', {
+                                title: 'Payment Verification Failed', variant: 'error',
+                              });
+                            }
                           }}
                           className="candy-btn-mint px-3.5 py-2 rounded-xl text-xs font-extrabold cursor-pointer"
                         >
