@@ -29,3 +29,9 @@ test('unimplemented seller registration policy cannot be falsely saved by admin'
   assert.match(dashboard, /Registration controls are not yet connected to a durable server policy/);
   assert.match(dashboard, /Seller registration policy is not configurable yet/);
 });
+
+test('admin overview failures are not silently hidden', () => {
+  assert.match(dashboard, /Admin overview could not be loaded\. Please retry/);
+  assert.match(dashboard, /Admin Data Unavailable/);
+  assert.match(dashboard, /Admin session expired or access denied/);
+});
