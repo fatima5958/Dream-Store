@@ -249,7 +249,12 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       const res = await fetch('/api/commission/admin/overview', {
         headers: authHeaders,
       });
-      if (res.ok) {
+      if (!res.ok) {
+        throw new Error(res.status === 401 || res.status === 403
+          ? 'Admin session expired or access denied. Please sign in again.'
+          : 'Admin overview could not be loaded. Please retry.');
+      }
+      {
         const data = await res.json();
         if (Array.isArray(data.stores)) {
           setStores(data.stores);
@@ -268,8 +273,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           setCommissionPayments(data.payments);
         }
       }
-    } catch {
-      // Fallback safely
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Admin overview could not be loaded.', {
+        title: 'Admin Data Unavailable', variant: 'error',
+      });
     } finally {
       setIsLoadingAdmin(false);
     }
