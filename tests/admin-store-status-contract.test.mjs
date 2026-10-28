@@ -24,3 +24,8 @@ test('admin payment approval requires statement confirmation and durable callbac
   assert.match(dashboard, /Payment Verification Failed/);
   assert.match(dashboard, /Order Update Failed/);
 });
+
+test('unimplemented seller registration policy cannot be falsely saved by admin', () => {
+  assert.match(dashboard, /Registration controls are not yet connected to a durable server policy/);
+  assert.match(dashboard, /Seller registration policy is not configurable yet/);
+});
