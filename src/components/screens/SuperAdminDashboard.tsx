@@ -1557,12 +1557,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                       {ord.paymentStatus !== 'Pending' && (
                         <button
                           onClick={async () => {
-                            await triggerOrderUpdate(
-                              ord.id,
-                              'Pending',
-                              'Super Admin reverted order to Pending review'
-                            );
-                            showToast(`Order #${ord.orderNumber} set to Pending`);
+                            try {
+                              await triggerOrderUpdate(ord.id, 'Pending', 'Super Admin reverted order to Pending review');
+                              showToast(`Order #${ord.orderNumber} set to Pending`);
+                            } catch (error) {
+                              showToast(error instanceof Error ? error.message : 'Order status update failed.', {
+                                title: 'Order Update Failed', variant: 'error',
+                              });
+                            }
                           }}
                           className="candy-btn-butter px-3.5 py-2 rounded-xl text-xs font-extrabold cursor-pointer"
                         >
@@ -1572,12 +1574,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                       {ord.paymentStatus !== 'Failed' && (
                         <button
                           onClick={async () => {
-                            await triggerOrderUpdate(
-                              ord.id,
-                              'Failed',
-                              'Super Admin rejected invalid payment reference'
-                            );
-                            showToast(`Order #${ord.orderNumber} marked Failed`);
+                            try {
+                              await triggerOrderUpdate(ord.id, 'Failed', 'Super Admin rejected invalid payment reference');
+                              showToast(`Order #${ord.orderNumber} marked Failed`);
+                            } catch (error) {
+                              showToast(error instanceof Error ? error.message : 'Order status update failed.', {
+                                title: 'Order Update Failed', variant: 'error',
+                              });
+                            }
                           }}
                           className="px-3.5 py-2 rounded-xl bg-[#FFE7F1] border border-[#F58CB7] text-[#9E3B66] text-xs font-extrabold cursor-pointer"
                         >
