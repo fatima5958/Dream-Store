@@ -249,7 +249,12 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       const res = await fetch('/api/commission/admin/overview', {
         headers: authHeaders,
       });
-      if (res.ok) {
+      if (!res.ok) {
+        throw new Error(res.status === 401 || res.status === 403
+          ? 'Admin session expired or access denied. Please sign in again.'
+          : 'Admin overview could not be loaded. Please retry.');
+      }
+      {
         const data = await res.json();
         if (Array.isArray(data.stores)) {
           setStores(data.stores);
@@ -268,8 +273,10 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
           setCommissionPayments(data.payments);
         }
       }
-    } catch {
-      // Fallback safely
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Admin overview could not be loaded.', {
+        title: 'Admin Data Unavailable', variant: 'error',
+      });
     } finally {
       setIsLoadingAdmin(false);
     }
@@ -333,7 +340,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       const res = await fetch('/api/admin/stores/status', {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ storeId, status: newStatus === 'active' ? 'Active' : 'Pending' }),
+        body: JSON.stringify({ storeId, status: newStatus === 'active' ? 'Active' : newStatus === 'suspended' ? 'Suspended' : 'Pending' }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok !== true) throw new Error(data.error || 'Store status was not saved.');
@@ -536,8 +543,8 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   ) => {
     if (onAdminUpdateOrderStatus) {
       await onAdminUpdateOrderStatus(orderId, newStatus, reason);
-    } else if (onUpdateOrderStatus) {
-      await onUpdateOrderStatus(orderId, newStatus);
+    } else {
+      throw new Error('Secure admin order verification is unavailable. No order was changed.');
     }
   };
 
@@ -1535,12 +1542,19 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                       {ord.paymentStatus !== 'Paid' && (
                         <button
                           onClick={async () => {
-                            await triggerOrderUpdate(
-                              ord.id,
-                              'Paid',
-                              'Super Admin verified payment reference'
-                            );
-                            showToast(`Order #${ord.orderNumber} marked Paid & unlocked`);
+                            if (!window.confirm('Have you independently verified CLEARED funds in the seller bank or wallet statement? A screenshot or reference alone is not proof of payment.')) return;
+                            try {
+                              await triggerOrderUpdate(
+                                ord.id,
+                                'Paid',
+                                'Super Admin independently confirmed cleared payment'
+                              );
+                              showToast(`Order #${ord.orderNumber} marked Paid & unlocked`);
+                            } catch (error) {
+                              showToast(error instanceof Error ? error.message : 'Order verification failed.', {
+                                title: 'Payment Verification Failed', variant: 'error',
+                              });
+                            }
                           }}
                           className="candy-btn-mint px-3.5 py-2 rounded-xl text-xs font-extrabold cursor-pointer"
                         >
@@ -1550,12 +1564,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                       {ord.paymentStatus !== 'Pending' && (
                         <button
                           onClick={async () => {
-                            await triggerOrderUpdate(
-                              ord.id,
-                              'Pending',
-                              'Super Admin reverted order to Pending review'
-                            );
-                            showToast(`Order #${ord.orderNumber} set to Pending`);
+                            try {
+                              await triggerOrderUpdate(ord.id, 'Pending', 'Super Admin reverted order to Pending review');
+                              showToast(`Order #${ord.orderNumber} set to Pending`);
+                            } catch (error) {
+                              showToast(error instanceof Error ? error.message : 'Order status update failed.', {
+                                title: 'Order Update Failed', variant: 'error',
+                              });
+                            }
                           }}
                           className="candy-btn-butter px-3.5 py-2 rounded-xl text-xs font-extrabold cursor-pointer"
                         >
@@ -1565,12 +1581,14 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                       {ord.paymentStatus !== 'Failed' && (
                         <button
                           onClick={async () => {
-                            await triggerOrderUpdate(
-                              ord.id,
-                              'Failed',
-                              'Super Admin rejected invalid payment reference'
-                            );
-                            showToast(`Order #${ord.orderNumber} marked Failed`);
+                            try {
+                              await triggerOrderUpdate(ord.id, 'Failed', 'Super Admin rejected invalid payment reference');
+                              showToast(`Order #${ord.orderNumber} marked Failed`);
+                            } catch (error) {
+                              showToast(error instanceof Error ? error.message : 'Order status update failed.', {
+                                title: 'Order Update Failed', variant: 'error',
+                              });
+                            }
                           }}
                           className="px-3.5 py-2 rounded-xl bg-[#FFE7F1] border border-[#F58CB7] text-[#9E3B66] text-xs font-extrabold cursor-pointer"
                         >
@@ -1771,19 +1789,15 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   Allow New Seller Store Registrations
                 </div>
                 <div className="ds-helper">
-                  When enabled, creators can launch new stores via the 5-step onboarding wizard.
+                  Registration controls are not yet connected to a durable server policy. New seller registrations cannot be disabled here.
                 </div>
               </div>
               <input
                 type="checkbox"
                 checked={platformSettings.allowNewSellerRegistrations}
-                onChange={(e) =>
-                  setPlatformSettings({
-                    ...platformSettings,
-                    allowNewSellerRegistrations: e.target.checked,
-                  })
-                }
-                className="w-4 h-4 accent-[#F58CB7]"
+                disabled
+                aria-label="Seller registration policy is not configurable yet"
+                className="w-4 h-4 accent-[#F58CB7] disabled:opacity-50 cursor-not-allowed"
               />
             </div>
 

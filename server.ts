@@ -199,7 +199,7 @@ export interface ServerStoreRecord {
   heroButtonText?: string;
   heroImage?: string;
   logoUrl?: string;
-  status: 'Active' | 'Pending';
+  status: 'Active' | 'Pending' | 'Suspended';
 }
 
 export interface ServerProductRecord {
@@ -7206,7 +7206,7 @@ async function startServer() {
         theme: st.theme || 'blush-bloom',
         planId: hasPro ? 'pro' : 'free',
         productCount: storeProds.length,
-        status: st.status === 'Active' ? 'active' : 'suspended',
+        status: st.status === 'Active' ? 'active' : st.status === 'Suspended' ? 'suspended' : 'pending_review',
         visitsCount: visitStats.visitsCount,
         checkoutViewsCount: visitStats.checkoutViewsCount,
         lastVisitedAtIso: visitStats.lastVisitedAtIso,
@@ -7358,7 +7358,7 @@ async function startServer() {
     }
     try {
       const saved = await saveAdminStorePatch(targetStoreId, {
-        status: statusInput === 'active' ? 'Active' : 'Pending',
+        status: statusInput === 'active' ? 'Active' : statusInput === 'suspended' ? 'Suspended' : 'Pending',
       });
       if (!saved) {
         res.status(404).json({ error: 'Store not found.' });
@@ -7391,7 +7391,7 @@ async function startServer() {
     }
     const patch: Partial<ServerStoreRecord> = {};
     if (cleanAction === 'activate' || cleanAction === 'suspend') {
-      patch.status = cleanAction === 'activate' ? 'Active' : 'Pending';
+      patch.status = cleanAction === 'activate' ? 'Active' : 'Suspended';
     } else if (cleanAction === 'grant_pro' || cleanAction === 'revoke_pro') {
       patch.plan = cleanAction === 'grant_pro' ? 'Pro' : 'Free';
     } else if (cleanAction === 'update_store' && updates && typeof updates === 'object' && !Array.isArray(updates)) {
@@ -7431,7 +7431,7 @@ async function startServer() {
           res.status(400).json({ error: 'Invalid store status.' });
           return;
         }
-        patch.status = statusInput === 'active' ? 'Active' : 'Pending';
+        patch.status = statusInput === 'active' ? 'Active' : statusInput === 'suspended' ? 'Suspended' : 'Pending';
       }
     } else {
       res.status(400).json({ error: 'Unsupported admin store action.' });
@@ -7455,7 +7455,7 @@ async function startServer() {
         store: {
           ...saved,
           planId: saved.plan === 'Pro' ? 'pro' : 'free',
-          status: saved.status === 'Active' ? 'active' : 'suspended',
+          status: saved.status === 'Active' ? 'active' : saved.status === 'Suspended' ? 'suspended' : 'pending_review',
           visitsCount: visits.visitsCount,
           checkoutViewsCount: visits.checkoutViewsCount,
           lastVisitedAtIso: visits.lastVisitedAtIso,
