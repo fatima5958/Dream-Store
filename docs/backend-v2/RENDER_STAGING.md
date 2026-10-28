@@ -1,6 +1,6 @@
 # Render Free — isolated DreamStore Backend V2 candidate (Phase 12)
 
-**Status: CODE CANDIDATE ONLY, NOT DEPLOYED.** The existing Render Free service continues to use `./Dockerfile` and starts V1. Never change the production V1 Dockerfile or `dreamstore.ai.studio` routing for this staging work. Auto-deploy ON means changes to `main` will rebuild **the currently configured V1 image**; the new V2 image must be selected only after complete staging secrets and gate review.
+**Current status (2026-10-26): API-only Backend V2 is deployed to guarded Render staging. NOT production-certified.** Render service `srv-db9h1prbc2fs73dop2k0` uses `Dockerfile.backend-v2-render`; deployment of `1bdb373f9def8299ba5af781fd9ab40eefddabe0` is marked live and startup logs contain `DreamStore V2 guarded Render staging listening.` This confirms a guarded service boot, **not** real Buyer/Seller/Admin journeys or production integration. Do not change the production V1 Dockerfile or `dreamstore.ai.studio` routing. Auto-deploy remains enabled on Render staging.
 
 ## Fixed resource identities
 
@@ -50,4 +50,36 @@ Startup command is `node scripts/start-backend-v2-render.mjs`, not the V1 server
 6. Confirm startup with real staging Auth, named Firestore and private Supabase, through tester gate; verify `/api/ready=200`.
 7. Run synthetic Buyer/Seller/Admin journeys and cross-account denial; review storage consistency, cold-start and rollback.
 
-**Not verified**: Render live V2 boot, service-account IAM, real Firebase Auth/Firestore, live Supabase, OAuth email verification and browser journeys, tenant-isolation in cloud, production readiness. Production V1 remains sole production writer.
+**Not verified**: real authenticated Buyer/Seller/Admin journeys, Firebase rules/IAM and token behavior in production, live file delivery and transaction recovery, browser OAuth, tenant isolation against two real test sellers, and production readiness. V2 staging boot succeeded; that does not establish continuing per-route readiness. Production V1 remains sole production writer.
+
+
+## Live integration preflight (read-only; guarded staging only)
+
+The script `npm run preflight:v2:render` targets **only**
+`https://dreamstore-v2-staging.onrender.com`, refuses other origins, consumes
+`DREAMSTORE_V2_RENDER_TESTER_PASSWORD` from the caller environment, and never
+logs the password or session cookie. Supply the password through a private
+secret-injection mechanism; **do not** paste it into chat, a shell command, a
+GitHub workflow log, or the repository.
+
+The script checks unauthenticated tester-gate denial, tester login, HTTP-only
+secure cookie attributes, authenticated API health and readiness, payment
+feature flags (paid checkout disabled), and denial of guest profile/admin
+queries. Login attempts are limited to **one per run** to avoid repeatedly
+triggering the shared rate limit. This smoke check is *not* a replacement for
+two-Seller/Buyer/Admin tests, Firebase authorization checks, transaction
+integrity, file storage verification, identity migration, production backup
+and rollback evidence. A successful run does **not** approve production V2
+traffic or paid checkout.
+
+Render's container is API-only. The existing React frontend still imports the
+production Firebase configuration; the V2 staging Auth project is different,
+and the Render cookie gate requires same-origin requests. Never point the
+production frontend straight at the isolated Render API or add the Render
+hostname to the production Firebase allowlist to bypass the separation.
+
+For full V2 launch, build and verify a frontend+backend release against the
+**same approved production Firebase identity**, preserve existing users/stores/
+order IDs and private files, compare V1/V2 data and API responses, create
+recoverable backups, exercise rollback, and only then perform an approved,
+pinned Cloud Run cutover with paid checkout initially disabled.
