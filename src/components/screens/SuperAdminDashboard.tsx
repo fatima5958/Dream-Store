@@ -333,7 +333,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
       const res = await fetch('/api/admin/stores/status', {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ storeId, status: newStatus === 'active' ? 'Active' : 'Pending' }),
+        body: JSON.stringify({ storeId, status: newStatus === 'active' ? 'Active' : newStatus === 'suspended' ? 'Suspended' : 'Pending' }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok !== true) throw new Error(data.error || 'Store status was not saved.');
